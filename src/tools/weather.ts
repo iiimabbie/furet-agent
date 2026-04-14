@@ -1,5 +1,6 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { logger } from "../logger.js";
 
 export const weatherServer = createSdkMcpServer({
   name: "weather",
@@ -18,6 +19,7 @@ export const weatherServer = createSdkMcpServer({
         const langKey = `lang_${lang}`;  // e.g. "lang_zh-tw"
 
         try {
+          logger.debug({ city, lang }, "weather query");
           const response = await fetch(
             `https://wttr.in/${city}?format=j1&lang=${lang}`
           );
@@ -75,6 +77,7 @@ export const weatherServer = createSdkMcpServer({
             content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
           };
         } catch (err) {
+          logger.error({ err, city }, "weather query failed");
           return {
             content: [{ type: "text" as const, text: `查詢失敗：${(err as Error).message}` }],
           };

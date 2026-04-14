@@ -1,13 +1,31 @@
 import * as readline from "node:readline";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { ask } from "./agent.js";
 import { fixMarkdownLinks } from "./utils/format.js";
+
+const SESSION_FILE = resolve(import.meta.dirname ?? process.cwd(), "..", "workspace", "sessions", "cli.json");
+
+function loadSession(): string | undefined {
+  try {
+    const data = JSON.parse(readFileSync(SESSION_FILE, "utf-8"));
+    return data.sessionId;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveSession(id: string): void {
+  mkdirSync(resolve(SESSION_FILE, ".."), { recursive: true });
+  writeFileSync(SESSION_FILE, JSON.stringify({ sessionId: id }, null, 2));
+}
 
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
 });
 
-let sessionId: string | undefined;
+let sessionId = loadSession();
 
 function prompt(): void {
   rl.question("\n🐾 > ", async (input) => {
@@ -16,6 +34,13 @@ function prompt(): void {
     if (!trimmed || trimmed === "exit" || trimmed === "quit") {
       console.log("bye!");
       rl.close();
+      return;
+    }
+
+    if (trimmed === "new") {
+      sessionId = undefined;
+      console.log("new session started");
+      prompt();
       return;
     }
 
@@ -30,6 +55,7 @@ function prompt(): void {
       });
 
       sessionId = response.sessionId;
+      if (sessionId) saveSession(sessionId);
 
       console.log(`\n${fixMarkdownLinks(response.text)}`);
       console.log(`\n--- cost: $${response.cost.toFixed(4)} | ${(response.durationMs / 1000).toFixed(1)}s | tools: ${response.toolsUsed.map(t => prettifyToolName(t.tool)).join(", ") || "none"} ---`);

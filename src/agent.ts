@@ -2,6 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { weatherServer } from "./tools/weather.js";
+import { logger } from "./logger.js";
 
 // 把使用者友善的環境變數映射給 SDK
 if (process.env.LLM_API_KEY && !process.env.ANTHROPIC_API_KEY) {
@@ -48,7 +49,7 @@ const SYSTEM_INSTRUCTIONS = `
 
 function loadPersona(): string {
   try {
-    const personaPath = resolve(import.meta.dirname ?? process.cwd(), "..", "prompts", "FURET.md");
+    const personaPath = resolve(import.meta.dirname ?? process.cwd(), "..", "workspace", "FURET.md");
     return readFileSync(personaPath, "utf-8");
   } catch {
     return "";
@@ -64,6 +65,8 @@ const DEFAULT_ALLOWED_TOOLS = [
 ];
 
 export async function ask(prompt: string, options: AgentOptions = {}): Promise<AgentResponse> {
+  logger.info({ prompt: prompt.slice(0, 200) }, "query start");
+
   let resultText = "";
   let totalCost = 0;
   let duration = 0;
@@ -101,6 +104,7 @@ export async function ask(prompt: string, options: AgentOptions = {}): Promise<A
             const toolName = (block.name as string) ?? "unknown";
             const toolInput = (block.input as Record<string, unknown>) ?? {};
             toolsUsed.push({ tool: toolName, input: toolInput });
+            logger.info({ tool: toolName, input: toolInput }, "tool call");
             options.onToolUse?.(toolName, toolInput);
           }
         }
@@ -113,7 +117,13 @@ export async function ask(prompt: string, options: AgentOptions = {}): Promise<A
       duration = (msg.duration_ms as number) ?? 0;
       sessionId = msg.session_id as string | undefined;
     }
+
+    if (msg.type === "result" && msg.subtype !== "success") {
+      logger.error({ subtype: msg.subtype, result: (msg.result as string)?.slice(0, 500) }, "query failed");
+    }
   }
+
+  logger.info({ cost: totalCost, durationMs: duration, toolsUsed: toolsUsed.map(t => t.tool), sessionId }, "query done");
 
   return {
     text: resultText,

@@ -1,5 +1,6 @@
 node_modules/
 dist/
 .env
-data/
+workspace/
+logs/
 DESIGN.md
