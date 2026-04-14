@@ -1,16 +1,19 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import OpenAI from "openai";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { weatherServer } from "./tools/weather.js";
 import { logger } from "./logger.js";
+import { bashDefinition, executeBash } from "./tools/builtin/bash.js";
+import { readFileDefinition, executeReadFile } from "./tools/builtin/read-file.js";
+import { writeFileDefinition, executeWriteFile } from "./tools/builtin/write-file.js";
+import { webSearchDefinition, executeWebSearch } from "./tools/builtin/web-search.js";
+import "dotenv/config";
 
-// 把使用者友善的環境變數映射給 SDK
-if (process.env.LLM_API_KEY && !process.env.ANTHROPIC_API_KEY) {
-  process.env.ANTHROPIC_API_KEY = process.env.LLM_API_KEY;
-}
-if (process.env.LLM_BASE_URL && !process.env.ANTHROPIC_BASE_URL) {
-  process.env.ANTHROPIC_BASE_URL = process.env.LLM_BASE_URL;
-}
+const client = new OpenAI({
+  apiKey: process.env.LLM_API_KEY,
+  baseURL: process.env.LLM_BASE_URL,
+});
+
+const MODEL = process.env.LLM_MODEL ?? "claude-sonnet-4-20250514";
 
 export interface ToolActivity {
   tool: string;
@@ -19,32 +22,35 @@ export interface ToolActivity {
 
 export interface AgentResponse {
   text: string;
-  cost: number;
-  durationMs: number;
-  sessionId?: string;
   toolsUsed: ToolActivity[];
+  durationMs: number;
 }
 
 export interface AgentOptions {
   systemPrompt?: string;
   maxTurns?: number;
-  cwd?: string;
-  resume?: string;        // session ID to continue
-  mcpServers?: Record<string, unknown>;
-  allowedTools?: string[];
   onToolUse?: (tool: string, input: Record<string, unknown>) => void;
 }
 
-// System-level instructions: execution flow, priorities, tool usage rules.
-// Hardcoded — not user-configurable.
+// System-level instructions — hardcoded, not user-configurable.
 const SYSTEM_INSTRUCTIONS = `
+You are Furet, a personal assistant agent.
+
 ## Execution Rules
 1. Always fulfill the user's request FIRST. Deliver the answer/result before any side-effects.
-2. Side-effects (saving memories, taking notes, organizing files) happen AFTER the response, or concurrently without delaying the response.
-3. Do NOT mention side-effects in your reply unless the user explicitly asks.
-4. When a tool returns data, ALWAYS include the relevant information in your response. Never say "I looked it up" without sharing what you found.
-5. Respond in the same language the user uses.
-6. Do NOT use the built-in memory system. Do NOT write to ~/.claude/projects/ or any memory files. Memory will be handled by dedicated tools in the future.
+2. When a tool returns data, ALWAYS include the relevant information in your response.
+3. Respond in the same language the user uses.
+
+## Using your tools
+- Use the RIGHT tool for each job. Do NOT use bash when a dedicated tool exists:
+  - To read files: use read_file, NOT cat/head/tail
+  - To write files: use write_file, NOT echo/cat with redirection
+  - To search file content: use grep, NOT bash grep
+- Reserve bash exclusively for shell commands that have no dedicated tool (git, curl, npm, etc.)
+
+## Tone and style
+- Be short and concise.
+- Only use emojis if the user uses them first.
 `;
 
 function loadPersona(): string {
@@ -56,80 +62,89 @@ function loadPersona(): string {
   }
 }
 
-const DEFAULT_ALLOWED_TOOLS = [
-  "Bash", "Read", "Write", "Edit",
-  "Glob", "Grep",
-  "WebSearch", "WebFetch",
-  "Task",
-  "mcp__weather__query",
+function buildSystemPrompt(extra?: string): string {
+  return [SYSTEM_INSTRUCTIONS, loadPersona(), extra].filter(Boolean).join("\n");
+}
+
+const TOOLS: OpenAI.ChatCompletionTool[] = [
+  bashDefinition,
+  readFileDefinition,
+  writeFileDefinition,
+  webSearchDefinition,
 ];
 
-export async function ask(prompt: string, options: AgentOptions = {}): Promise<AgentResponse> {
-  logger.info({ prompt: prompt.slice(0, 200) }, "query start");
+async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+  switch (name) {
+    case "bash": return executeBash(args as { command: string });
+    case "read_file": return executeReadFile(args as { path: string });
+    case "write_file": return executeWriteFile(args as { path: string; content: string });
+    case "web_search": return executeWebSearch(args as { query: string });
+    default: return `Unknown tool: ${name}`;
+  }
+}
 
-  let resultText = "";
-  let totalCost = 0;
-  let duration = 0;
-  let sessionId: string | undefined;
+export async function ask(prompt: string, options: AgentOptions = {}): Promise<AgentResponse> {
+  const startTime = Date.now();
+  const maxTurns = options.maxTurns ?? 10;
   const toolsUsed: ToolActivity[] = [];
 
-  for await (const message of query({
-    prompt,
-    options: {
-      maxTurns: options.maxTurns ?? 10,
-      cwd: options.cwd ?? process.cwd(),
-      allowedTools: options.allowedTools ?? DEFAULT_ALLOWED_TOOLS,
-      systemPrompt: {
-        type: "preset",
-        preset: "claude_code",
-        append: SYSTEM_INSTRUCTIONS + loadPersona() + (options.systemPrompt ?? ""),
-      },
-      permissionMode: "acceptEdits",
-      mcpServers: {
-        weather: weatherServer,
-        ...(options.mcpServers as Record<string, never> | undefined),
-      },
-      resume: options.resume,
-    },
-  })) {
-    const msg = message as Record<string, unknown>;
+  logger.info({ prompt: prompt.slice(0, 200) }, "query start");
 
-    // tool 使用資訊在 assistant message 的 content blocks 裡
-    if (msg.type === "assistant") {
-      const assistantMsg = msg.message as Record<string, unknown> | undefined;
-      const content = assistantMsg?.content as Array<Record<string, unknown>> | undefined;
-      if (content) {
-        for (const block of content) {
-          if (block.type === "tool_use") {
-            const toolName = (block.name as string) ?? "unknown";
-            const toolInput = (block.input as Record<string, unknown>) ?? {};
-            toolsUsed.push({ tool: toolName, input: toolInput });
-            logger.info({ tool: toolName, input: toolInput }, "tool call");
-            options.onToolUse?.(toolName, toolInput);
-          }
-        }
-      }
+  const messages: OpenAI.ChatCompletionMessageParam[] = [
+    { role: "system", content: buildSystemPrompt(options.systemPrompt) },
+    { role: "user", content: prompt },
+  ];
+
+  for (let turn = 0; turn < maxTurns; turn++) {
+    const response = await client.chat.completions.create({
+      model: MODEL,
+      messages,
+      tools: TOOLS.length > 0 ? TOOLS : undefined,
+    });
+
+    const choice = response.choices[0];
+    const message = choice.message;
+
+    // 把 assistant 回覆加進 messages（給下一輪用）
+    messages.push(message);
+
+    // 沒有 tool call → 回文字，結束
+    if (!message.tool_calls || message.tool_calls.length === 0) {
+      const durationMs = Date.now() - startTime;
+      logger.info({ durationMs, toolsUsed: toolsUsed.map(t => t.tool) }, "query done");
+      return {
+        text: message.content ?? "",
+        toolsUsed,
+        durationMs,
+      };
     }
 
-    if (msg.type === "result" && msg.subtype === "success") {
-      resultText = (msg.result as string) ?? "";
-      totalCost = (msg.total_cost_usd as number) ?? 0;
-      duration = (msg.duration_ms as number) ?? 0;
-      sessionId = msg.session_id as string | undefined;
-    }
+    // 有 tool call → 執行每個 tool，結果加回 messages
+    for (const toolCall of message.tool_calls) {
+      if (toolCall.type !== "function") continue;
+      const toolName = toolCall.function.name;
+      const toolArgs = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
 
-    if (msg.type === "result" && msg.subtype !== "success") {
-      logger.error({ subtype: msg.subtype, result: (msg.result as string)?.slice(0, 500) }, "query failed");
+      toolsUsed.push({ tool: toolName, input: toolArgs });
+      logger.info({ tool: toolName, input: toolArgs }, "tool call");
+      options.onToolUse?.(toolName, toolArgs);
+
+      const result = await executeTool(toolName, toolArgs);
+
+      messages.push({
+        role: "tool",
+        tool_call_id: toolCall.id,
+        content: result,
+      });
     }
   }
 
-  logger.info({ cost: totalCost, durationMs: duration, toolsUsed: toolsUsed.map(t => t.tool), sessionId }, "query done");
-
+  // max turns 用完
+  const durationMs = Date.now() - startTime;
+  logger.error({ maxTurns }, "max turns reached");
   return {
-    text: resultText,
-    cost: totalCost,
-    durationMs: duration,
-    sessionId,
+    text: "達到最大回合數限制。",
     toolsUsed,
+    durationMs,
   };
 }
