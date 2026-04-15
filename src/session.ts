@@ -1,42 +1,36 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { resolve } from "node:path";
 import type OpenAI from "openai";
 import { logger } from "./logger.js";
 
+const SESSIONS_DIR = resolve(import.meta.dirname ?? process.cwd(), "..", "workspace", "sessions");
+
 export class Session {
+  readonly id: string;
   private filePath: string;
   private messages: OpenAI.ChatCompletionMessageParam[] = [];
 
-  constructor(filePath: string) {
-    this.filePath = filePath;
+  constructor(id: string) {
+    this.id = id;
+    this.filePath = resolve(SESSIONS_DIR, `${id}.json`);
     this.load();
   }
 
-  /** 取得歷史 messages（不含 system prompt，那個每次重建） */
   getMessages(): OpenAI.ChatCompletionMessageParam[] {
     return this.messages;
   }
 
-  /** 加一筆 message 並存檔 */
   append(message: OpenAI.ChatCompletionMessageParam): void {
     this.messages.push(message);
     this.save();
   }
 
-  /** 加多筆 messages 並存檔 */
-  appendAll(msgs: OpenAI.ChatCompletionMessageParam[]): void {
-    this.messages.push(...msgs);
-    this.save();
-  }
-
-  /** 清空對話歷史 */
   clear(): void {
     this.messages = [];
     this.save();
-    logger.info({ file: this.filePath }, "session cleared");
+    logger.info({ sessionId: this.id }, "session cleared");
   }
 
-  /** 取得對話筆數 */
   get length(): number {
     return this.messages.length;
   }
@@ -45,7 +39,7 @@ export class Session {
     try {
       const data = JSON.parse(readFileSync(this.filePath, "utf-8"));
       this.messages = data.messages ?? [];
-      logger.info({ file: this.filePath, count: this.messages.length }, "session loaded");
+      logger.info({ sessionId: this.id, count: this.messages.length }, "session loaded");
     } catch {
       this.messages = [];
     }
@@ -53,10 +47,10 @@ export class Session {
 
   private save(): void {
     try {
-      mkdirSync(dirname(this.filePath), { recursive: true });
+      mkdirSync(SESSIONS_DIR, { recursive: true });
       writeFileSync(this.filePath, JSON.stringify({ messages: this.messages }, null, 2));
     } catch (err) {
-      logger.error({ err }, "session save failed");
+      logger.error({ err, sessionId: this.id }, "session save failed");
     }
   }
 }
