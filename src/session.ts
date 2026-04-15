@@ -4,6 +4,7 @@ import type OpenAI from "openai";
 import { logger } from "./logger.js";
 
 const SESSIONS_DIR = resolve(import.meta.dirname ?? process.cwd(), "..", "workspace", "sessions");
+const ARCHIVE_DIR = resolve(SESSIONS_DIR, "archive");
 
 export class Session {
   readonly id: string;
@@ -29,6 +30,30 @@ export class Session {
     this.messages = [];
     this.save();
     logger.info({ sessionId: this.id }, "session cleared");
+  }
+
+  /** 歸檔當前對話到 archive/，然後清空 */
+  archive(): string | null {
+    if (this.messages.length === 0) {
+      logger.info({ sessionId: this.id }, "session archive skipped (empty)");
+      this.clear();
+      return null;
+    }
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const archivePath = resolve(ARCHIVE_DIR, `${this.id}-${timestamp}.json`);
+    try {
+      mkdirSync(ARCHIVE_DIR, { recursive: true });
+      writeFileSync(archivePath, JSON.stringify({
+        sessionId: this.id,
+        archivedAt: new Date().toISOString(),
+        messages: this.messages,
+      }, null, 2));
+      logger.info({ sessionId: this.id, archivePath, count: this.messages.length }, "session archived");
+    } catch (err) {
+      logger.error({ err, sessionId: this.id }, "session archive failed");
+    }
+    this.clear();
+    return archivePath;
   }
 
   get length(): number {
