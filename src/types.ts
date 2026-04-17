@@ -18,6 +18,9 @@ export type ContentBlock =
 export type Message = {
   role: "user" | "assistant";
   content: string | ContentBlock[];
+  time?: string;       // MM/DD HH:mm
+  msgId?: string;      // Discord message ID
+  replyTo?: string;    // replied message ID
 };
 
 // --- Agent ---

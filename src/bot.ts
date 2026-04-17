@@ -70,10 +70,13 @@ export async function startBot(token: string): Promise<void> {
 
       const channelContext = `Current Discord channel ID: ${interaction.channelId}`;
       const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
-      const newSessionPrompt = `[${ts}] 使用者 <@${interaction.user.id}>(${interaction.user.username}) 使用 /new 開始了新對話。請根據 system prompt 中的人格設定和長期記憶，以你的身份打招呼。`;
+      const newSessionContent = `<@${interaction.user.id}>(${interaction.user.username}) 使用 /new 開始了新對話。請根據 system prompt 中的人格設定和長期記憶，以你的身份打招呼。`;
+
+      // 直接用結構化格式 append，不經過 ask 的 prompt 參數
+      session.append({ role: "user", content: newSessionContent, time: ts });
 
       try {
-        const response = await ask(newSessionPrompt, { session, systemPrompt: channelContext });
+        const response = await ask(null, { session, systemPrompt: channelContext });
         const text = response.text || "（新對話開始）";
         const formatted = fixMarkdownLinks(text);
         const chunks = chunkMessage(formatted, 2000);
@@ -96,8 +99,8 @@ export async function startBot(token: string): Promise<void> {
     // 所有訊息都 append 到 session（不論是否觸發 bot）
     const sessionId = sessionIdForMessage(message);
     const session = new Session(sessionId);
-    const formattedUserMessage = await formatIncomingMessage(message);
-    session.append({ role: "user", content: formattedUserMessage });
+    const fmt = await formatIncomingMessage(message);
+    session.append({ role: "user", content: fmt.content, time: fmt.time, msgId: fmt.msgId, ...(fmt.replyTo ? { replyTo: fmt.replyTo } : {}) });
 
     const isMentioned = client.user ? message.mentions.has(client.user) : false;
     const isDM = !message.guild;
@@ -121,17 +124,19 @@ export async function startBot(token: string): Promise<void> {
   await client.login(token);
 }
 
-/**
- * 把 Discord 訊息格式化為 session 的 user message content。
- * 格式：[msg:<id> <MM/DD HH:mm>] <@authorId>(暱稱): 內容 (reply to msg:<id>)
- */
-async function formatIncomingMessage(message: Message): Promise<string> {
+interface FormattedMessage {
+  content: string;
+  time: string;
+  msgId: string;
+  replyTo?: string;
+}
+
+async function formatIncomingMessage(message: Message): Promise<FormattedMessage> {
   const authorName = message.member?.displayName ?? message.author.username;
   const authorId = message.author.id;
   const botId = message.client.user?.id ?? "";
   const botName = message.guild?.members.me?.displayName ?? message.client.user?.username ?? "bot";
 
-  // <@userId> → <@userId>(暱稱)
   const normalizeMentions = async (text: string): Promise<string> => {
     const matches = [...text.matchAll(/<@!?(\d+)>/g)];
     if (matches.length === 0) return text;
@@ -155,12 +160,16 @@ async function formatIncomingMessage(message: Message): Promise<string> {
 
   const ts = new Date(message.createdTimestamp).toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
   const content = await normalizeMentions(message.content);
-  const replyTag = message.reference?.messageId ? ` (reply to msg:${message.reference.messageId})` : "";
   const attach = message.attachments.size > 0
     ? ` [附件: ${[...message.attachments.values()].map(a => a.url).join(", ")}]`
     : "";
 
-  return `[msg:${message.id} ${ts}] <@${authorId}>(${authorName}):${replyTag} ${content}${attach}`;
+  return {
+    content: `<@${authorId}>(${authorName}): ${content}${attach}`,
+    time: ts,
+    msgId: message.id,
+    ...(message.reference?.messageId ? { replyTo: message.reference.messageId } : {}),
+  };
 }
 
 async function handleTrigger(message: Message, session: Session): Promise<void> {
@@ -198,9 +207,8 @@ async function handleTrigger(message: Message, session: Session): Promise<void> 
       const sent = await message.reply(chunk);
       sentIds.push(sent.id);
     }
-    // 標記 assistant message 的 Discord id（讓之後 reply 能對得上）
     if (sentIds.length > 0) {
-      session.prependToLastAssistantContent(`[msg:${sentIds.join(",")}] `);
+      session.setLastAssistantMsgId(sentIds.join(","));
     }
     logger.info({ sessionId: session.id, chunks: chunks.length, sentIds }, "discord reply sent");
   } catch (err) {

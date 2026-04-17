@@ -29,6 +29,7 @@ function nowTimestamp(): string {
   return new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
 }
 
+
 const config = loadConfig();
 const API_URL = `${config.llm.base_url || "https://api.anthropic.com/v1"}/messages`;
 const API_KEY = config.llm.api_key;
@@ -70,16 +71,28 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
   const session = options.session;
 
   if (prompt !== null) {
-    session?.append({ role: "user", content: prompt });
+    session?.append({ role: "user", content: prompt, time: nowTimestamp() });
   }
 
-  // session 只存純文字對話，API 用的 messages 另外維護（包含 tool 互動）
   const systemPrompt = buildSystemPrompt(options.systemPrompt);
-  const sessionMessages = (session?.getMessages() ?? []) as Message[];
-  const messages: Message[] = [
-    ...sessionMessages,
-    ...(prompt !== null && !session ? [{ role: "user" as const, content: prompt }] : []),
-  ];
+  const sessionMessages = session?.getMessages() ?? [];
+  type ApiMessage = { role: "user" | "assistant"; content: string | ContentBlock[] };
+
+  // session 歷史打包成第一則 assistant message，當前訊息是第一則 user message
+  const messages: ApiMessage[] = [];
+  if (sessionMessages.length > 0) {
+    messages.push({ role: "assistant", content: `對話紀錄：\n${JSON.stringify(sessionMessages, null, 2)}` });
+  }
+  // 當前 prompt（已在 session 裡的不重複加）
+  if (prompt !== null && !session) {
+    messages.push({ role: "user", content: prompt });
+  } else if (session && sessionMessages.length > 0) {
+    // session 最後一則就是當前 user message，單獨作為 user message 送出
+    const last = sessionMessages[sessionMessages.length - 1];
+    if (last.role === "user" && typeof last.content === "string") {
+      messages.push({ role: "user", content: last.content });
+    }
+  }
 
   for (let turn = 0; turn < maxTurns; turn++) {
     const response = await callAnthropic(systemPrompt, messages);
@@ -117,11 +130,8 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
     // 沒有 tool call → 最後一輪
     if (toolUseBlocks.length === 0) {
       const finalText = extractText(cleanContent);
-      // session 只存 text blocks，加上時間戳
-      const textOnly = cleanContent.filter(b => b.type === "text") as Array<{ type: "text"; text: string }>;
-      if (textOnly.length > 0) {
-        textOnly[0] = { type: "text", text: `[${nowTimestamp()}] ${textOnly[0].text}` };
-        session?.append({ role: "assistant", content: textOnly });
+      if (finalText) {
+        session?.append({ role: "assistant", content: finalText, time: nowTimestamp() });
       }
       const durationMs = Date.now() - startTime;
       logger.info({ durationMs, toolsUsed: toolsUsed.map(t => t.tool), textLength: finalText.length }, "query done");

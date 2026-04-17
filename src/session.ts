@@ -24,11 +24,11 @@ export class Session {
     this.save();
   }
 
-  prependToLastAssistantContent(prefix: string): void {
+  /** 在最後一則 assistant message 上設定 msgId */
+  setLastAssistantMsgId(msgId: string): void {
     for (let i = this.messages.length - 1; i >= 0; i--) {
-      const m = this.messages[i];
-      if (m.role === "assistant" && typeof m.content === "string") {
-        m.content = prefix + m.content;
+      if (this.messages[i].role === "assistant") {
+        this.messages[i].msgId = msgId;
         this.save();
         return;
       }
@@ -79,18 +79,27 @@ export class Session {
     }
   }
 
-  /** 遷移舊格式：過濾掉含 tool_use/tool_result 的 messages */
+  /** 遷移舊格式：ContentBlock[] → string，過濾 tool blocks */
   private migrateOldFormat(): void {
-    const before = this.messages.length;
-    this.messages = this.messages.filter(m => {
-      if (typeof m.content === "string") return true;
-      if (!Array.isArray(m.content)) return false;
-      // 保留只有 text blocks 的，過濾含 tool blocks 的
-      const blocks = m.content as Array<{ type: string }>;
-      return blocks.length > 0 && blocks.every(b => b.type === "text");
-    });
-    if (this.messages.length < before) {
-      logger.info({ sessionId: this.id, before, after: this.messages.length }, "migrated old session format");
+    let changed = false;
+    const migrated: Message[] = [];
+    for (const m of this.messages) {
+      if (typeof m.content === "string") {
+        migrated.push(m);
+      } else if (Array.isArray(m.content)) {
+        const blocks = m.content as Array<{ type: string; text?: string }>;
+        const textBlocks = blocks.filter(b => b.type === "text");
+        if (textBlocks.length > 0) {
+          migrated.push({ ...m, content: textBlocks.map(b => b.text ?? "").join("") });
+          changed = true;
+        } else {
+          changed = true; // 整則跳過（純 tool blocks）
+        }
+      }
+    }
+    if (changed) {
+      this.messages = migrated;
+      logger.info({ sessionId: this.id, before: this.messages.length, after: migrated.length }, "migrated old session format");
       this.save();
     }
   }
