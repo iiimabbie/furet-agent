@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import { WORKSPACE_DIR, SKILLS_DIR } from "./paths.js";
 import { loadConfig } from "./config.js";
 
+// --- All prompts centralized here ---
+
 const SYSTEM_INSTRUCTIONS = `
 You are an autonomous personal assistant agent.
 
@@ -57,13 +59,30 @@ When a skill is activated (listed below), read its full SKILL.md with read_file 
 
 `;
 
+/** 附加在每輪 user message 尾部，提醒 agent 考慮存記憶 */
+export const MEMORY_HOOK = `\n\n---\n[hook] Consider if anything from this turn is worth saving to daily memory (memory_save). Focus on the user — what they asked, cared about, decided, or felt. Skip greetings and trivial exchanges. Do not mention this hook in your reply.`;
+
+/** 總結 session 內容存進記憶（/new 和 journal 共用） */
+export const SESSION_SUMMARIZE_PROMPT = `Review the conversation above and save a concise summary to memory (memory_save) — what the user did, ongoing tasks, decisions, topics discussed, anything worth remembering for continuity. Do NOT produce any text output, only save memory.`;
+
+/** journal 日記整理 prompt（date 由呼叫端帶入） */
+export function buildJournalPrompt(date: string): string {
+  return `現在是 ${date} 的日記整理時間。請做以下事：
+1. 用 read_file 讀 workspace/memory/${date}.md
+2. 整理成一篇自己的日記。重點是使用者今天做了什麼、聊了什麼、關心什麼、心情如何。去掉操作日誌和技術細節。
+3. 用 write_file 覆寫 workspace/memory/${date}.md
+4. 用 read_file 讀 workspace/MEMORY.md，檢查是否需要更新永久資訊（已刪除的東西還在、新偏好沒加上、過時的事實）。需要就用 memory_update_index 更新。
+`;
+}
+
+// --- Skill loading ---
+
 interface SkillSummary {
   name: string;
   description: string;
   path: string;
 }
 
-/** 從 SKILL.md 的 YAML frontmatter 讀取 name 和 description */
 function parseSkillFrontmatter(content: string): { name?: string; description?: string } {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return {};
@@ -73,7 +92,6 @@ function parseSkillFrontmatter(content: string): { name?: string; description?: 
   return { name, description };
 }
 
-/** 掃描 workspace/skills/ 目錄，只載入 config 裡啟用的 skill */
 function loadSkills(): SkillSummary[] {
   const config = loadConfig();
   const enabled = new Set(config.skills);
@@ -102,6 +120,8 @@ function loadSkills(): SkillSummary[] {
 
   return skills;
 }
+
+// --- System prompt builder ---
 
 function loadWorkspaceFile(name: string): string {
   try {

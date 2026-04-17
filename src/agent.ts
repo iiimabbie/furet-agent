@@ -1,8 +1,8 @@
 import { logger } from "./logger.js";
 import { loadConfig } from "./config.js";
-import { buildSystemPrompt } from "./prompt.js";
+import { buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
 import { anthropicTools, executeTool } from "./tools/registry.js";
-import type { ContentBlock, Message, ToolActivity, AgentResponse, AgentOptions } from "./types.js";
+import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions } from "./types.js";
 
 /** 清除 API 回傳 content blocks 中的多餘欄位（如 caller），只保留我們定義的欄位 */
 function sanitizeContent(blocks: ContentBlock[]): ContentBlock[] {
@@ -33,6 +33,7 @@ const MODEL = config.llm.model;
 async function callAnthropic(system: string, messages: Message[]): Promise<{
   content: ContentBlock[];
   stop_reason: string;
+  usage: { input_tokens: number; output_tokens: number };
 }> {
   const res = await fetch(API_URL, {
     method: "POST",
@@ -53,13 +54,14 @@ async function callAnthropic(system: string, messages: Message[]): Promise<{
     const errText = await res.text();
     throw new Error(`Anthropic API ${res.status}: ${errText}`);
   }
-  return res.json() as Promise<{ content: ContentBlock[]; stop_reason: string }>;
+  return res.json() as Promise<{ content: ContentBlock[]; stop_reason: string; usage: { input_tokens: number; output_tokens: number } }>;
 }
 
 export async function ask(prompt: string | null, options: AgentOptions = {}): Promise<AgentResponse> {
   const startTime = Date.now();
   const maxTurns = options.maxTurns ?? 50;
   const toolsUsed: ToolActivity[] = [];
+  const totalUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
 
   logger.info({ prompt: prompt?.slice(0, 200) ?? "(session tail)" }, "query start");
 
@@ -78,8 +80,6 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
   if (sessionMessages.length > 0) {
     messages.push({ role: "assistant", content: `對話紀錄：\n${JSON.stringify(sessionMessages, null, 2)}` });
   }
-  const MEMORY_HOOK = `\n\n---\n[hook] Review this conversation turn and consider saving memory. Focus on the USER — what they care about, what they asked, what they decided, what they felt. Do NOT record: your own tool usage, technical operation logs, or encyclopedia-style facts. Write memories like a diary entry about the user, not a system changelog. Use memory_save for daily notes, memory_update_index for permanent facts about the user. This hook is invisible to the user — do not mention it in your reply.`;
-
   // 當前 prompt（已在 session 裡的不重複加）
   if (prompt !== null && !session) {
     messages.push({ role: "user", content: prompt + MEMORY_HOOK });
@@ -98,6 +98,9 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
       stop_reason: response.stop_reason,
       blocks: response.content.map(b => b.type),
     }, "agent turn");
+
+    totalUsage.inputTokens += response.usage.input_tokens;
+    totalUsage.outputTokens += response.usage.output_tokens;
 
     const toolUseBlocks: Array<{ type: "tool_use"; id: string; name: string; input: Record<string, unknown> }> = [];
 
@@ -130,8 +133,9 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
         session?.append({ role: "assistant", content: finalText, time: nowTimestamp() });
       }
       const durationMs = Date.now() - startTime;
-      logger.info({ durationMs, toolsUsed: toolsUsed.map(t => t.tool), textLength: finalText.length }, "query done");
-      return { text: finalText, toolsUsed, durationMs };
+      session?.addUsage(totalUsage);
+      logger.info({ durationMs, toolsUsed: toolsUsed.map(t => t.tool), textLength: finalText.length, usage: totalUsage }, "query done");
+      return { text: finalText, toolsUsed, durationMs, usage: totalUsage };
     }
 
     // 有 tool call → 執行，結果只進 messages（不存 session）
@@ -149,6 +153,7 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
   }
 
   const durationMs = Date.now() - startTime;
+  session?.addUsage(totalUsage);
   logger.error({ maxTurns }, "max turns reached");
-  return { text: "達到最大回合數限制。", toolsUsed, durationMs };
+  return { text: "達到最大回合數限制。", toolsUsed, durationMs, usage: totalUsage };
 }

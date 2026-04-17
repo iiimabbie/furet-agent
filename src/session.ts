@@ -1,13 +1,14 @@
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { logger } from "./logger.js";
 import { SESSIONS_DIR, ARCHIVE_DIR } from "./paths.js";
-import type { Message } from "./types.js";
+import type { Message, TokenUsage } from "./types.js";
 
 export class Session {
   readonly id: string;
   private filePath: string;
   private messages: Message[] = [];
+  private usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
 
   constructor(id: string) {
     this.id = id;
@@ -22,6 +23,16 @@ export class Session {
   append(message: Message): void {
     this.messages.push(message);
     this.save();
+  }
+
+  addUsage(usage: TokenUsage): void {
+    this.usage.inputTokens += usage.inputTokens;
+    this.usage.outputTokens += usage.outputTokens;
+    this.save();
+  }
+
+  getUsage(): TokenUsage {
+    return { ...this.usage };
   }
 
   /** 在最後一則 assistant message 上設定 msgId */
@@ -72,6 +83,7 @@ export class Session {
     try {
       const data = JSON.parse(readFileSync(this.filePath, "utf-8"));
       this.messages = data.messages ?? [];
+      this.usage = data.usage ?? { inputTokens: 0, outputTokens: 0 };
       this.migrateOldFormat();
       logger.info({ sessionId: this.id, count: this.messages.length }, "session loaded");
     } catch {
@@ -104,10 +116,20 @@ export class Session {
     }
   }
 
+  /** 列出所有 active session ID */
+  static listActive(): string[] {
+    try {
+      const files = readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
+      return files.map(f => f.replace(".json", ""));
+    } catch {
+      return [];
+    }
+  }
+
   private save(): void {
     try {
       mkdirSync(SESSIONS_DIR, { recursive: true });
-      writeFileSync(this.filePath, JSON.stringify({ messages: this.messages }, null, 2));
+      writeFileSync(this.filePath, JSON.stringify({ messages: this.messages, usage: this.usage }, null, 2));
     } catch (err) {
       logger.error({ err, sessionId: this.id }, "session save failed");
     }

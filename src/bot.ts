@@ -5,15 +5,46 @@ import {
 } from "discord.js";
 import { ask } from "./agent.js";
 import { Session } from "./session.js";
+import { SESSION_SUMMARIZE_PROMPT } from "./prompt.js";
 import { logger } from "./logger.js";
 import { loadConfig } from "./config.js";
 import { setDiscordClient } from "./tools/builtin/discord.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 
+import { loadCrons } from "./tools/builtin/cron.js";
+import { loadReminders } from "./tools/builtin/reminder.js";
+import type { TokenUsage } from "./types.js";
+
+// model pricing (USD per million tokens) — from Anthropic official pricing
+const MODEL_PRICING: Record<string, { input: number; output: number }> = {
+  "claude-opus-4-7": { input: 5, output: 25 },
+  "claude-opus-4-6": { input: 5, output: 25 },
+  "claude-opus-4-5-20251101": { input: 5, output: 25 },
+  "claude-opus-4-1-20250805": { input: 15, output: 75 },
+  "claude-opus-4-20250514": { input: 15, output: 75 },
+  "claude-sonnet-4-6": { input: 3, output: 15 },
+  "claude-sonnet-4-5-20250929": { input: 3, output: 15 },
+  "claude-sonnet-4-20250514": { input: 3, output: 15 },
+  "claude-sonnet-3-7-20250219": { input: 3, output: 15 },
+  "claude-haiku-4-5-20251001": { input: 1, output: 5 },
+  "claude-3-5-haiku-20241022": { input: 0.8, output: 4 },
+};
+
+function estimateCost(usage: TokenUsage, model: string): string {
+  const pricing = MODEL_PRICING[model];
+  if (!pricing) return "unknown";
+  const cost = (usage.inputTokens * pricing.input + usage.outputTokens * pricing.output) / 1_000_000;
+  return `$${cost.toFixed(4)}`;
+}
+
 const SLASH_COMMANDS = [
   new SlashCommandBuilder()
     .setName("new")
     .setDescription("開始新對話（歸檔當前頻道的 session）")
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("status")
+    .setDescription("查看 bot 狀態")
     .toJSON(),
 ];
 
@@ -65,12 +96,12 @@ export async function startBot(token: string): Promise<void> {
       const session = new Session(sessionId);
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const channelContext = `Current Discord channel ID: ${interaction.channelId}`;
+      const channelContext = `Current Discord context: channel (ID: ${interaction.channelId})`;
       const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
 
       // 歸檔前：讓 agent 總結當前 session 存進記憶
       if (session.length > 0) {
-        const summarizePrompt = `The user is about to clear this session with /new. Review the conversation above and save a concise summary of important context to memory (memory_save) — ongoing tasks, decisions, topics being discussed, anything the user might need continuity on. Do NOT produce any text output, only save memory.`;
+        const summarizePrompt = SESSION_SUMMARIZE_PROMPT;
         session.append({ role: "user", content: summarizePrompt, time: ts });
         await ask(null, { session, systemPrompt: channelContext }).catch(err =>
           logger.error({ err: (err as Error).message }, "session summarize before /new failed")
@@ -96,6 +127,33 @@ export async function startBot(token: string): Promise<void> {
         logger.error({ err: (err as Error).message }, "/new failed");
         await interaction.deleteReply().catch(() => {});
       }
+    }
+
+    if (interaction.commandName === "status") {
+      const config = loadConfig();
+      const sessionId = interaction.guild
+        ? `discord-channel-${interaction.channelId}`
+        : `discord-dm-${interaction.user.id}`;
+      const session = new Session(sessionId);
+      const usage = session.getUsage();
+      const crons = loadCrons();
+      const reminders = loadReminders();
+      const activeSessions = Session.listActive();
+      const skills = config.skills;
+
+      const totalTokens = usage.inputTokens + usage.outputTokens;
+      const cost = estimateCost(usage, config.llm.model);
+
+      const status = [
+        `**Model:** \`${config.llm.model}\``,
+        `**Session:** ${session.length} messages | ${totalTokens.toLocaleString()} tokens (in: ${usage.inputTokens.toLocaleString()}, out: ${usage.outputTokens.toLocaleString()}) | cost: ${cost}`,
+        `**Active sessions:** ${activeSessions.length}`,
+        `**Crons:** ${crons.filter(c => c.enabled).length} active / ${crons.length} total`,
+        `**Reminders:** ${reminders.length} pending`,
+        `**Skills:** ${skills.length > 0 ? skills.join(", ") : "none"}`,
+      ].join("\n");
+
+      await interaction.reply({ content: status, flags: MessageFlags.Ephemeral });
     }
   });
 
@@ -213,7 +271,13 @@ async function handleTrigger(message: Message, session: Session): Promise<void> 
   }
 
   try {
-    const channelContext = `Current Discord channel ID: ${message.channelId}`;
+    const ch = message.channel;
+    const channelType = ch.isThread()
+      ? (ch.parent && "type" in ch.parent && ch.parent.type === 15 ? "forum post" : "thread")
+      : (ch.isDMBased() ? "DM" : "channel");
+    const parentInfo = ch.isThread() && ch.parentId ? `, parent channel: ${ch.parentId}` : "";
+    const threadName = ch.isThread() ? `, name: "${ch.name}"` : "";
+    const channelContext = `Current Discord context: ${channelType} (ID: ${message.channelId}${parentInfo}${threadName})`;
     const response = await ask(null, { session, systemPrompt: channelContext });
     logger.info({
       sessionId: session.id,

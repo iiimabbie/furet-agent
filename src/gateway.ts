@@ -5,6 +5,8 @@ import { loadCrons, type CronJob } from "./tools/builtin/cron.js";
 import { loadReminders, saveReminders, type Reminder } from "./tools/builtin/reminder.js";
 import { getDiscordClient } from "./tools/builtin/discord.js";
 import { startBot } from "./bot.js";
+import { Session } from "./session.js";
+import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt } from "./prompt.js";
 import { loadConfig } from "./config.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 
@@ -140,19 +142,44 @@ function loadAndScheduleReminders(): void {
 }
 
 // --- Journal ---
+
+/** 總結並歸檔所有 active session */
+async function summarizeAndArchiveAll(): Promise<void> {
+  const ids = Session.listActive();
+  if (ids.length === 0) return;
+
+  const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
+  const summarizePrompt = SESSION_SUMMARIZE_PROMPT;
+
+  for (const id of ids) {
+    const session = new Session(id);
+    if (session.length === 0) continue;
+    try {
+      session.append({ role: "user", content: summarizePrompt, time: ts });
+      await ask(null, { session });
+      session.archive();
+      logger.info({ sessionId: id }, "session summarized and archived (journal)");
+    } catch (err) {
+      logger.error({ err: (err as Error).message, sessionId: id }, "session summarize failed (journal)");
+      session.archive(); // 總結失敗也歸檔，避免 context 無限增長
+    }
+  }
+}
+
 function scheduleJournal(): void {
   const config = loadConfig();
   if (!config.journal.enabled) return;
 
   const expr = `${config.journal.minute} ${config.journal.hour} * * *`;
-  schedule(expr, () => {
+  schedule(expr, async () => {
     logger.info({ time: `${config.journal.hour}:${config.journal.minute}` }, "journal triggered");
+
+    // 先總結+歸檔所有 active session
+    await summarizeAndArchiveAll();
+
+    // 再整理日記 + 更新 MEMORY.md
     const date = new Date().toISOString().split("T")[0];
-    const prompt = `現在是 ${date} 的日記整理時間。請做以下事：
-1. 用 read_file 讀 workspace/memory/${date}.md
-2. 回顧今天所有對話跟互動，補充當下可能沒記下來的東西：有趣的事、討論了什麼、使用者的情緒、你自己的感想
-3. 把整理、補充後的完整內容用 write_file 覆蓋回 workspace/memory/${date}.md
-`;
+    const prompt = buildJournalPrompt(date);
     ask(prompt)
       .then(response => logger.info({ date, result: response.text.slice(0, 200) }, "journal done"))
       .catch(err => logger.error({ err, date }, "journal failed"));

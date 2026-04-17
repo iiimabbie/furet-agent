@@ -23,6 +23,13 @@ export type Message = {
   replyTo?: string;    // replied message ID
 };
 
+// --- Token Usage ---
+
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 // --- Agent ---
 
 export interface ToolActivity {
@@ -34,6 +41,7 @@ export interface AgentResponse {
   text: string;
   toolsUsed: ToolActivity[];
   durationMs: number;
+  usage: TokenUsage;
 }
 
 export interface AgentOptions {
