@@ -9,11 +9,6 @@ export interface FuretConfig {
     base_url: string;
     model: string;
   };
-  web_search: {
-    provider: "google" | "duckduckgo" | "searxng";
-    google_api_key: string;
-    searxng_url: string;
-  };
   discord: {
     enabled: boolean;
     token: string;
@@ -33,11 +28,6 @@ const DEFAULTS: FuretConfig = {
     api_key: "",
     base_url: "",
     model: "claude-sonnet-4-20250514",
-  },
-  web_search: {
-    provider: "duckduckgo",
-    google_api_key: "",
-    searxng_url: "",
   },
   discord: {
     enabled: false,
@@ -92,7 +82,6 @@ export function loadConfig(): FuretConfig {
 
   cached = {
     llm: { ...DEFAULTS.llm, ...(resolved.llm as Record<string, unknown>) } as FuretConfig["llm"],
-    web_search: { ...DEFAULTS.web_search, ...(resolved.web_search as Record<string, unknown>) } as FuretConfig["web_search"],
     discord: { ...DEFAULTS.discord, ...(resolved.discord as Record<string, unknown>) } as FuretConfig["discord"],
     journal: { ...DEFAULTS.journal, ...(resolved.journal as Record<string, unknown>) } as FuretConfig["journal"],
   };

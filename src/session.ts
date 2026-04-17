@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import type OpenAI from "openai";
 import { logger } from "./logger.js";
+
+type Message = { role: string; content: unknown; [key: string]: unknown };
 
 const SESSIONS_DIR = resolve(import.meta.dirname ?? process.cwd(), "..", "workspace", "sessions");
 const ARCHIVE_DIR = resolve(SESSIONS_DIR, "archive");
@@ -9,7 +10,7 @@ const ARCHIVE_DIR = resolve(SESSIONS_DIR, "archive");
 export class Session {
   readonly id: string;
   private filePath: string;
-  private messages: OpenAI.ChatCompletionMessageParam[] = [];
+  private messages: Message[] = [];
 
   constructor(id: string) {
     this.id = id;
@@ -17,11 +18,11 @@ export class Session {
     this.load();
   }
 
-  getMessages(): OpenAI.ChatCompletionMessageParam[] {
+  getMessages(): Message[] {
     return this.messages;
   }
 
-  append(message: OpenAI.ChatCompletionMessageParam): void {
+  append(message: Message): void {
     this.messages.push(message);
     this.save();
   }
@@ -88,7 +89,7 @@ export class Session {
    * 或 tool_call 與 tool_result 數量/ID 不對的地方，移除整組壞掉的 block。
    */
   private repairDanglingToolCalls(): void {
-    const repaired: OpenAI.ChatCompletionMessageParam[] = [];
+    const repaired: Message[] = [];
     let i = 0;
     let removed = 0;
 
@@ -102,7 +103,7 @@ export class Session {
           const actualIds = new Set<string>();
           let j = i + 1;
           while (j < this.messages.length && this.messages[j].role === "tool") {
-            actualIds.add((this.messages[j] as { tool_call_id: string }).tool_call_id);
+            actualIds.add((this.messages[j] as unknown as { tool_call_id: string }).tool_call_id);
             j++;
           }
           const allMatched = [...expectedIds].every(id => actualIds.has(id));

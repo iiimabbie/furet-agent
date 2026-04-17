@@ -3,17 +3,6 @@ llm:
   base_url: "${LLM_BASE_URL}"           # required (OpenAI-compatible endpoint)
   model: "claude-sonnet-4-20250514"
 
-web_search:
-  provider: "duckduckgo"                # google | duckduckgo | searxng
-
-  # google: requires GOOGLE_API_KEY in .env (Gemini API)
-  # google_api_key: "${GOOGLE_API_KEY}"
-
-  # searxng: requires self-hosted instance URL
-  # searxng_url: "${SEARXNG_URL}"       # e.g. http://localhost:8888
-
-  # duckduckgo: no config needed
-
 discord:
   enabled: false                        # set true to run discord bot
   token: "${DISCORD_TOKEN}"             # bot token from Discord Developer Portal
