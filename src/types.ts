@@ -49,4 +49,5 @@ export interface AgentOptions {
   maxTurns?: number;
   session?: import("./session.js").Session;
   onToolUse?: (tool: string, input: Record<string, unknown>) => void;
+  images?: string[];
 }

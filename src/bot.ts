@@ -1,6 +1,6 @@
 import {
   Client, GatewayIntentBits, Events, REST, Routes,
-  SlashCommandBuilder, MessageFlags,
+  SlashCommandBuilder, MessageFlags, EmbedBuilder,
   type Message, type Interaction,
 } from "discord.js";
 import { ask } from "./agent.js";
@@ -144,16 +144,20 @@ export async function startBot(token: string): Promise<void> {
       const totalTokens = usage.inputTokens + usage.outputTokens;
       const cost = estimateCost(usage, config.llm.model);
 
-      const status = [
-        `**Model:** \`${config.llm.model}\``,
-        `**Session:** ${session.length} messages | ${totalTokens.toLocaleString()} tokens (in: ${usage.inputTokens.toLocaleString()}, out: ${usage.outputTokens.toLocaleString()}) | cost: ${cost}`,
-        `**Active sessions:** ${activeSessions.length}`,
-        `**Crons:** ${crons.filter(c => c.enabled).length} active / ${crons.length} total`,
-        `**Reminders:** ${reminders.length} pending`,
-        `**Skills:** ${skills.length > 0 ? skills.join(", ") : "none"}`,
-      ].join("\n");
+      const embed = new EmbedBuilder()
+        .setTitle("Furet Status")
+        .addFields(
+          { name: "Model", value: `\`${config.llm.model}\``, inline: true },
+          { name: "Cost", value: cost, inline: true },
+          { name: "Tokens", value: `${totalTokens.toLocaleString()} (in: ${usage.inputTokens.toLocaleString()} / out: ${usage.outputTokens.toLocaleString()})`, inline: false },
+          { name: "Active Sessions", value: `${activeSessions.length}`, inline: true },
+          { name: "Crons", value: `${crons.filter(c => c.enabled).length} active / ${crons.length} total`, inline: true },
+          { name: "Reminders", value: `${reminders.length} pending`, inline: true },
+          { name: "Skills", value: skills.length > 0 ? skills.join(", ") : "none", inline: true },
+        )
+        .setTimestamp();
 
-      await interaction.reply({ content: status, flags: MessageFlags.Ephemeral });
+      await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
   });
 
@@ -205,7 +209,7 @@ export async function startBot(token: string): Promise<void> {
     if (!isDM && config.discord.allowed_channels.length > 0
         && !config.discord.allowed_channels.includes(message.channelId)) return;
 
-    await handleTrigger(message, session);
+    await handleTrigger(message, session, fmt.images);
   });
 
   await client.login(token);
@@ -216,6 +220,7 @@ interface FormattedMessage {
   time: string;
   msgId: string;
   replyTo?: string;
+  images?: string[];
 }
 
 async function formatIncomingMessage(message: Message): Promise<FormattedMessage> {
@@ -251,15 +256,31 @@ async function formatIncomingMessage(message: Message): Promise<FormattedMessage
     ? ` [附件: ${[...message.attachments.values()].map(a => a.url).join(", ")}]`
     : "";
 
+  const imageExts = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
+  const isImage = (a: { contentType?: string | null; name?: string | null }) =>
+    a.contentType?.startsWith("image/") || imageExts.some(e => a.name?.toLowerCase().endsWith(e));
+
+  const images = [...message.attachments.values()].filter(isImage).map(a => a.url);
+
+  // reply 的訊息如果有圖片，也加進來
+  if (message.reference?.messageId) {
+    try {
+      const replied = await message.channel.messages.fetch(message.reference.messageId);
+      const replyImages = [...replied.attachments.values()].filter(isImage).map(a => a.url);
+      images.push(...replyImages);
+    } catch { /* replied message not available */ }
+  }
+
   return {
     content: `<@${authorId}>(${authorName}): ${content}${attach}`,
     time: ts,
     msgId: message.id,
     ...(message.reference?.messageId ? { replyTo: message.reference.messageId } : {}),
+    ...(images.length > 0 ? { images } : {}),
   };
 }
 
-async function handleTrigger(message: Message, session: Session): Promise<void> {
+async function handleTrigger(message: Message, session: Session, images?: string[]): Promise<void> {
   logger.info({
     sessionId: session.id,
     author: message.author.tag,
@@ -278,7 +299,7 @@ async function handleTrigger(message: Message, session: Session): Promise<void> 
     const parentInfo = ch.isThread() && ch.parentId ? `, parent channel: ${ch.parentId}` : "";
     const threadName = ch.isThread() ? `, name: "${ch.name}"` : "";
     const channelContext = `Current Discord context: ${channelType} (ID: ${message.channelId}${parentInfo}${threadName})`;
-    const response = await ask(null, { session, systemPrompt: channelContext });
+    const response = await ask(null, { session, systemPrompt: channelContext, images });
     logger.info({
       sessionId: session.id,
       textLength: response.text?.length ?? 0,

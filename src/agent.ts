@@ -20,6 +20,15 @@ function extractText(blocks: ContentBlock[]): string {
   return blocks.filter((b): b is ContentBlock & { type: "text" } => b.type === "text").map(b => b.text).join("");
 }
 
+/** 組裝 user message content：純文字 or 文字+圖片 */
+function buildUserContent(text: string, images?: string[]): string | ContentBlock[] {
+  if (!images || images.length === 0) return text;
+  return [
+    ...images.map(url => ({ type: "image" as const, source: { type: "url" as const, url } })),
+    { type: "text" as const, text },
+  ] as unknown as ContentBlock[];
+}
+
 function nowTimestamp(): string {
   return new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
 }
@@ -81,12 +90,13 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
     messages.push({ role: "assistant", content: `對話紀錄：\n${JSON.stringify(sessionMessages, null, 2)}` });
   }
   // 當前 prompt（已在 session 裡的不重複加）
+  const images = options.images;
   if (prompt !== null && !session) {
-    messages.push({ role: "user", content: prompt + MEMORY_HOOK });
+    messages.push({ role: "user", content: buildUserContent(prompt + MEMORY_HOOK, images) });
   } else if (session && sessionMessages.length > 0) {
     const last = sessionMessages[sessionMessages.length - 1];
     if (last.role === "user" && typeof last.content === "string") {
-      messages.push({ role: "user", content: last.content + MEMORY_HOOK });
+      messages.push({ role: "user", content: buildUserContent(last.content + MEMORY_HOOK, images) });
     }
   }
 
@@ -128,7 +138,14 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
 
     // 沒有 tool call → 最後一輪
     if (toolUseBlocks.length === 0) {
-      const finalText = extractText(cleanContent);
+      let finalText = extractText(cleanContent);
+
+      // 如果沒有文字回覆（agent 只做了 tool call），強制再跑一輪要求回話
+      if (!finalText && turn < maxTurns - 1) {
+        messages.push({ role: "user", content: "Please reply to the user with a text response." });
+        continue;
+      }
+
       if (finalText) {
         session?.append({ role: "assistant", content: finalText, time: nowTimestamp() });
       }
