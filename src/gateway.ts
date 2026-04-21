@@ -10,31 +10,69 @@ import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt } from "./prompt.js";
 import { loadConfig } from "./config.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 
-async function sendToChannel(channelId: string, text: string): Promise<void> {
+async function sendToChannel(channelId: string, text: string): Promise<string[]> {
   const client = getDiscordClient();
-  if (!client) return;
+  if (!client) return [];
   try {
     const channel = await client.channels.fetch(channelId);
     if (!channel || !channel.isTextBased() || !("send" in channel)) {
       logger.warn({ channelId }, "channel not found or not text-based");
-      return;
+      return [];
     }
     const formatted = fixMarkdownLinks(text);
+    const sentIds: string[] = [];
     // Discord 2000 字元限制
     if (formatted.length <= 2000) {
-      await channel.send(formatted);
+      const sent = await channel.send(formatted);
+      sentIds.push(sent.id);
     } else {
       let remaining = formatted;
       while (remaining.length > 0) {
         let cutAt = remaining.lastIndexOf("\n", 2000);
         if (cutAt < 1000) cutAt = 2000;
-        await channel.send(remaining.slice(0, cutAt));
+        const sent = await channel.send(remaining.slice(0, cutAt));
+        sentIds.push(sent.id);
         remaining = remaining.slice(cutAt).trimStart();
       }
     }
+    return sentIds;
   } catch (err) {
     logger.error({ err: (err as Error).message, channelId }, "failed to send to channel");
+    return [];
   }
+}
+
+/** 根據 channel_id 解析出對應的 session ID（DM 要用 user id） */
+async function resolveSessionIdForChannel(channelId: string): Promise<string | null> {
+  const client = getDiscordClient();
+  if (!client) return null;
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (!channel) return null;
+    if (channel.isDMBased()) {
+      const recipientId = (channel as { recipient?: { id: string } }).recipient?.id;
+      return recipientId ? `discord-dm-${recipientId}` : null;
+    }
+    return `discord-channel-${channelId}`;
+  } catch {
+    return null;
+  }
+}
+
+/** 發訊息到 channel 並把 assistant 回覆 append 進對應 session（附 msgId） */
+async function sendAndPersist(channelId: string, text: string): Promise<void> {
+  const sentIds = await sendToChannel(channelId, text);
+  if (sentIds.length === 0) return;
+  const sessionId = await resolveSessionIdForChannel(channelId);
+  if (!sessionId) return;
+  const session = new Session(sessionId);
+  const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
+  session.append({
+    role: "assistant",
+    content: text,
+    time: ts,
+    msgId: sentIds.join(","),
+  });
 }
 
 const activeTasks = new Map<string, ScheduledTask>();
@@ -50,7 +88,7 @@ function scheduleCron(job: CronJob): void {
       const response = await ask(job.prompt);
       logger.info({ id: job.id, result: response.text.slice(0, 200) }, "cron result");
       if (job.channel_id && response.text) {
-        await sendToChannel(job.channel_id, response.text);
+        await sendAndPersist(job.channel_id, response.text);
       } else {
         console.log(`[cron:${job.name}] ${response.text}`);
       }
@@ -105,7 +143,7 @@ function scheduleReminder(r: Reminder): void {
       const response = await ask(r.prompt);
       logger.info({ id: r.id, result: response.text.slice(0, 200) }, "reminder result");
       if (r.channel_id && response.text) {
-        await sendToChannel(r.channel_id, response.text);
+        await sendAndPersist(r.channel_id, response.text);
       } else {
         console.log(`[reminder:${r.name}] ${response.text}`);
       }
