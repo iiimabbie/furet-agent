@@ -15,7 +15,7 @@ import { Type, getModels, type Model } from "@mariozechner/pi-ai";
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { ROOT, SESSIONS_DIR } from "./paths.js";
-import { buildMemoryLayersPrompt, buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
+import { buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
 import { executeTool, registeredTools } from "./tools/registry.js";
 import type { AgentOptions, AgentResponse, TokenUsage, ToolActivity, Message } from "./types.js";
 
@@ -166,14 +166,13 @@ function createBuiltinToolsExtension(options: AgentOptions): (pi: ExtensionAPI) 
     }
 
     pi.on("before_agent_start", (event) => {
+      // Prioritize the user's original system prompt and instructions from AGENT.md / SOUL.md.
+      // buildSystemPrompt combines these along with memory and people context.
       const legacySystemPrompt = buildSystemPrompt(options.systemPrompt);
-      const memoryLayers = buildMemoryLayersPrompt();
 
-      // Prioritize the user's original system prompt and instructions.
       // event.systemPrompt (from pi framework) contains specific instructions for the SDK tools.
       const layeredPrompt = [
         legacySystemPrompt,
-        memoryLayers ? `## Memory Context\n${memoryLayers}` : "",
         `--- Framework Instructions ---\n${event.systemPrompt}`,
       ].filter(Boolean).join("\n\n");
 
