@@ -1,6 +1,7 @@
 import type { Client } from "discord.js";
 import { logger } from "../../logger.js";
 import type { Tool } from "../../types.js";
+import { normalizeMentions } from "../../utils/discord-mentions.js";
 
 let discordClient: Client | null = null;
 
@@ -42,12 +43,14 @@ export const discordFetchMessage: Tool = {
       const channel = await getTextChannel(channel_id);
       const msg = await channel.messages.fetch(message_id);
       const authorName = msg.member?.displayName ?? msg.author.username;
+      const content = await normalizeMentions(msg.content, getClient(), msg.guild);
       return JSON.stringify({
         messageId: msg.id,
         channelId: msg.channelId,
-        author: { id: msg.author.id, name: authorName },
-        content: msg.content,
+        author: { id: msg.author.id, name: authorName, isBot: msg.author.bot },
+        content,
         timestamp: new Date(msg.createdTimestamp).toISOString(),
+        editedTimestamp: msg.editedTimestamp ? new Date(msg.editedTimestamp).toISOString() : null,
         attachments: msg.attachments.map(a => a.url),
         replyToMessageId: msg.reference?.messageId,
       }, null, 2);
@@ -288,6 +291,58 @@ export const discordDeleteMessage: Tool = {
       if (msg.author.id !== getClient().user?.id) return "Error: can only delete own messages";
       await msg.delete();
       return `Message deleted`;
+    } catch (err) {
+      return `Error: ${(err as Error).message}`;
+    }
+  },
+};
+
+export const discordFetchChannelMessages: Tool = {
+  name: "discord_fetch_channel_messages",
+  description: "Fetch recent messages from a Discord channel. Returns up to `limit` messages (default 20, max 100), always ordered newest-first regardless of before/after mode. Optionally fetch messages before or after a given message ID for pagination.",
+  parameters: {
+    type: "object",
+    properties: {
+      channel_id: { type: "string", description: "The Discord channel ID" },
+      limit: { type: "number", description: "Number of messages to fetch (default 20, max 100)" },
+      before: { type: "string", description: "Fetch messages before this message ID (for pagination)" },
+      after: { type: "string", description: "Fetch messages after this message ID" },
+    },
+    required: ["channel_id"],
+  },
+  execute: async (args) => {
+    const { channel_id, limit = 20, before, after } = args as {
+      channel_id: string;
+      limit?: number;
+      before?: string;
+      after?: string;
+    };
+    logger.info({ channel_id, limit, before, after }, "discord_fetch_channel_messages");
+    try {
+      const channel = await getTextChannel(channel_id);
+      const fetchOptions: { limit: number; before?: string; after?: string } = {
+        limit: Math.min(Math.max(1, limit), 100),
+      };
+      if (before) fetchOptions.before = before;
+      if (after) fetchOptions.after = after;
+      const messages = await channel.messages.fetch(fetchOptions);
+      const client = getClient();
+      // 統一 newest-first：after 模式 Discord API 回傳是舊到新，在這裡強制排序
+      const sorted = Array.from(messages.values()).sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+      const result = await Promise.all(sorted.map(async msg => {
+        const authorName = msg.member?.displayName ?? msg.author.username;
+        const content = await normalizeMentions(msg.content, client, msg.guild);
+        return {
+          messageId: msg.id,
+          author: { id: msg.author.id, name: authorName, isBot: msg.author.bot },
+          content,
+          timestamp: new Date(msg.createdTimestamp).toISOString(),
+          editedTimestamp: msg.editedTimestamp ? new Date(msg.editedTimestamp).toISOString() : null,
+          replyToMessageId: msg.reference?.messageId ?? null,
+          attachments: msg.attachments.map(a => a.url),
+        };
+      }));
+      return JSON.stringify(result, null, 2);
     } catch (err) {
       return `Error: ${(err as Error).message}`;
     }

@@ -11,6 +11,7 @@ import { logger } from "./logger.js";
 import { loadConfig, setCurrentModel } from "./config.js";
 import { setDiscordClient } from "./tools/builtin/discord.js";
 import { fixMarkdownLinks } from "./utils/format.js";
+import { normalizeMentions } from "./utils/discord-mentions.js";
 
 import { loadCrons } from "./tools/builtin/cron.js";
 import { getAuthClient, getAuthUrl, exchangeCode } from "./google/auth.js";
@@ -347,32 +348,9 @@ interface FormattedMessage {
 async function formatIncomingMessage(message: Message): Promise<FormattedMessage> {
   const authorName = message.member?.displayName ?? message.author.username;
   const authorId = message.author.id;
-  const botId = message.client.user?.id ?? "";
-  const botName = message.guild?.members.me?.displayName ?? message.client.user?.username ?? "bot";
-
-  const normalizeMentions = async (text: string): Promise<string> => {
-    const matches = [...text.matchAll(/<@!?(\d+)>/g)];
-    if (matches.length === 0) return text;
-    const nameMap = new Map<string, string>();
-    for (const m of matches) {
-      const id = m[1];
-      if (nameMap.has(id)) continue;
-      if (id === botId) { nameMap.set(id, botName); continue; }
-      try {
-        if (message.guild) {
-          const member = await message.guild.members.fetch(id);
-          nameMap.set(id, member.displayName);
-        } else {
-          const user = await message.client.users.fetch(id);
-          nameMap.set(id, user.username);
-        }
-      } catch { nameMap.set(id, "unknown"); }
-    }
-    return text.replace(/<@!?(\d+)>/g, (orig, id) => `${orig}(${nameMap.get(id) ?? "unknown"})`);
-  };
 
   const ts = new Date(message.createdTimestamp).toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
-  const content = await normalizeMentions(message.content);
+  const content = await normalizeMentions(message.content, message.client, message.guild);
   const attach = message.attachments.size > 0
     ? ` [附件: ${[...message.attachments.values()].map(a => a.url).join(", ")}]`
     : "";

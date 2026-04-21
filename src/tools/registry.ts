@@ -8,7 +8,7 @@ import { memorySave, memorySearch, memoryList, memoryUpdateIndex } from "./built
 import { cronCreate, cronList, cronDelete, cronToggle, cronUpdate } from "./builtin/cron.js";
 import { reminderCreate, reminderList, reminderDelete } from "./builtin/reminder.js";
 import {
-  discordFetchMessage, discordSendMessage, discordReact,
+  discordFetchMessage, discordSendMessage, discordReact, discordFetchChannelMessages,
   discordPin, discordUnpin,
   discordCreateThread, discordCreateForumPost, discordDeleteThread,
   discordEditMessage, discordDeleteMessage,
@@ -23,7 +23,7 @@ export const registeredTools: Tool[] = [
   memorySave, memorySearch, memoryList, memoryUpdateIndex,
   cronCreate, cronList, cronDelete, cronToggle, cronUpdate,
   reminderCreate, reminderList, reminderDelete,
-  discordFetchMessage, discordSendMessage, discordReact,
+  discordFetchMessage, discordSendMessage, discordReact, discordFetchChannelMessages,
   discordPin, discordUnpin,
   discordCreateThread, discordCreateForumPost, discordDeleteThread,
   discordEditMessage, discordDeleteMessage,
