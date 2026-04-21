@@ -8,7 +8,7 @@ import { ask } from "./agent.js";
 import { Session } from "./session.js";
 import { SESSION_SUMMARIZE_PROMPT } from "./prompt.js";
 import { logger } from "./logger.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, setCurrentModel } from "./config.js";
 import { setDiscordClient } from "./tools/builtin/discord.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 
@@ -50,6 +50,13 @@ const SLASH_COMMANDS = [
   new SlashCommandBuilder()
     .setName("restart")
     .setDescription("重啟整個 furet gateway（owner only）")
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("model")
+    .setDescription("切換 AI 模型（owner only）")
+    .addStringOption(opt =>
+      opt.setName("name").setDescription("模型名稱").setRequired(true).setAutocomplete(true)
+    )
     .toJSON(),
 ];
 
@@ -115,6 +122,17 @@ export async function startBot(token: string): Promise<void> {
   });
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
+    // autocomplete for /model
+    if (interaction.isAutocomplete() && interaction.commandName === "model") {
+      const focused = interaction.options.getFocused();
+      const { llm } = loadConfig();
+      const filtered = llm.modelList
+        .filter(m => m.includes(focused))
+        .slice(0, 25);
+      await interaction.respond(filtered.map(m => ({ name: m, value: m })));
+      return;
+    }
+
     if (!interaction.isChatInputCommand()) return;
 
     if (interaction.commandName === "new") {
@@ -170,12 +188,12 @@ export async function startBot(token: string): Promise<void> {
       const skills = config.skills;
 
       const totalTokens = usage.inputTokens + usage.outputTokens;
-      const cost = estimateCost(usage, config.llm.model);
+      const cost = estimateCost(usage, config.llm.currentModel);
 
       const embed = new EmbedBuilder()
         .setTitle("Furet Status")
         .addFields(
-          { name: "Model", value: `\`${config.llm.model}\``, inline: true },
+          { name: "Model", value: `\`${config.llm.currentModel}\``, inline: true },
           { name: "Cost", value: cost, inline: true },
           { name: "Tokens", value: `${totalTokens.toLocaleString()} (in: ${usage.inputTokens.toLocaleString()} / out: ${usage.outputTokens.toLocaleString()})`, inline: false },
           { name: "Active Sessions", value: `${activeSessions.length}`, inline: true },
@@ -197,6 +215,23 @@ export async function startBot(token: string): Promise<void> {
       logger.info({ user: interaction.user.id }, "/restart triggered");
       await interaction.reply({ content: "重啟中... 等個幾秒就回來。", flags: MessageFlags.Ephemeral });
       selfRestart();
+    }
+
+    if (interaction.commandName === "model") {
+      const config = loadConfig();
+      if (config.discord.owner_id && interaction.user.id !== config.discord.owner_id) {
+        await interaction.reply({ content: "只有主人能用這個指令！", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const name = interaction.options.getString("name", true);
+      if (config.llm.modelList.length > 0 && !config.llm.modelList.includes(name)) {
+        await interaction.reply({ content: `不在 modelList 裡：\`${name}\``, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const prev = config.llm.currentModel;
+      setCurrentModel(name);
+      logger.info({ prev, next: name, user: interaction.user.id }, "/model switched");
+      await interaction.reply({ content: `模型已切換：\`${prev}\` → \`${name}\``, flags: MessageFlags.Ephemeral });
     }
   });
 

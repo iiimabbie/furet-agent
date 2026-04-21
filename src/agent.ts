@@ -37,7 +37,6 @@ function nowTimestamp(): string {
 const config = loadConfig();
 const API_URL = `${config.llm.base_url || "https://api.anthropic.com/v1"}/messages`;
 const API_KEY = config.llm.api_key;
-const MODEL = config.llm.model;
 
 async function callAnthropic(system: string, messages: Message[]): Promise<{
   content: ContentBlock[];
@@ -52,7 +51,7 @@ async function callAnthropic(system: string, messages: Message[]): Promise<{
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: MODEL,
+      model: loadConfig().llm.currentModel,
       max_tokens: 8192,
       system,
       messages,

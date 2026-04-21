@@ -1,7 +1,11 @@
 llm:
   api_key: "${LLM_API_KEY}"             # required
   base_url: "${LLM_BASE_URL}"           # required (OpenAI-compatible endpoint)
-  model: "claude-sonnet-4-20250514"
+  currentModel: "claude-sonnet-4-20250514"
+  modelList:
+    - claude-opus-4-6
+    - claude-sonnet-4-6
+    - claude-haiku-4-5-20251001
 
 discord:
   enabled: false                        # set true to run discord bot

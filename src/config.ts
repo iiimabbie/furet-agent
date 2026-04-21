@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { parse } from "yaml";
+import { readFileSync, writeFileSync } from "node:fs";
+import { parse, stringify } from "yaml";
 import { CONFIG_PATH } from "./paths.js";
 import "dotenv/config";
 
@@ -7,7 +7,8 @@ export interface FuretConfig {
   llm: {
     api_key: string;
     base_url: string;
-    model: string;
+    currentModel: string;
+    modelList: string[];
   };
   discord: {
     enabled: boolean;
@@ -28,7 +29,8 @@ const DEFAULTS: FuretConfig = {
   llm: {
     api_key: "",
     base_url: "",
-    model: "claude-sonnet-4-20250514",
+    currentModel: "claude-sonnet-4-20250514",
+    modelList: [],
   },
   discord: {
     enabled: false,
@@ -85,4 +87,18 @@ export function loadConfig(): FuretConfig {
   };
 
   return cached!;
+}
+
+export function setCurrentModel(model: string): void {
+  // read raw yaml, update currentModel, write back
+  let raw: Record<string, unknown> = {};
+  try {
+    raw = (parse(readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) ?? {};
+  } catch {}
+  const llm = (raw.llm as Record<string, unknown>) ?? {};
+  llm.currentModel = model;
+  raw.llm = llm;
+  writeFileSync(CONFIG_PATH, stringify(raw, { lineWidth: 0 }));
+  // clear cache so next loadConfig() picks up the change
+  cached = null;
 }
