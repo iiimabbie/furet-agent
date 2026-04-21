@@ -83,7 +83,7 @@ function loadAgentInstructions(): string {
     const raw = readFileSync(resolve(WORKSPACE_DIR, "AGENT.md"), "utf-8");
     return raw.replace(/\{\{ROOT\}\}/g, ROOT);
   } catch {
-    return "You are an autonomous personal assistant agent.";
+    return "";
   }
 }
 

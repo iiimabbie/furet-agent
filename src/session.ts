@@ -4,7 +4,20 @@ import { logger } from "./logger.js";
 import { SESSIONS_DIR, ARCHIVE_DIR } from "./paths.js";
 import type { Message, TokenUsage } from "./types.js";
 
+/*
+ * ⚠️ 注意 ⚠️
+ * 在 Pi SDK 版本中，Session 管理由 src/agent.ts 的 SessionManager 處理。
+ * 此處的 Session 屬性僅用於向後相容及最後一則訊息的暫存。
+ * 實際上寫入磁碟的權威來源已轉移至 workspace/sessions/pi/*.jsonl。
+ */
 export class Session {
+    // ... (rest of class)
+}
+
+/** 
+ * 注意：自 Furet-Pi 版本起，由 Pi SDK (SessionManager) 負責寫入 jsonl。
+ * 此處的存儲僅用於歸檔或舊版相容（如果還需要的話）。
+ */
   readonly id: string;
   private filePath: string;
   private messages: Message[] = [];

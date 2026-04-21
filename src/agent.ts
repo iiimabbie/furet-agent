@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import {
@@ -9,6 +9,7 @@ import {
   getAgentDir,
   ModelRegistry,
   SessionManager,
+  SessionEntry,
 } from "@mariozechner/pi-coding-agent";
 import { Type, getModels, type Model } from "@mariozechner/pi-ai";
 import { loadConfig } from "./config.js";
@@ -16,7 +17,7 @@ import { logger } from "./logger.js";
 import { ROOT, SESSIONS_DIR } from "./paths.js";
 import { buildMemoryLayersPrompt, buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
 import { executeTool, registeredTools } from "./tools/registry.js";
-import type { AgentOptions, AgentResponse, TokenUsage, ToolActivity } from "./types.js";
+import type { AgentOptions, AgentResponse, TokenUsage, ToolActivity, Message } from "./types.js";
 
 const PI_SESSIONS_DIR = resolve(SESSIONS_DIR, "pi");
 
@@ -53,9 +54,44 @@ function sanitizeSessionId(input: string): string {
   return encodeURIComponent(input);
 }
 
+/** 搬家腳本：從舊版 json 遷移至 pi SDK jsonl */
+function migrateLegacySession(sessionId: string, jsonlPath: string): void {
+  const legacyPath = resolve(SESSIONS_DIR, `${sessionId}.json`);
+  if (!existsSync(legacyPath)) return;
+
+  try {
+    const data = JSON.parse(readFileSync(legacyPath, "utf-8"));
+    const legacyMsgs: Message[] = data.messages ?? [];
+    if (legacyMsgs.length === 0) return;
+
+    logger.info({ sessionId, count: legacyMsgs.length }, "migrating legacy session to pi jsonl");
+
+    const manager = SessionManager.create(ROOT, PI_SESSIONS_DIR);
+    manager.setSessionFile(jsonlPath);
+
+    for (const msg of legacyMsgs) {
+      if (typeof msg.content !== "string") continue;
+      const entry: SessionEntry = {
+        role: msg.role === "assistant" ? "assistant" : "user",
+        content: [{ type: "text", text: msg.content }],
+        // SDK 會自動產生 entry id, timestamp 等
+      };
+      manager.append(entry);
+    }
+    logger.info({ sessionId }, "migration completed");
+  } catch (err) {
+    logger.warn({ sessionId, err: (err as Error).message }, "failed to migrate legacy session");
+  }
+}
+
 function sessionManagerFor(sessionId: string): SessionManager {
   mkdirSync(PI_SESSIONS_DIR, { recursive: true });
-  const sessionFile = resolve(PI_SESSIONS_DIR, `${sanitizeSessionId(sessionId)}.jsonl`);
+  const filename = `${sanitizeSessionId(sessionId)}.jsonl`;
+  const sessionFile = resolve(PI_SESSIONS_DIR, filename);
+
+  if (!existsSync(sessionFile)) {
+    migrateLegacySession(sessionId, sessionFile);
+  }
 
   if (existsSync(sessionFile)) {
     return SessionManager.open(sessionFile, PI_SESSIONS_DIR, ROOT);
