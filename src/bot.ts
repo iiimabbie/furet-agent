@@ -13,6 +13,7 @@ import { setDiscordClient } from "./tools/builtin/discord.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 
 import { loadCrons } from "./tools/builtin/cron.js";
+import { getAuthClient, getAuthUrl, exchangeCode } from "./google/auth.js";
 import { loadReminders } from "./tools/builtin/reminder.js";
 import type { TokenUsage } from "./types.js";
 
@@ -56,6 +57,13 @@ const SLASH_COMMANDS = [
     .setDescription("切換 AI 模型（owner only）")
     .addStringOption(opt =>
       opt.setName("name").setDescription("模型名稱").setRequired(true).setAutocomplete(true)
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("google-auth")
+    .setDescription("Google OAuth 授權（owner only）")
+    .addStringOption(opt =>
+      opt.setName("callback").setDescription("授權後的 redirect 網址").setRequired(false)
     )
     .toJSON(),
 ];
@@ -232,6 +240,39 @@ export async function startBot(token: string): Promise<void> {
       setCurrentModel(name);
       logger.info({ prev, next: name, user: interaction.user.id }, "/model switched");
       await interaction.reply({ content: `模型已切換：\`${prev}\` → \`${name}\``, flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.commandName === "google-auth") {
+      const config = loadConfig();
+      if (config.discord.owner_id && interaction.user.id !== config.discord.owner_id) {
+        await interaction.reply({ content: "只有主人能用這個指令！", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const callback = interaction.options.getString("callback");
+      if (!callback) {
+        const authed = getAuthClient();
+        if (authed) {
+          await interaction.reply({ content: "Google API 已經授權過了。", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const url = getAuthUrl();
+        if (!url) {
+          await interaction.reply({ content: "請先在 .env 設定 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET 後重啟。", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await interaction.reply({
+          content: `點這個連結授權：\n${url}\n\n授權後瀏覽器會跳到 \`http://localhost?code=xxx\`，把整個網址貼回來：\n\`/google-auth callback:<貼上整個網址>\``,
+          flags: MessageFlags.Ephemeral,
+        });
+      } else {
+        try {
+          await exchangeCode(callback);
+          await interaction.reply({ content: "Google API 授權成功！", flags: MessageFlags.Ephemeral });
+          logger.info({ user: interaction.user.id }, "google oauth completed via /google-auth");
+        } catch (err) {
+          await interaction.reply({ content: `授權失敗：${(err as Error).message}`, flags: MessageFlags.Ephemeral });
+        }
+      }
     }
   });
 

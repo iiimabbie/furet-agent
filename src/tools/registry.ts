@@ -13,6 +13,10 @@ import {
   discordCreateThread, discordCreateForumPost, discordDeleteThread,
   discordEditMessage, discordDeleteMessage,
 } from "./builtin/discord.js";
+import { calendarListEvents, calendarCreateEvent, calendarUpdateEvent, calendarDeleteEvent } from "./builtin/google-calendar.js";
+import { gmailSearch, gmailRead, gmailSend, gmailCreateDraft } from "./builtin/google-gmail.js";
+import { driveSearch, driveRead, driveUpload } from "./builtin/google-drive.js";
+import { tasksList, tasksCreate, tasksComplete, tasksDelete } from "./builtin/google-tasks.js";
 
 const tools: Tool[] = [
   bash, readFileTool, writeFileTool, weather,
@@ -23,6 +27,10 @@ const tools: Tool[] = [
   discordPin, discordUnpin,
   discordCreateThread, discordCreateForumPost, discordDeleteThread,
   discordEditMessage, discordDeleteMessage,
+  calendarListEvents, calendarCreateEvent, calendarUpdateEvent, calendarDeleteEvent,
+  gmailSearch, gmailRead, gmailSend, gmailCreateDraft,
+  driveSearch, driveRead, driveUpload,
+  tasksList, tasksCreate, tasksComplete, tasksDelete,
 ];
 
 const executorMap = new Map(tools.map(t => [t.name, t.execute]));

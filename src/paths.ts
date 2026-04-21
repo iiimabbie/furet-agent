@@ -12,3 +12,4 @@ export const MEMORY_INDEX = resolve(WORKSPACE_DIR, "MEMORY.md");
 export const CRONS_FILE = resolve(WORKSPACE_DIR, "crons.json");
 export const REMINDERS_FILE = resolve(WORKSPACE_DIR, "reminders.json");
 export const SKILLS_DIR = resolve(WORKSPACE_DIR, "skills");
+export const GOOGLE_TOKEN_PATH = resolve(WORKSPACE_DIR, "google-token.json");
