@@ -229,7 +229,7 @@ function scheduleJournal(): void {
 }
 
 // --- PID file: kill old instance before starting ---
-const PID_FILE = `${ROOT}/furet.pid`;
+const PID_FILE = `${ROOT}/furet-pi.pid`;
 
 if (existsSync(PID_FILE)) {
   const raw = readFileSync(PID_FILE, "utf-8").trim();

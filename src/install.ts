@@ -70,10 +70,10 @@ run("npm link");
 console.log("\n=== Installing systemd service ===");
 
 const nodeBinDir = dirname(process.execPath);
-const furetBin = `${nodeBinDir}/furet`;
+const furetBin = `${nodeBinDir}/furet-pi`;
 
 const unit = `[Unit]
-Description=Furet Discord Bot
+Description=Furet Discord Bot (Pi version)
 After=network-online.target
 Wants=network-online.target
 
@@ -90,13 +90,13 @@ Environment=PATH=${nodeBinDir}:${ROOT}/node_modules/.bin:/usr/bin
 WantedBy=multi-user.target
 `;
 
-const tmp = "/tmp/furet.service";
+const tmp = "/tmp/furet-pi.service";
 writeFileSync(tmp, unit);
-run(`cp ${tmp} /etc/systemd/system/furet.service`, { sudo: true });
+run(`cp ${tmp} /etc/systemd/system/furet-pi.service`, { sudo: true });
 unlinkSync(tmp);
 
 run("systemctl daemon-reload", { sudo: true });
-run("systemctl enable furet", { sudo: true });
+run("systemctl enable furet-pi", { sudo: true });
 
 console.log("\n=== Done ===");
 console.log("Edit .env and config.yaml, then run: furet gateway");
