@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { logger } from "./logger.js";
 import { SESSIONS_DIR, ARCHIVE_DIR } from "./paths.js";
@@ -48,6 +48,7 @@ export class Session {
 
   clear(): void {
     this.messages = [];
+    this.usage = { inputTokens: 0, outputTokens: 0 };
     this.save();
     logger.info({ sessionId: this.id }, "session cleared");
   }
@@ -66,8 +67,9 @@ export class Session {
         sessionId: this.id,
         archivedAt: new Date().toISOString(),
         messages: this.messages,
+        usage: this.usage,
       }, null, 2));
-      logger.info({ sessionId: this.id, archivePath, count: this.messages.length }, "session archived");
+      logger.info({ sessionId: this.id, archivePath, count: this.messages.length, usage: this.usage }, "session archived");
     } catch (err) {
       logger.error({ err, sessionId: this.id }, "session archive failed");
     }
@@ -114,6 +116,11 @@ export class Session {
       logger.info({ sessionId: this.id, before: this.messages.length, after: migrated.length }, "migrated old session format");
       this.save();
     }
+  }
+
+  /** 檢查 session 檔是否已存在（用於區分「從未觸發過」跟「已有對話歷史」） */
+  static exists(id: string): boolean {
+    return existsSync(resolve(SESSIONS_DIR, `${id}.json`));
   }
 
   /** 列出所有 active session ID */
