@@ -173,7 +173,7 @@ function archivePiSession(sessionId: string): void {
   if (!existsSync(source)) return;
 
   mkdirSync(archiveDir, { recursive: true });
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const timestamp = Date.now();
   const destination = `${archiveDir}/${encodeURIComponent(sessionId)}-${timestamp}.jsonl`;
   renameSync(source, destination);
 }

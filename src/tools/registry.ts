@@ -35,18 +35,6 @@ export const registeredTools: Tool[] = [
 
 const executorMap = new Map(registeredTools.map(t => [t.name, t.execute]));
 
-/** Anthropic tool format (custom tools + server-side web_search) */
-export const anthropicTools = [
-  ...registeredTools.map(t => ({
-    name: t.name,
-    description: t.description,
-    input_schema: t.parameters,
-  })),
-  { type: "web_search_20250305", name: "web_search", max_uses: 5 },
-  { type: "web_fetch_20250910", name: "web_fetch", max_uses: 5 },
-  { type: "code_execution_20250825", name: "code_execution" },
-];
-
 export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
   const executor = executorMap.get(name);
   if (!executor) return `Unknown tool: ${name}`;
