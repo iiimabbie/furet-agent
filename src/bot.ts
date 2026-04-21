@@ -3,6 +3,7 @@ import {
   SlashCommandBuilder, MessageFlags, EmbedBuilder,
   type Message, type Interaction,
 } from "discord.js";
+import { spawn } from "node:child_process";
 import { ask } from "./agent.js";
 import { Session } from "./session.js";
 import { SESSION_SUMMARIZE_PROMPT } from "./prompt.js";
@@ -46,7 +47,34 @@ const SLASH_COMMANDS = [
     .setName("status")
     .setDescription("查看 bot 狀態")
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName("restart")
+    .setDescription("重啟整個 furet gateway（owner only）")
+    .toJSON(),
 ];
+
+/** Spawn 一個獨立的子進程跑同樣的 cmdline，自己退出。靠 detached + stdio:ignore 脫離父進程。 */
+function selfRestart(): void {
+  // process.execArgv 帶上原本 node 啟動時的 flags（例如 tsx 的 --require / --import）；
+  // 少了它們，新 node 不認識 .ts 檔就會直接死。
+  const args = [...process.execArgv, ...process.argv.slice(1)];
+  logger.info({ node: process.argv[0], execArgv: process.execArgv, argv: process.argv }, "self-restart spawning detached child");
+  const child = spawn(process.argv[0], args, {
+    detached: true,
+    stdio: "ignore",
+    cwd: process.cwd(),
+    env: process.env,
+  });
+  child.on("error", (err) => {
+    logger.error({ err: err.message }, "self-restart spawn error");
+  });
+  child.unref();
+  // 給子進程一點時間建立起來，再讓父進程退出
+  setTimeout(() => {
+    logger.info("self-restart parent exiting");
+    process.exit(0);
+  }, 500);
+}
 
 async function registerSlashCommands(token: string, clientId: string, guildIds: string[]): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(token);
@@ -159,6 +187,17 @@ export async function startBot(token: string): Promise<void> {
 
       await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
+
+    if (interaction.commandName === "restart") {
+      const config = loadConfig();
+      if (config.discord.owner_id && interaction.user.id !== config.discord.owner_id) {
+        await interaction.reply({ content: "只有主人能用這個指令！", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      logger.info({ user: interaction.user.id }, "/restart triggered");
+      await interaction.reply({ content: "重啟中... 等個幾秒就回來。", flags: MessageFlags.Ephemeral });
+      selfRestart();
+    }
   });
 
   const config = loadConfig();
@@ -166,8 +205,16 @@ export async function startBot(token: string): Promise<void> {
   client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return;
 
-    // 所有訊息都 append 到 session（不論是否觸發 bot）
     const sessionId = sessionIdForMessage(message);
+    const isMentioned = client.user ? message.mentions.has(client.user) : false;
+    const isDM = !message.guild;
+    const isTrigger = isMentioned || isDM;
+
+    // Session 隔離：未被觸發且尚未有 session → 不偷看、不記錄
+    // （只有 bot 被 @mention / reply / DM 後才會開啟這個 channel 的 session；
+    //   之後該 channel 的所有訊息才會納入記錄，作為 reply chain 的上下文）
+    if (!isTrigger && !Session.exists(sessionId)) return;
+
     const session = new Session(sessionId);
 
     // Thread/論壇貼文的第一次進入：抓初始訊息作為 context
@@ -193,9 +240,7 @@ export async function startBot(token: string): Promise<void> {
     const fmt = await formatIncomingMessage(message);
     session.append({ role: "user", content: fmt.content, time: fmt.time, msgId: fmt.msgId, ...(fmt.replyTo ? { replyTo: fmt.replyTo } : {}) });
 
-    const isMentioned = client.user ? message.mentions.has(client.user) : false;
-    const isDM = !message.guild;
-    if (!isMentioned && !isDM) return;
+    if (!isTrigger) return;
 
     // DM 只回主人
     if (isDM && config.discord.owner_id && message.author.id !== config.discord.owner_id) {
