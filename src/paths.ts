@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 
-const ROOT = resolve(import.meta.dirname ?? process.cwd(), "..");
+export const ROOT = resolve(import.meta.dirname ?? process.cwd(), "..");
 
 export const WORKSPACE_DIR = resolve(ROOT, "workspace");
 export const LOGS_DIR = resolve(ROOT, "logs");
