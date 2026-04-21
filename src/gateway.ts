@@ -1,12 +1,11 @@
 import { schedule, type ScheduledTask } from "node-cron";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, renameSync } from "node:fs";
 import { logger } from "./logger.js";
-import { ask } from "./agent.js";
+import { ask, getPiSessionDirectory } from "./agent.js";
 import { loadCrons, type CronJob } from "./tools/builtin/cron.js";
 import { loadReminders, saveReminders, type Reminder } from "./tools/builtin/reminder.js";
 import { getDiscordClient } from "./tools/builtin/discord.js";
 import { startBot } from "./bot.js";
-import { Session } from "./session.js";
 import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt } from "./prompt.js";
 import { loadConfig } from "./config.js";
 import { fixMarkdownLinks } from "./utils/format.js";
@@ -44,37 +43,9 @@ async function sendToChannel(channelId: string, text: string): Promise<string[]>
   }
 }
 
-/** 根據 channel_id 解析出對應的 session ID（DM 要用 user id） */
-async function resolveSessionIdForChannel(channelId: string): Promise<string | null> {
-  const client = getDiscordClient();
-  if (!client) return null;
-  try {
-    const channel = await client.channels.fetch(channelId);
-    if (!channel) return null;
-    if (channel.isDMBased()) {
-      const recipientId = (channel as { recipient?: { id: string } }).recipient?.id;
-      return recipientId ? `discord-dm-${recipientId}` : null;
-    }
-    return `discord-channel-${channelId}`;
-  } catch {
-    return null;
-  }
-}
-
-/** 發訊息到 channel 並把 assistant 回覆 append 進對應 session（附 msgId） */
+/** 發訊息到 channel（gateway 端不再寫舊 Session 檔） */
 async function sendAndPersist(channelId: string, text: string): Promise<void> {
-  const sentIds = await sendToChannel(channelId, text);
-  if (sentIds.length === 0) return;
-  const sessionId = await resolveSessionIdForChannel(channelId);
-  if (!sessionId) return;
-  const session = new Session(sessionId);
-  const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
-  session.append({
-    role: "assistant",
-    content: text,
-    time: ts,
-    msgId: sentIds.join(","),
-  });
+  await sendToChannel(channelId, text);
 }
 
 const activeTasks = new Map<string, ScheduledTask>();
@@ -87,7 +58,7 @@ function scheduleCron(job: CronJob): void {
   const task = schedule(job.schedule, async () => {
     logger.info({ id: job.id, name: job.name, prompt: job.prompt.slice(0, 100) }, "cron triggered");
     try {
-      const response = await ask(job.prompt);
+      const response = await ask(job.prompt, { sessionId: `cron-${job.id}` });
       logger.info({ id: job.id, result: response.text.slice(0, 200) }, "cron result");
       if (job.channel_id && response.text) {
         await sendAndPersist(job.channel_id, response.text);
@@ -142,7 +113,7 @@ function scheduleReminder(r: Reminder): void {
   const timeout = setTimeout(async () => {
     logger.info({ id: r.id, name: r.name, prompt: r.prompt.slice(0, 100) }, "reminder triggered");
     try {
-      const response = await ask(r.prompt);
+      const response = await ask(r.prompt, { sessionId: `reminder-${r.id}` });
       logger.info({ id: r.id, result: response.text.slice(0, 200) }, "reminder result");
       if (r.channel_id && response.text) {
         await sendAndPersist(r.channel_id, response.text);
@@ -183,25 +154,45 @@ function loadAndScheduleReminders(): void {
 
 // --- Journal ---
 
-/** 總結並歸檔所有 active session */
+function listPiSessionIds(): string[] {
+  const sessionDir = getPiSessionDirectory();
+  try {
+    return readdirSync(sessionDir)
+      .filter(name => name.endsWith(".jsonl"))
+      .map(name => decodeURIComponent(name.slice(0, -".jsonl".length)));
+  } catch {
+    return [];
+  }
+}
+
+function archivePiSession(sessionId: string): void {
+  const sessionDir = getPiSessionDirectory();
+  const archiveDir = `${sessionDir}/archive`;
+  const fileName = `${encodeURIComponent(sessionId)}.jsonl`;
+  const source = `${sessionDir}/${fileName}`;
+  if (!existsSync(source)) return;
+
+  mkdirSync(archiveDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const destination = `${archiveDir}/${encodeURIComponent(sessionId)}-${timestamp}.jsonl`;
+  renameSync(source, destination);
+}
+
+/** 總結並歸檔所有 active pi sessions */
 async function summarizeAndArchiveAll(): Promise<void> {
-  const ids = Session.listActive();
+  const ids = listPiSessionIds();
   if (ids.length === 0) return;
 
-  const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
   const summarizePrompt = SESSION_SUMMARIZE_PROMPT;
 
   for (const id of ids) {
-    const session = new Session(id);
-    if (session.length === 0) continue;
     try {
-      session.append({ role: "user", content: summarizePrompt, time: ts });
-      await ask(null, { session });
-      session.archive();
-      logger.info({ sessionId: id }, "session summarized and archived (journal)");
+      await ask(summarizePrompt, { sessionId: id });
+      archivePiSession(id);
+      logger.info({ sessionId: id }, "pi session summarized and archived (journal)");
     } catch (err) {
-      logger.error({ err: (err as Error).message, sessionId: id }, "session summarize failed (journal)");
-      session.archive(); // 總結失敗也歸檔，避免 context 無限增長
+      logger.error({ err: (err as Error).message, sessionId: id }, "pi session summarize failed (journal)");
+      archivePiSession(id); // 總結失敗也歸檔，避免 context 無限增長
     }
   }
 }
@@ -220,7 +211,7 @@ function scheduleJournal(): void {
     // 再整理日記 + 更新 MEMORY.md
     const date = new Date().toISOString().split("T")[0];
     const prompt = buildJournalPrompt(date);
-    ask(prompt)
+    ask(prompt, { sessionId: `journal-${date}` })
       .then(response => logger.info({ date, result: response.text.slice(0, 200) }, "journal done"))
       .catch(err => logger.error({ err, date }, "journal failed"));
   });

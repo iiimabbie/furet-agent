@@ -7,11 +7,38 @@ import { loadConfig } from "./config.js";
 
 function loadAgentInstructions(): string {
   try {
-    const raw = readFileSync(resolve(WORKSPACE_DIR, "AGENT.md"), "utf-8");
+    const path = resolve(WORKSPACE_DIR, "FURET.md");
+    const raw = readFileSync(path, "utf-8");
     return raw.replace(/\{\{ROOT\}\}/g, ROOT);
   } catch {
-    return "You are an autonomous personal assistant agent.";
+    try {
+      const raw = readFileSync(resolve(WORKSPACE_DIR, "AGENT.md"), "utf-8");
+      return raw.replace(/\{\{ROOT\}\}/g, ROOT);
+    } catch {
+      return "You are an autonomous personal assistant agent.";
+    }
   }
+}
+
+function loadWorkspaceFile(name: string): string {
+  try {
+    return readFileSync(resolve(WORKSPACE_DIR, name), "utf-8");
+  } catch {
+    return "";
+  }
+}
+
+export function buildMemoryLayersPrompt(): string {
+  const furet = loadWorkspaceFile("FURET.md") || loadWorkspaceFile("AGENT.md");
+  const memory = loadWorkspaceFile("MEMORY.md");
+  const people = loadWorkspaceFile("PEOPLE.md");
+
+  const sections: string[] = [];
+  if (furet) sections.push(`## FURET.md\n${furet}`);
+  if (memory) sections.push(`## MEMORY.md\n${memory}`);
+  if (people) sections.push(`## PEOPLE.md\n${people}`);
+
+  return sections.join("\n\n");
 }
 
 /** Parse JOURNAL.md sections by ## heading name */
@@ -83,25 +110,19 @@ function loadSkills(): SkillSummary[] {
 
 // --- System prompt builder ---
 
-function loadWorkspaceFile(name: string): string {
-  try {
-    return readFileSync(resolve(WORKSPACE_DIR, name), "utf-8");
-  } catch {
-    return "";
-  }
-}
-
 export function buildSystemPrompt(extra?: string): string {
   const now = new Date();
   const date = `Current datetime: ${now.toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).replace("T", " ")} (Asia/Taipei)`;
   const persona = loadWorkspaceFile("SOUL.md");
   const memory = loadWorkspaceFile("MEMORY.md");
+  const people = loadWorkspaceFile("PEOPLE.md");
   const memorySection = memory ? `\n## Long-term Memory\n${memory}` : "";
+  const peopleSection = people ? `\n## People Memory\n${people}` : "";
 
   const skills = loadSkills();
   const skillsSection = skills.length > 0
     ? `\n## Active Skills\n${skills.map(s => `- **${s.name}**: ${s.description} → \`${s.path}\``).join("\n")}`
     : "";
 
-  return [loadAgentInstructions(), date, persona, memorySection, skillsSection, extra].filter(Boolean).join("\n");
+  return [loadAgentInstructions(), date, persona, memorySection, peopleSection, skillsSection, extra].filter(Boolean).join("\n");
 }

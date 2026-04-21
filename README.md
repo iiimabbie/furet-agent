@@ -1,6 +1,6 @@
 # Furet
 
-Personal assistant Discord bot powered by Claude.
+Personal assistant Discord bot powered by `@mariozechner/pi-coding-agent`.
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ npx tsx bin/furet.ts install
 Install will:
 1. `npm install`
 2. Copy `config.example.yaml` → `config.yaml` and `.env.example` → `.env` (if not exist)
-3. Set up `workspace/` with templates (AGENT.md, SOUL.md, MEMORY.md, PEOPLE.md, JOURNAL.md)
+3. Set up `workspace/` with templates (AGENT.md, FURET.md, SOUL.md, MEMORY.md, PEOPLE.md, JOURNAL.md)
 4. `npm link` to register the global `furet` command
 5. Generate and enable a systemd service (`furet.service`)
 
@@ -75,6 +75,7 @@ Furet integrates with Google Calendar, Gmail, Drive, and Tasks.
 ```
 workspace/
 ├── AGENT.md         # System instructions (behavior, tools, boundaries)
+├── FURET.md         # Core long-lived instruction layer (loaded as primary system layer)
 ├── SOUL.md          # Persona (name, personality, tone)
 ├── MEMORY.md        # Long-term memory index
 ├── PEOPLE.md        # People directory
@@ -90,6 +91,18 @@ workspace/
 ```
 
 All `.md` files are customizable — edit them to change the bot's behavior, personality, and prompts.
+
+## AI Engine (pi SDK)
+
+Furet now uses `@mariozechner/pi-coding-agent` SDK as the core runtime:
+
+- Session persistence is handled by `SessionManager` (`workspace/sessions/pi/*.jsonl`)
+- All built-in tools from `src/tools/builtin/` are registered through `pi.registerTool`
+- Gateway tasks (cron/reminder/journal) run with explicit pi session IDs
+- Memory context is injected through pi hooks with a three-layer strategy:
+  - `FURET.md`
+  - `MEMORY.md`
+  - `PEOPLE.md`
 
 ## Service Management
 

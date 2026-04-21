@@ -16,6 +16,7 @@
   "license": "MIT",
   "type": "module",
   "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.68.0",
     "discord.js": "^14.26.3",
     "dotenv": "^17.4.2",
     "googleapis": "^171.4.0",
