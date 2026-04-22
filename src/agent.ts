@@ -162,15 +162,19 @@ function createBuiltinToolsExtension(options: AgentOptions): (pi: ExtensionAPI) 
         label: tool.name,
         description: tool.description,
         parameters: Type.Unsafe(tool.parameters),
-        async execute(_toolCallId, params) {
+        async execute(toolCallId, params) {
           const input = isRecord(params) ? params : {};
           let result: string;
+          let isError = false;
+          options.onProgress?.({ type: "tool_start", toolCallId, toolName: tool.name });
           try {
             result = await executeTool(tool.name, input);
           } catch (err) {
             result = `Error: ${(err as Error).message}`;
+            isError = true;
             logger.warn({ tool: tool.name, err: (err as Error).message }, "tool execution error (recovered)");
           }
+          options.onProgress?.({ type: "tool_end", toolCallId, isError });
           return {
             content: [{ type: "text", text: result }],
             details: {},
@@ -240,7 +244,6 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
       logger.info({ tool: event.toolName, input }, "tool call");
       return;
     }
-
   });
 
   let finalText = "";
