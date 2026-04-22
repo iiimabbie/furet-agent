@@ -423,6 +423,7 @@ async function handleTrigger(message: Message, session: Session, images?: string
   let progressMsg: Message | undefined;
   const progressLines: ProgressLine[] = [];
   let lastEditAt = 0;
+  let flushChain: Promise<void> = Promise.resolve();
 
   const flushProgress = async () => {
     const now = Date.now();
@@ -447,7 +448,7 @@ async function handleTrigger(message: Message, session: Session, images?: string
       const line = progressLines.find(l => l.id === event.toolCallId);
       if (line) line.status = event.isError ? "err" : "ok";
     }
-    void flushProgress();
+    flushChain = flushChain.then(() => flushProgress());
   };
 
   try {
@@ -459,6 +460,7 @@ async function handleTrigger(message: Message, session: Session, images?: string
     const threadName = ch.isThread() ? `, name: "${ch.name}"` : "";
     const channelContext = `Current Discord context: ${channelType} (ID: ${message.channelId}${parentInfo}${threadName})`;
     const response = await ask(null, { session, systemPrompt: channelContext, images, onProgress });
+    await flushChain; // 確保進度訊息已發送完成
     logger.info({
       sessionId: session.id,
       textLength: response.text?.length ?? 0,
