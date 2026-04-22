@@ -2,41 +2,59 @@
 
 Personal assistant Discord bot powered by Claude.
 
-## Prerequisites
+## Installation
+
+### Prerequisites
 
 - Node.js >= 24
 - npm
 
-## Quick Start
+### Steps
 
 ```bash
-git clone <repo-url> && cd furet
+# 1. Clone the project
+git clone <repo-url> ~/.furet && cd ~/.furet
 
-# install dependencies, register CLI, setup systemd service
+# 2. Install (dependencies + global CLI + systemd service + workspace templates)
 npx tsx bin/furet.ts install
+
+# 3. Configure API keys and Discord token
+vim .env
+
+# 4. Configure model, Discord options, schedules, etc.
+vim config.yaml
 ```
 
-Install will:
-1. `npm install`
-2. Copy `config.example.yaml` → `config.yaml` and `.env.example` → `.env` (if not exist)
-3. Set up `workspace/` with templates (AGENT.md, SOUL.md, MEMORY.md, PEOPLE.md, JOURNAL.md)
-4. `npm link` to register the global `furet` command
-5. Generate and enable a systemd service (`furet.service`)
+The install script will automatically:
+- Run `npm install` to install dependencies
+- Copy `config.example.yaml` → `config.yaml` and `.env.example` → `.env` (if not exist)
+- Set up `workspace/` with templates (AGENT.md, SOUL.md, MEMORY.md, PEOPLE.md, JOURNAL.md)
+- Run `npm link` to register the global `furet` command
+- Create and enable a systemd service (`furet.service`)
 
-After install, fill in your settings:
+## Starting & Managing
 
-```bash
-vim .env          # API keys, Discord token, Google OAuth credentials
-vim config.yaml   # model, Discord options, journal, skills
-```
-
-Then start:
+### Manual start
 
 ```bash
 furet gateway
 ```
 
-## Commands
+### Via systemd
+
+The install script automatically creates `furet.service`. You can manage it with systemctl:
+
+```bash
+sudo systemctl start furet     # start
+sudo systemctl stop furet      # stop
+sudo systemctl restart furet   # restart
+sudo systemctl status furet    # check status
+journalctl -u furet -f         # live logs
+```
+
+## Usage
+
+### CLI Commands
 
 | Command | Description |
 |---------|------------|
@@ -44,17 +62,19 @@ furet gateway
 | `furet install` | Install dependencies + register systemd service |
 | `furet` | Interactive CLI mode |
 
-## Discord Slash Commands
+### Discord Slash Commands
 
 | Command | Description |
 |---------|------------|
-| `/new` | Archive session and start fresh |
-| `/status` | Show bot status (model, tokens, cost, sessions) |
+| `/new` | Archive current session and start fresh |
+| `/status` | Show bot status (model, token usage, sessions) |
 | `/restart` | Restart the gateway (owner only) |
-| `/model` | Switch AI model with autocomplete (owner only) |
+| `/model` | Switch AI model (owner only) |
 | `/google-auth` | Google OAuth setup (owner only) |
 
-## Google API Setup
+## Configuration
+
+### Google API
 
 Furet integrates with Google Calendar, Gmail, Drive, and Tasks.
 
@@ -68,7 +88,7 @@ Furet integrates with Google Calendar, Gmail, Drive, and Tasks.
    ```
 5. Restart bot, then use `/google-auth` in Discord to authorize
 
-## Workspace Structure
+### Workspace Structure
 
 `workspace/` is created by `furet install` and contains all runtime data:
 
@@ -91,11 +111,18 @@ workspace/
 
 All `.md` files are customizable — edit them to change the bot's behavior, personality, and prompts.
 
-## Service Management
+## Uninstall
 
 ```bash
-sudo systemctl status furet    # check status
-sudo systemctl restart furet   # restart
-sudo systemctl stop furet      # stop
-journalctl -u furet -f         # view logs
+# Stop and remove systemd service
+sudo systemctl stop furet
+sudo systemctl disable furet
+sudo rm /etc/systemd/system/furet.service
+sudo systemctl daemon-reload
+
+# Remove global CLI command
+npm unlink -g furet
+
+# Delete project folder (includes workspace, sessions, memory, and all data)
+rm -rf ~/.furet
 ```
