@@ -52,6 +52,7 @@ export interface AgentOptions {
   systemPrompt?: string;
   maxTurns?: number;
   session?: import("./session.js").Session;
+  sessionId?: string;
   onToolUse?: (tool: string, input: Record<string, unknown>) => void;
   onProgress?: (event: ProgressEvent) => void;
   images?: string[];

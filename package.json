@@ -1,10 +1,10 @@
 {
-  "name": "furet",
+  "name": "furet-pi",
   "version": "0.1.0",
-  "description": "Personal assistant Discord bot powered by Claude",
+  "description": "Personal assistant Discord bot powered by Claude (Pi SDK version)",
   "main": "dist/index.js",
   "bin": {
-    "furet": "./bin/furet.ts"
+    "furet-pi": "./bin/furet.ts"
   },
   "scripts": {
     "build": "tsc",
@@ -16,6 +16,7 @@
   "license": "MIT",
   "type": "module",
   "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.68.0",
     "discord.js": "^14.26.3",
     "dotenv": "^17.4.2",
     "googleapis": "^171.4.0",

@@ -4,6 +4,12 @@ import { logger } from "./logger.js";
 import { SESSIONS_DIR, ARCHIVE_DIR } from "./paths.js";
 import type { Message, TokenUsage } from "./types.js";
 
+/*
+ * ⚠️ 注意 ⚠️
+ * 在 Pi SDK 版本中，Session 管理由 src/agent.ts 的 SessionManager 處理。
+ * 此處的 Session 屬性僅用於向後相容及最後一則訊息的暫存。
+ * 實際上寫入磁碟的權威來源已轉移至 workspace/sessions/pi/*.jsonl。
+ */
 export class Session {
   readonly id: string;
   private filePath: string;
@@ -118,27 +124,37 @@ export class Session {
     }
   }
 
-  /** 檢查 session 檔是否已存在（用於區分「從未觸發過」跟「已有對話歷史」） */
+  /** 檢查 session 是否已存在（包含 legacy .json 與新版 .jsonl） */
   static exists(id: string): boolean {
-    return existsSync(resolve(SESSIONS_DIR, `${id}.json`));
+    const legacyPath = resolve(SESSIONS_DIR, `${id}.json`);
+    const piPath = resolve(SESSIONS_DIR, "pi", `${encodeURIComponent(id)}.jsonl`);
+    return existsSync(legacyPath) || existsSync(piPath);
   }
 
-  /** 列出所有 active session ID */
+  /** 列出所有 active session ID（合併 legacy 與 pi 目錄） */
   static listActive(): string[] {
+    const ids = new Set<string>();
     try {
-      const files = readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
-      return files.map(f => f.replace(".json", ""));
-    } catch {
-      return [];
+      if (existsSync(SESSIONS_DIR)) {
+        readdirSync(SESSIONS_DIR)
+          .filter(f => f.endsWith(".json"))
+          .forEach(f => ids.add(f.replace(".json", "")));
+      }
+      const piDir = resolve(SESSIONS_DIR, "pi");
+      if (existsSync(piDir)) {
+        readdirSync(piDir)
+          .filter(f => f.endsWith(".jsonl"))
+          .forEach(f => ids.add(decodeURIComponent(f.replace(".jsonl", ""))));
+      }
+    } catch (err) {
+      logger.error({ err: (err as Error).message }, "failed to list active sessions");
     }
+    return Array.from(ids);
   }
 
   private save(): void {
-    try {
-      mkdirSync(SESSIONS_DIR, { recursive: true });
-      writeFileSync(this.filePath, JSON.stringify({ messages: this.messages, usage: this.usage }, null, 2));
-    } catch (err) {
-      logger.error({ err, sessionId: this.id }, "session save failed");
-    }
+    // ⚠️ Pi SDK 版本中，Session 管理由 SessionManager 處理。
+    // 此處不再主動寫入 legacy .json 檔案，以避免磁碟空間浪費與同步衝突。
+    // 如果需要保留 legacy 對話歷史，請確保已執行搬家腳本遷移至 pi/*.jsonl。
   }
 }

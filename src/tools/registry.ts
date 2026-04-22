@@ -18,7 +18,7 @@ import { gmailSearch, gmailRead, gmailSend, gmailCreateDraft } from "./builtin/g
 import { driveSearch, driveRead, driveUpload } from "./builtin/google-drive.js";
 import { tasksList, tasksCreate, tasksComplete, tasksDelete } from "./builtin/google-tasks.js";
 
-const tools: Tool[] = [
+export const registeredTools: Tool[] = [
   bash, readFileTool, writeFileTool, weather,
   memorySave, memorySearch, memoryList, memoryUpdateIndex,
   cronCreate, cronList, cronDelete, cronToggle, cronUpdate,
@@ -33,19 +33,7 @@ const tools: Tool[] = [
   tasksList, tasksCreate, tasksComplete, tasksDelete,
 ];
 
-const executorMap = new Map(tools.map(t => [t.name, t.execute]));
-
-/** Anthropic tool format (custom tools + server-side web_search) */
-export const anthropicTools = [
-  ...tools.map(t => ({
-    name: t.name,
-    description: t.description,
-    input_schema: t.parameters,
-  })),
-  { type: "web_search_20250305", name: "web_search", max_uses: 5 },
-  { type: "web_fetch_20250910", name: "web_fetch", max_uses: 5 },
-  { type: "code_execution_20250825", name: "code_execution" },
-];
+const executorMap = new Map(registeredTools.map(t => [t.name, t.execute]));
 
 export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
   const executor = executorMap.get(name);

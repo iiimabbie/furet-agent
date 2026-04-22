@@ -4,7 +4,7 @@ import {
   type Message, type Interaction,
 } from "discord.js";
 import { spawn } from "node:child_process";
-import { ask } from "./agent.js";
+import { archivePiSession, ask } from "./agent.js";
 import { Session } from "./session.js";
 import { SESSION_SUMMARIZE_PROMPT } from "./prompt.js";
 import { logger } from "./logger.js";
@@ -169,6 +169,7 @@ export async function startBot(token: string): Promise<void> {
       }
 
       session.archive();
+      archivePiSession(sessionId);
       logger.info({ sessionId }, "session archived via /new");
 
       const newSessionContent = `<@${interaction.user.id}>(${interaction.user.username}) 使用 /new 開始了新對話。請根據 system prompt 中的人格設定和長期記憶，以你的身份打招呼。`;

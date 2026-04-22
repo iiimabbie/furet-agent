@@ -1,6 +1,6 @@
 # Furet
 
-Personal assistant Discord bot powered by Claude.
+Personal assistant Discord bot powered by `@mariozechner/pi-coding-agent`.
 
 ## Installation
 
@@ -110,6 +110,18 @@ workspace/
 ```
 
 All `.md` files are customizable — edit them to change the bot's behavior, personality, and prompts.
+
+## AI Engine (pi SDK)
+
+Furet now uses `@mariozechner/pi-coding-agent` SDK as the core runtime:
+
+- Session persistence is handled by `SessionManager` (`workspace/sessions/pi/*.jsonl`)
+- All built-in tools from `src/tools/builtin/` are registered through `pi.registerTool`
+- Gateway tasks (cron/reminder/journal) run with explicit pi session IDs
+- Memory context is injected through pi hooks:
+  - `AGENT.md`
+  - `MEMORY.md`
+  - `PEOPLE.md`
 
 ## Uninstall
 

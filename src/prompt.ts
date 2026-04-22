@@ -5,12 +5,21 @@ import { loadConfig } from "./config.js";
 
 // --- External prompt loading ---
 
+/** Load core agent instructions from AGENT.md */
 function loadAgentInstructions(): string {
   try {
     const raw = readFileSync(resolve(WORKSPACE_DIR, "AGENT.md"), "utf-8");
     return raw.replace(/\{\{ROOT\}\}/g, ROOT);
   } catch {
-    return "You are an autonomous personal assistant agent.";
+    return "";
+  }
+}
+
+function loadWorkspaceFile(name: string): string {
+  try {
+    return readFileSync(resolve(WORKSPACE_DIR, name), "utf-8");
+  } catch {
+    return "";
   }
 }
 
@@ -83,25 +92,32 @@ function loadSkills(): SkillSummary[] {
 
 // --- System prompt builder ---
 
-function loadWorkspaceFile(name: string): string {
-  try {
-    return readFileSync(resolve(WORKSPACE_DIR, name), "utf-8");
-  } catch {
-    return "";
-  }
-}
-
+/** Core system prompt builder - combines identity, memory, and skills */
 export function buildSystemPrompt(extra?: string): string {
   const now = new Date();
-  const date = `Current datetime: ${now.toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).replace("T", " ")} (Asia/Taipei)`;
+  const dateStr = `Current datetime: ${now.toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).replace("T", " ")} (Asia/Taipei)`;
+  
   const persona = loadWorkspaceFile("SOUL.md");
   const memory = loadWorkspaceFile("MEMORY.md");
-  const memorySection = memory ? `\n## Long-term Memory\n${memory}` : "";
+  const people = loadWorkspaceFile("PEOPLE.md");
+  const instructions = loadAgentInstructions();
+
+  const sections: string[] = [
+    instructions,
+    dateStr,
+    persona ? `## Persona\n${persona}` : "",
+    memory ? `## Long-term Memory\n${memory}` : "",
+    people ? `## People Memory\n${people}` : "",
+  ].filter(Boolean);
 
   const skills = loadSkills();
-  const skillsSection = skills.length > 0
-    ? `\n## Active Skills\n${skills.map(s => `- **${s.name}**: ${s.description} → \`${s.path}\``).join("\n")}`
-    : "";
+  if (skills.length > 0) {
+    sections.push(`## Active Skills\n${skills.map(s => `- **${s.name}**: ${s.description} → \`${s.path}\``).join("\n")}`);
+  }
 
-  return [loadAgentInstructions(), date, persona, memorySection, skillsSection, extra].filter(Boolean).join("\n");
+  if (extra) {
+    sections.push(extra);
+  }
+
+  return sections.join("\n\n");
 }
