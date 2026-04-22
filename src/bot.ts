@@ -280,12 +280,13 @@ export async function startBot(token: string): Promise<void> {
   const config = loadConfig();
 
   client.on(Events.MessageCreate, async (message) => {
-    if (message.author.bot) return;
+    // 自己的訊息不處理；其他 bot 的訊息只記錄不觸發
+    if (message.author.id === client.user?.id) return;
 
     const sessionId = sessionIdForMessage(message);
     const isMentioned = client.user ? message.mentions.has(client.user) : false;
     const isDM = !message.guild;
-    const isTrigger = isMentioned || isDM;
+    const isTrigger = !message.author.bot && (isMentioned || isDM);
 
     // Session 隔離：未被觸發且尚未有 session → 不偷看、不記錄
     // （只有 bot 被 @mention / reply / DM 後才會開啟這個 channel 的 session；
