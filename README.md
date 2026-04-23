@@ -106,7 +106,6 @@ workspace/
 ├── memory/          # Daily memory files
 ├── sessions/        # Conversation sessions
 │   └── archive/
-└── skills/          # Installed skills
 ```
 
 All `.md` files are customizable — edit them to change the bot's behavior, personality, and prompts.
@@ -126,3 +125,7 @@ npm unlink -g furet
 # Delete project folder (includes workspace, sessions, memory, and all data)
 rm -rf ~/.furet
 ```
+
+## Acknowledgements
+
+- File integrity guard based on [davida-ps/soul-guardian](https://github.com/openclaw/skills/blob/main/skills/davida-ps/soul-guardian/SKILL.md) (rewritten in TypeScript)

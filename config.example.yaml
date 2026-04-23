@@ -19,4 +19,13 @@ journal:
   hour: 22                              # 0-23
   minute: 0                             # 0-59
 
+soul_guardian:                           # file integrity monitor
+  targets:                              # files to monitor (paths relative to workspace/)
+    - path: SOUL.md
+      mode: alert                       # restore = auto-revert, alert = warn only, ignore = skip
+    - path: MEMORY.md
+      mode: alert
+    - path: AGENT.md
+      mode: alert
+
 skills: []                              # enabled skill names (must exist in workspace/skills/<name>/)

@@ -3,12 +3,12 @@ import type { Tool } from "../../types.js";
 
 export const weather: Tool = {
   name: "get_weather",
-  description: "查詢指定城市的天氣。回傳目前溫度、體感溫度、天氣描述、降雨機率、未來三天預報。",
+  description: "Get weather for a city. Returns current temperature, feels-like, description, rain chance, and 3-day forecast.",
   parameters: {
     type: "object",
     properties: {
-      city: { type: "string", description: "城市名稱，例如 Taipei、Tokyo、London" },
-      lang: { type: "string", description: "語言代碼，預設 zh-tw" },
+      city: { type: "string", description: "City name, e.g. Taipei, Tokyo, London" },
+      lang: { type: "string", description: "Language code (default: zh-tw)" },
     },
     required: ["city"],
   },
@@ -21,7 +21,7 @@ export const weather: Tool = {
 
     try {
       const response = await fetch(`https://wttr.in/${encoded}?format=j1&lang=${lang}`);
-      if (!response.ok) return `查詢失敗：HTTP ${response.status}`;
+      if (!response.ok) return `Query failed: HTTP ${response.status}`;
 
       const data = await response.json() as Record<string, unknown>;
       const current = (data.current_condition as Record<string, unknown>[])?.[0];
@@ -66,7 +66,7 @@ export const weather: Tool = {
       return JSON.stringify(result, null, 2);
     } catch (err) {
       logger.error({ err, city }, "weather query failed");
-      return `查詢失敗：${(err as Error).message}`;
+      return `Query failed: ${(err as Error).message}`;
     }
   },
 };

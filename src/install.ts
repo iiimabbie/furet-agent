@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { execSync } from "node:child_process";
-import { copyFileSync, existsSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
+import { parse } from "yaml";
 
 const ROOT = resolve(import.meta.dirname!, "..");
 const WORKSPACE = resolve(ROOT, "workspace");
@@ -45,6 +47,7 @@ ensureDir(resolve(WORKSPACE, "memory"));
 ensureDir(resolve(WORKSPACE, "sessions"));
 ensureDir(resolve(WORKSPACE, "sessions/archive"));
 ensureDir(resolve(WORKSPACE, "skills"));
+ensureDir(resolve(WORKSPACE, "memory", "soul-guardian"));
 
 // workspace files from templates
 copyIfMissing(resolve(TEMPLATES, "AGENT.md"), resolve(WORKSPACE, "AGENT.md"));
@@ -59,6 +62,39 @@ for (const name of ["crons.json", "reminders.json"]) {
   if (!existsSync(path)) {
     writeFileSync(path, "[]");
     console.log(`created: ${path}`);
+  }
+}
+
+// --- 3b. soul-guardian initial baselines ---
+const sgStateDir = resolve(WORKSPACE, "memory", "soul-guardian");
+const sgBaselinesPath = resolve(sgStateDir, "baselines.json");
+const sgApprovedDir = resolve(sgStateDir, "approved");
+
+if (!existsSync(sgBaselinesPath)) {
+  console.log("\n=== Initializing soul-guardian baselines ===");
+  try {
+    const configRaw = parse(readFileSync(resolve(ROOT, "config.yaml"), "utf-8")) as Record<string, unknown>;
+    const sg = configRaw.soul_guardian as { targets?: { path: string; mode: string }[] } | undefined;
+    const targets = sg?.targets ?? [];
+    const files: Record<string, { sha256: string; approvedAt: string }> = {};
+
+    for (const t of targets) {
+      if (t.mode === "ignore") continue;
+      const abs = resolve(WORKSPACE, t.path);
+      if (!existsSync(abs)) continue;
+      const content = readFileSync(abs);
+      const hash = createHash("sha256").update(content).digest("hex");
+      files[t.path] = { sha256: hash, approvedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "+00:00") };
+      // snapshot
+      const snapDir = dirname(resolve(sgApprovedDir, t.path));
+      ensureDir(snapDir);
+      copyFileSync(abs, resolve(sgApprovedDir, t.path));
+      console.log(`baseline: ${t.path} (${hash.slice(0, 16)}...)`);
+    }
+
+    writeFileSync(sgBaselinesPath, JSON.stringify({ version: 1, files }, null, 2) + "\n");
+  } catch (e) {
+    console.log(`soul-guardian init skipped: ${(e as Error).message}`);
   }
 }
 

@@ -17,6 +17,7 @@ import { calendarListEvents, calendarCreateEvent, calendarUpdateEvent, calendarD
 import { gmailSearch, gmailRead, gmailSend, gmailCreateDraft } from "./builtin/google-gmail.js";
 import { driveSearch, driveRead, driveUpload } from "./builtin/google-drive.js";
 import { tasksList, tasksCreate, tasksComplete, tasksDelete } from "./builtin/google-tasks.js";
+import { soulGuardianStatus, soulGuardianCheck, soulGuardianApprove, soulGuardianRestore } from "./builtin/soul-guardian.js";
 
 const tools: Tool[] = [
   bash, readFileTool, writeFileTool, weather,
@@ -31,6 +32,7 @@ const tools: Tool[] = [
   gmailSearch, gmailRead, gmailSend, gmailCreateDraft,
   driveSearch, driveRead, driveUpload,
   tasksList, tasksCreate, tasksComplete, tasksDelete,
+  soulGuardianStatus, soulGuardianCheck, soulGuardianApprove, soulGuardianRestore,
 ];
 
 const executorMap = new Map(tools.map(t => [t.name, t.execute]));

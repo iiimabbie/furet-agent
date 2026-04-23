@@ -22,6 +22,9 @@ export interface FuretConfig {
     hour: number;
     minute: number;
   };
+  soul_guardian: {
+    targets: { path: string; mode: "restore" | "alert" | "ignore" }[];
+  };
   skills: string[];
 }
 
@@ -43,6 +46,9 @@ const DEFAULTS: FuretConfig = {
     enabled: false,
     hour: 22,
     minute: 0,
+  },
+  soul_guardian: {
+    targets: [],
   },
   skills: [],
 };
@@ -83,6 +89,7 @@ export function loadConfig(): FuretConfig {
     llm: { ...DEFAULTS.llm, ...(resolved.llm as Record<string, unknown>) } as FuretConfig["llm"],
     discord: { ...DEFAULTS.discord, ...(resolved.discord as Record<string, unknown>) } as FuretConfig["discord"],
     journal: { ...DEFAULTS.journal, ...(resolved.journal as Record<string, unknown>) } as FuretConfig["journal"],
+    soul_guardian: { ...DEFAULTS.soul_guardian, ...(resolved.soul_guardian as Record<string, unknown>) } as FuretConfig["soul_guardian"],
     skills: (resolved.skills as string[] | undefined) ?? DEFAULTS.skills,
   };
 
