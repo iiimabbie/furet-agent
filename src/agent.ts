@@ -2,6 +2,7 @@ import { logger } from "./logger.js";
 import { loadConfig } from "./config.js";
 import { buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
 import { anthropicTools, executeTool, setTrigger } from "./tools/registry.js";
+import { searchVectors } from "./embedding.js";
 import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions, ProgressEvent } from "./types.js";
 
 /** 清除 API 回傳 content blocks 中的多餘欄位（如 caller），只保留我們定義的欄位 */
@@ -80,7 +81,22 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
     session?.append({ role: "user", content: prompt, time: nowTimestamp() });
   }
 
-  const systemPrompt = buildSystemPrompt(options.systemPrompt);
+  let systemPrompt = buildSystemPrompt(options.systemPrompt);
+
+  // 自動記憶召回：用使用者訊息搜尋相關記憶，注入 system prompt
+  if (prompt) {
+    try {
+      const recalled = await searchVectors(prompt, 5);
+      if (recalled.length > 0) {
+        const recallBlock = recalled.map(r => `- [${r.file}] ${r.text}`).join("\n");
+        systemPrompt += `\n\n## Recalled Memories\nThe following memories are automatically recalled based on the current message. Use them naturally if relevant — do not mention this mechanism to the user.\n${recallBlock}`;
+        logger.debug({ count: recalled.length, topScore: recalled[0].score.toFixed(2) }, "auto memory recall");
+      }
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, "auto memory recall failed, continuing without");
+    }
+  }
+
   const sessionMessages = session?.getMessages() ?? [];
   type ApiMessage = { role: "user" | "assistant"; content: string | ContentBlock[] };
 

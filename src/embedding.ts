@@ -58,15 +58,33 @@ function saveVectors(entries: VectorEntry[]): void {
   writeFileSync(VECTORS_FILE, JSON.stringify(entries));
 }
 
-/** 新增一筆記憶的向量 */
+const DEDUP_THRESHOLD = 0.92;
+
+/** 新增一筆記憶的向量（自動去重） */
 export async function addVector(text: string, file: string): Promise<void> {
   if (!GEMINI_API_KEY) {
     logger.warn("GOOGLE_API_KEY not set, skipping embedding");
     return;
   }
   try {
-    const vector = await embed(text);
     const entries = loadVectors();
+
+    // 完全相同文字 → 跳過
+    if (entries.some(e => e.text === text)) {
+      logger.debug({ file }, "vector skipped: exact duplicate");
+      return;
+    }
+
+    const vector = await embed(text);
+
+    // 語意高度重複 → 跳過
+    for (const e of entries) {
+      if (cosine(vector, e.vector) >= DEDUP_THRESHOLD) {
+        logger.debug({ file, duplicateOf: e.file }, "vector skipped: semantic duplicate (>= 0.92)");
+        return;
+      }
+    }
+
     entries.push({ text, file, vector });
     saveVectors(entries);
     logger.debug({ file, textLen: text.length }, "vector added");
