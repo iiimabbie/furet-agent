@@ -10,6 +10,7 @@ import { SESSION_SUMMARIZE_PROMPT } from "./prompt.js";
 import { logger } from "./logger.js";
 import { loadConfig, setCurrentModel } from "./config.js";
 import { setDiscordClient } from "./tools/builtin/discord.js";
+import { clearAttachments, drainAttachments } from "./tools/context.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { normalizeMentions } from "./utils/discord-mentions.js";
 
@@ -447,6 +448,7 @@ function renderProgress(lines: ProgressLine[]): string {
 }
 
 async function handleTrigger(message: Message, session: Session, images?: string[]): Promise<void> {
+  clearAttachments();
   logger.info({
     sessionId: session.id,
     author: message.author.tag,
@@ -527,13 +529,17 @@ async function handleTrigger(message: Message, session: Session, images?: string
     const formatted = fixMarkdownLinks(stripped);
     const chunks = chunkMessage(formatted, 2000);
     const sentIds: string[] = [];
+    const attachments = drainAttachments();
 
-    // 第一個 chunk：編輯進度訊息或發新訊息
+    // 第一個 chunk：編輯進度訊息或發新訊息（附件跟第一個 chunk 一起發）
+    const firstPayload: Record<string, unknown> = { content: chunks[0] };
+    if (attachments.length) firstPayload.files = attachments;
+
     if (progressMsg) {
-      await progressMsg.edit(chunks[0]).catch(() => {});
+      await progressMsg.edit(firstPayload).catch(() => {});
       sentIds.push(progressMsg.id);
     } else {
-      const sent = await message.reply(chunks[0]);
+      const sent = await message.reply(firstPayload);
       sentIds.push(sent.id);
     }
 

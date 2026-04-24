@@ -1,7 +1,9 @@
+import { existsSync } from "node:fs";
 import type { Client } from "discord.js";
 import { logger } from "../../logger.js";
 import type { Tool } from "../../types.js";
 import { normalizeMentions } from "../../utils/discord-mentions.js";
+import { queueAttachment } from "../context.js";
 
 let discordClient: Client | null = null;
 
@@ -62,24 +64,33 @@ export const discordFetchMessage: Tool = {
 
 export const discordSendMessage: Tool = {
   name: "discord_send_message",
-  description: "Send a message to a Discord channel. Use this to proactively send messages, not as a reply.",
+  description: "Send a message to a Discord channel. Supports text, file attachments (images, documents), or both.",
   parameters: {
     type: "object",
     properties: {
       channel_id: { type: "string", description: "The Discord channel ID" },
-      content: { type: "string", description: "The message content to send" },
+      content: { type: "string", description: "The message content to send (optional if files provided)" },
       reply_to: { type: "string", description: "Optional message ID to reply to" },
+      files: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional array of local file paths to attach (images, documents, etc.)",
+      },
     },
-    required: ["channel_id", "content"],
+    required: ["channel_id"],
   },
   execute: async (args) => {
-    const { channel_id, content, reply_to } = args as { channel_id: string; content: string; reply_to?: string };
-    logger.info({ channel_id, content: content.slice(0, 100), reply_to }, "discord_send_message");
+    const { channel_id, content, reply_to, files } = args as {
+      channel_id: string; content?: string; reply_to?: string; files?: string[];
+    };
+    if (!content && (!files || files.length === 0)) return "Error: must provide content or files";
+    logger.info({ channel_id, content: content?.slice(0, 100), reply_to, files }, "discord_send_message");
     try {
       const channel = await getTextChannel(channel_id);
-      const options = reply_to
-        ? { content, reply: { messageReference: reply_to } }
-        : { content };
+      const options: Record<string, unknown> = {};
+      if (content) options.content = content;
+      if (files?.length) options.files = files;
+      if (reply_to) options.reply = { messageReference: reply_to };
       const sent = await channel.send(options);
       return `Message sent (msg:${sent.id})`;
     } catch (err) {
@@ -90,24 +101,31 @@ export const discordSendMessage: Tool = {
 
 export const discordReact: Tool = {
   name: "discord_react",
-  description: "Add an emoji reaction to a Discord message.",
+  description: "Add one or more emoji reactions to a Discord message. Supports single emoji or array of emojis.",
   parameters: {
     type: "object",
     properties: {
       channel_id: { type: "string", description: "The Discord channel ID" },
       message_id: { type: "string", description: "The message ID to react to" },
-      emoji: { type: "string", description: "The emoji to react with (e.g. '👍', '❤️', or custom emoji name)" },
+      emoji: {
+        oneOf: [
+          { type: "string", description: "Single emoji" },
+          { type: "array", items: { type: "string" }, description: "Multiple emojis" },
+        ],
+        description: "Emoji(s) to react with (e.g. '👍' or ['👍', '❤️', '🔥'])",
+      },
     },
     required: ["channel_id", "message_id", "emoji"],
   },
   execute: async (args) => {
-    const { channel_id, message_id, emoji } = args as { channel_id: string; message_id: string; emoji: string };
-    logger.info({ channel_id, message_id, emoji }, "discord_react");
+    const { channel_id, message_id, emoji } = args as { channel_id: string; message_id: string; emoji: string | string[] };
+    const emojis = Array.isArray(emoji) ? emoji : [emoji];
+    logger.info({ channel_id, message_id, emojis }, "discord_react");
     try {
       const channel = await getTextChannel(channel_id);
       const msg = await channel.messages.fetch(message_id);
-      await msg.react(emoji);
-      return `Reacted with ${emoji}`;
+      for (const e of emojis) await msg.react(e);
+      return `Reacted with ${emojis.join(" ")}`;
     } catch (err) {
       return `Error: ${(err as Error).message}`;
     }
@@ -246,24 +264,35 @@ export const discordDeleteThread: Tool = {
 
 export const discordEditMessage: Tool = {
   name: "discord_edit_message",
-  description: "Edit one of the bot's own messages.",
+  description: "Edit one of the bot's own messages. Can update text and/or replace attachments.",
   parameters: {
     type: "object",
     properties: {
       channel_id: { type: "string", description: "The Discord channel ID" },
       message_id: { type: "string", description: "The message ID to edit (must be the bot's own message)" },
       content: { type: "string", description: "The new message content" },
+      files: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional array of local file paths to attach (replaces existing attachments)",
+      },
     },
-    required: ["channel_id", "message_id", "content"],
+    required: ["channel_id", "message_id"],
   },
   execute: async (args) => {
-    const { channel_id, message_id, content } = args as { channel_id: string; message_id: string; content: string };
-    logger.info({ channel_id, message_id, content: content.slice(0, 100) }, "discord_edit_message");
+    const { channel_id, message_id, content, files } = args as {
+      channel_id: string; message_id: string; content?: string; files?: string[];
+    };
+    if (!content && (!files || files.length === 0)) return "Error: must provide content or files";
+    logger.info({ channel_id, message_id, content: content?.slice(0, 100), files }, "discord_edit_message");
     try {
       const channel = await getTextChannel(channel_id);
       const msg = await channel.messages.fetch(message_id);
       if (msg.author.id !== getClient().user?.id) return "Error: can only edit own messages";
-      await msg.edit(content);
+      const options: Record<string, unknown> = {};
+      if (content) options.content = content;
+      if (files?.length) options.files = files;
+      await msg.edit(options);
       return `Message edited`;
     } catch (err) {
       return `Error: ${(err as Error).message}`;
@@ -346,5 +375,24 @@ export const discordFetchChannelMessages: Tool = {
     } catch (err) {
       return `Error: ${(err as Error).message}`;
     }
+  },
+};
+
+export const discordAttachToReply: Tool = {
+  name: "discord_attach_to_reply",
+  description: "Queue a local file to be included in your final Discord reply message. The file will be attached to the SAME message as your text response (not a separate message). Always prefer this over discord_send_message with files when you want to combine text + attachment in one reply. Supports any file type (images, documents, etc.).",
+  parameters: {
+    type: "object",
+    properties: {
+      file: { type: "string", description: "Local file path to attach (e.g. /tmp/image.png, /tmp/report.pdf)" },
+    },
+    required: ["file"],
+  },
+  execute: async (args) => {
+    const { file } = args as { file: string };
+    logger.info({ file }, "discord_attach_to_reply");
+    if (!existsSync(file)) return `Error: file not found: ${file}`;
+    queueAttachment(file);
+    return `Queued ${file} for attachment`;
   },
 };

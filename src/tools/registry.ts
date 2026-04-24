@@ -12,7 +12,7 @@ import {
   discordFetchMessage, discordSendMessage, discordReact, discordFetchChannelMessages,
   discordPin, discordUnpin,
   discordCreateThread, discordCreateForumPost, discordDeleteThread,
-  discordEditMessage, discordDeleteMessage,
+  discordEditMessage, discordDeleteMessage, discordAttachToReply,
 } from "./builtin/discord.js";
 import { calendarListEvents, calendarCreateEvent, calendarUpdateEvent, calendarDeleteEvent } from "./builtin/google-calendar.js";
 import { gmailSearch, gmailRead, gmailSend, gmailCreateDraft } from "./builtin/google-gmail.js";
@@ -29,7 +29,7 @@ const tools: Tool[] = [
   discordFetchMessage, discordSendMessage, discordReact, discordFetchChannelMessages,
   discordPin, discordUnpin,
   discordCreateThread, discordCreateForumPost, discordDeleteThread,
-  discordEditMessage, discordDeleteMessage,
+  discordEditMessage, discordDeleteMessage, discordAttachToReply,
   calendarListEvents, calendarCreateEvent, calendarUpdateEvent, calendarDeleteEvent,
   gmailSearch, gmailRead, gmailSend, gmailCreateDraft,
   driveSearch, driveRead, driveUpload,

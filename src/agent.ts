@@ -143,7 +143,10 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
     }
 
     const cleanContent = sanitizeContent(response.content);
-    messages.push({ role: "assistant", content: cleanContent });
+    // Skip empty assistant content — some routers (Gemini) reject empty parts
+    if (cleanContent.length > 0) {
+      messages.push({ role: "assistant", content: cleanContent });
+    }
 
     // 沒有 tool call → 最後一輪
     if (toolUseBlocks.length === 0) {
