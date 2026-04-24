@@ -1,4 +1,5 @@
 import type { Tool } from "../types.js";
+export { setTrigger, getTrigger } from "./context.js";
 
 import { bash } from "./builtin/bash.js";
 import { readFileTool } from "./builtin/read-file.js";

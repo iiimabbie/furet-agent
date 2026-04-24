@@ -163,7 +163,7 @@ export async function startBot(token: string): Promise<void> {
       if (session.length > 0) {
         const summarizePrompt = SESSION_SUMMARIZE_PROMPT;
         session.append({ role: "user", content: summarizePrompt, time: ts });
-        await ask(null, { session, systemPrompt: channelContext }).catch(err =>
+        await ask(null, { session, systemPrompt: channelContext, trigger: "discord-owner" }).catch(err =>
           logger.error({ err: (err as Error).message }, "session summarize before /new failed")
         );
       }
@@ -175,7 +175,7 @@ export async function startBot(token: string): Promise<void> {
       session.append({ role: "user", content: newSessionContent, time: ts });
 
       try {
-        const response = await ask(null, { session, systemPrompt: channelContext });
+        const response = await ask(null, { session, systemPrompt: channelContext, trigger: "discord-owner" });
         const text = response.text || "（新對話開始）";
         const formatted = fixMarkdownLinks(text);
         const chunks = chunkMessage(formatted, 2000);
@@ -498,7 +498,8 @@ async function handleTrigger(message: Message, session: Session, images?: string
     const parentInfo = ch.isThread() && ch.parentId ? `, parent channel: ${ch.parentId}` : "";
     const threadName = ch.isThread() ? `, name: "${ch.name}"` : "";
     const channelContext = `Current Discord context: ${channelType} (ID: ${message.channelId}${parentInfo}${threadName})`;
-    const response = await ask(null, { session, systemPrompt: channelContext, images, onProgress });
+    const isOwner = message.author.id === loadConfig().discord.owner_id;
+    const response = await ask(null, { session, systemPrompt: channelContext, images, onProgress, trigger: isOwner ? "discord-owner" : "discord-other" });
     await flushChain; // 確保進度訊息已發送完成
     logger.info({
       sessionId: session.id,

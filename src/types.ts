@@ -48,6 +48,8 @@ export type ProgressEvent =
   | { type: "tool_start"; toolCallId: string; toolName: string }
   | { type: "tool_end"; toolCallId: string; isError: boolean };
 
+export type TriggerSource = "cli" | "discord-owner" | "discord-other" | "cron" | "reminder" | "journal" | "unknown";
+
 export interface AgentOptions {
   systemPrompt?: string;
   maxTurns?: number;
@@ -55,4 +57,5 @@ export interface AgentOptions {
   onToolUse?: (tool: string, input: Record<string, unknown>) => void;
   onProgress?: (event: ProgressEvent) => void;
   images?: string[];
+  trigger?: TriggerSource;
 }

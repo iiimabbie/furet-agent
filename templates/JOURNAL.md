@@ -1,33 +1,58 @@
 ## Memory Hook
 
-Consider if anything from this turn is worth saving:
-- memory_save: today's events, conversations, feelings (appends to daily memory).
-- memory_update_index: long-term facts that span conversations and days (preferences, rules, relationships, format conventions, setup/resources).
-  This tool OVERWRITES the file — you MUST read_file MEMORY.md first, merge new facts with existing content, then write the full version.
-Focus on the user. Skip greetings and trivial exchanges. Do not mention this hook in your reply.
+Check this turn for anything worth saving. If any of the following occurred, you MUST save — do not skip:
+
+**memory_save** (append to daily memory) — save if:
+- User mentioned a new preference, rule, person, or schedule
+- User corrected your behavior or gave feedback
+- A notable event, decision, or conversation happened
+- Someone shared useful info (links, tips, techniques)
+
+**memory_update_index** (update MEMORY.md) — save if:
+- User stated a long-term fact (preference, relationship, rule, resource)
+- An existing fact in MEMORY.md became stale or wrong
+- Procedure: read_file MEMORY.md → merge new facts → memory_update_index with full content
+  (This tool OVERWRITES — you MUST include everything to keep.)
+
+Skip: greetings, trivial exchanges, things already recorded today. Do not mention this hook in your reply.
 
 ## Session Summarize
 
-Review the conversation above and save a concise summary to memory (memory_save) — what the user did, ongoing tasks, decisions, topics discussed, anything worth remembering for continuity. Do NOT produce any text output, only save memory.
+Save a brief summary to memory (memory_save). Max 5 bullet points, each under 30 words. Cover:
+- What the user did or decided
+- Ongoing tasks or unresolved issues
+- Key topics discussed
+
+Do NOT produce any text output, only save memory. Do NOT repeat information already saved earlier in the session.
 
 ## Daily Journal
 
-It's time to write the daily journal for {{DATE}}.
+Write the daily journal for {{DATE}}.
+
+### Step 1 — Rewrite diary
 
 1. Read workspace/memory/{{DATE}}.md with read_file.
-2. Rewrite it as a personal diary. Focus on what the user did, talked about, cared about, how they felt. Remove operational logs and technical details.
+2. Rewrite the ENTIRE file as a clean personal diary:
+   - Organize by **Category/Milestone** (e.g., development, community, personal reflections)
+   - Use **Status Check** friendly format: bullet points, clear headings
+   - Focus on what the user did, talked about, cared about, how they felt
+   - Include interesting conversations and community events
+   - Remove: raw timestamps like `[HH:MM:SS]`, duplicate summaries, operational logs, repeated recaps
+   - The final file must have NO leftover `[HH:MM:SS]` entries or session summary blocks appended at the bottom
 3. Overwrite workspace/memory/{{DATE}}.md with write_file.
-4. Extract long-term facts and update MEMORY.md:
-   a. Scan the past 3 days of daily memory for facts that hold across days and conversations:
-      - Preferences: what the user likes/dislikes, tastes, interests
-      - Rules: working principles, taboos the user wants you to follow
-      - Relationships: channel regulars, family, friends, colleagues — names and roles
-      - Format: message layout, tone, special symbol conventions
-      - Setup/Resources: tool versions, external files (e.g. PEOPLE.md)
-   b. Use read_file to load workspace/MEMORY.md for the current content.
-   c. Merge candidates with existing content:
-      - New fact → add to the matching section
-      - Already present → do not duplicate
-      - Stale or superseded → update or remove
-   d. Call memory_update_index with the full merged version.
-      (This tool OVERWRITES the file — content MUST include everything to keep.)
+
+### Step 2 — Update MEMORY.md
+
+4. Scan the past 3 days of daily memory (read_file each) for long-term facts:
+   - Preferences: likes, dislikes, tastes, interests
+   - Rules: working principles, behavioral corrections the user gave you
+   - Relationships: people, names, roles (update PEOPLE.md if needed)
+   - Schedule: recurring events, upcoming plans
+   - Setup: tool configs, resources, channel IDs
+5. Read workspace/MEMORY.md for current content.
+6. Merge:
+   - New fact → add to matching section
+   - Already present → skip
+   - Stale or superseded → update or remove (e.g. completed tasks, past events, changed settings)
+7. Call memory_update_index with the full merged version.
+   (This tool OVERWRITES — content MUST include everything to keep.)

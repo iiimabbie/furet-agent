@@ -1,7 +1,7 @@
 import { logger } from "./logger.js";
 import { loadConfig } from "./config.js";
 import { buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
-import { anthropicTools, executeTool } from "./tools/registry.js";
+import { anthropicTools, executeTool, setTrigger } from "./tools/registry.js";
 import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions, ProgressEvent } from "./types.js";
 
 /** 清除 API 回傳 content blocks 中的多餘欄位（如 caller），只保留我們定義的欄位 */
@@ -71,7 +71,8 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
   const toolsUsed: ToolActivity[] = [];
   const totalUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
 
-  logger.info({ prompt: prompt?.slice(0, 200) ?? "(session tail)" }, "query start");
+  setTrigger(options.trigger ?? "unknown");
+  logger.info({ prompt: prompt?.slice(0, 200) ?? "(session tail)", trigger: options.trigger }, "query start");
 
   const session = options.session;
 

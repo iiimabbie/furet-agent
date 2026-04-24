@@ -8,6 +8,7 @@ import { resolve, dirname } from "node:path";
 import { loadConfig } from "../../config.js";
 import { logger } from "../../logger.js";
 import { WORKSPACE_DIR } from "../../paths.js";
+import { getTrigger } from "../context.js";
 import type { Tool } from "../../types.js";
 
 // ── Paths ──
@@ -326,7 +327,7 @@ export const soulGuardianCheck: Tool = {
 
 export const soulGuardianApprove: Tool = {
   name: "soul_guardian_approve",
-  description: "Approve the current version of a file as the new baseline. Must verify file content is correct before approving.",
+  description: "Approve the current version of a file as the new baseline. OWNER-ONLY: NEVER use this tool unless the owner explicitly instructs you to approve. Do not self-approve after your own edits.",
   parameters: {
     type: "object",
     properties: {
@@ -338,6 +339,11 @@ export const soulGuardianApprove: Tool = {
   },
   execute: async (args) => {
     const { file, all, note } = args as { file?: string; all?: boolean; note: string };
+    const trigger = getTrigger();
+    if (trigger !== "cli" && trigger !== "discord-owner") {
+      logger.warn({ trigger, file, all }, "soul_guardian approve blocked: owner-only");
+      return "Error: soul_guardian_approve is owner-only. Only the owner can approve baseline changes.";
+    }
     if (!file && !all) return "Error: must specify file or all";
     if (file && all) return "Error: file and all are mutually exclusive";
     logger.info({ file, all, note }, "soul_guardian approve");
@@ -395,7 +401,7 @@ export const soulGuardianApprove: Tool = {
 
 export const soulGuardianRestore: Tool = {
   name: "soul_guardian_restore",
-  description: "Manually restore a file to the last approved baseline version.",
+  description: "Manually restore a file to the last approved baseline version. OWNER-ONLY: NEVER use this tool unless the owner explicitly instructs you to restore.",
   parameters: {
     type: "object",
     properties: {
@@ -407,6 +413,11 @@ export const soulGuardianRestore: Tool = {
   },
   execute: async (args) => {
     const { file, all, note } = args as { file?: string; all?: boolean; note: string };
+    const trigger = getTrigger();
+    if (trigger !== "cli" && trigger !== "discord-owner") {
+      logger.warn({ trigger, file, all }, "soul_guardian restore blocked: owner-only");
+      return "Error: soul_guardian_restore is owner-only. Only the owner can trigger manual restores.";
+    }
     if (!file && !all) return "Error: must specify file or all";
     if (file && all) return "Error: file and all are mutually exclusive";
     logger.info({ file, all, note }, "soul_guardian restore");

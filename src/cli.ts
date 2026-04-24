@@ -30,6 +30,7 @@ function prompt(): void {
     try {
       const response = await ask(trimmed, {
         session,
+        trigger: "cli",
         onToolUse: (tool, toolInput) => {
           const displayName = prettifyToolName(tool);
           const summary = formatToolSummary(tool, toolInput);

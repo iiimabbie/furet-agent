@@ -87,7 +87,7 @@ function scheduleCron(job: CronJob): void {
   const task = schedule(job.schedule, async () => {
     logger.info({ id: job.id, name: job.name, prompt: job.prompt.slice(0, 100) }, "cron triggered");
     try {
-      const response = await ask(job.prompt);
+      const response = await ask(job.prompt, { trigger: "cron" });
       logger.info({ id: job.id, result: response.text.slice(0, 200) }, "cron result");
       if (job.channel_id && response.text) {
         await sendAndPersist(job.channel_id, response.text);
@@ -142,7 +142,7 @@ function scheduleReminder(r: Reminder): void {
   const timeout = setTimeout(async () => {
     logger.info({ id: r.id, name: r.name, prompt: r.prompt.slice(0, 100) }, "reminder triggered");
     try {
-      const response = await ask(r.prompt);
+      const response = await ask(r.prompt, { trigger: "reminder" });
       logger.info({ id: r.id, result: response.text.slice(0, 200) }, "reminder result");
       if (r.channel_id && response.text) {
         await sendAndPersist(r.channel_id, response.text);
@@ -196,7 +196,7 @@ async function summarizeAndArchiveAll(): Promise<void> {
     if (session.length === 0) continue;
     try {
       session.append({ role: "user", content: summarizePrompt, time: ts });
-      await ask(null, { session });
+      await ask(null, { session, trigger: "journal" });
       session.archive();
       logger.info({ sessionId: id }, "session summarized and archived (journal)");
     } catch (err) {
@@ -220,7 +220,7 @@ function scheduleJournal(): void {
     // 再整理日記 + 更新 MEMORY.md
     const date = new Date().toISOString().split("T")[0];
     const prompt = buildJournalPrompt(date);
-    ask(prompt)
+    ask(prompt, { trigger: "journal" })
       .then(response => logger.info({ date, result: response.text.slice(0, 200) }, "journal done"))
       .catch(err => logger.error({ err, date }, "journal failed"));
   });
