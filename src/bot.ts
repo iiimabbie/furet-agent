@@ -1,6 +1,6 @@
 import {
   Client, GatewayIntentBits, Events, REST, Routes,
-  SlashCommandBuilder, MessageFlags, EmbedBuilder,
+  SlashCommandBuilder, MessageFlags, EmbedBuilder, ActivityType, PresenceStatusData,
   type Message, type Interaction,
 } from "discord.js";
 import { spawn } from "node:child_process";
@@ -131,6 +131,13 @@ export async function startBot(token: string): Promise<void> {
   client.once(Events.ClientReady, async (c) => {
     logger.info({ user: c.user.tag }, "discord bot ready");
     console.log(`Discord bot logged in as ${c.user.tag}`);
+
+    const config = loadConfig();
+    c.user.setPresence({
+      status: (config.discord.status || "online") as PresenceStatusData,
+      activities: [{ name: config.discord.activity || "Burrowing around", type: ActivityType.Custom }],
+    });
+
     const guildIds = c.guilds.cache.map(g => g.id);
     await registerSlashCommands(token, c.user.id, guildIds);
   });

@@ -13,6 +13,8 @@ discord:
   allowed_channels: []                  # empty = all channels; specify channel IDs to restrict
   allowed_guilds: []                    # empty = all servers; specify guild IDs to restrict
   owner_id: ""                          # your Discord user ID (only owner can DM the bot)
+  status: "online"                      # online | idle | dnd | invisible
+  activity: "Burrowing around…🦦✨"    # custom activity text
 
 journal:
   enabled: false                        # auto-write a daily journal at scheduled time

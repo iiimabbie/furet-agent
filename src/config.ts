@@ -16,6 +16,8 @@ export interface FuretConfig {
     allowed_channels: string[];
     allowed_guilds: string[];
     owner_id: string;
+    status: string;
+    activity: string;
   };
   journal: {
     enabled: boolean;
@@ -41,6 +43,8 @@ const DEFAULTS: FuretConfig = {
     allowed_channels: [],
     allowed_guilds: [],
     owner_id: "",
+    status: "online",
+    activity: "Burrowing around…🦦✨",
   },
   journal: {
     enabled: false,
