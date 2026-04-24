@@ -96,6 +96,25 @@ export function loadConfig(): FuretConfig {
   return cached!;
 }
 
+export function addSkill(name: string): void {
+  let raw: Record<string, unknown> = {};
+  try { raw = (parse(readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) ?? {}; } catch {}
+  const skills = (raw.skills as string[] | undefined) ?? [];
+  if (!skills.includes(name)) skills.push(name);
+  raw.skills = skills;
+  writeFileSync(CONFIG_PATH, stringify(raw, { lineWidth: 0 }));
+  cached = null;
+}
+
+export function removeSkill(name: string): void {
+  let raw: Record<string, unknown> = {};
+  try { raw = (parse(readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) ?? {}; } catch {}
+  const skills = (raw.skills as string[] | undefined) ?? [];
+  raw.skills = skills.filter(s => s !== name);
+  writeFileSync(CONFIG_PATH, stringify(raw, { lineWidth: 0 }));
+  cached = null;
+}
+
 export function setCurrentModel(model: string): void {
   // read raw yaml, update currentModel, write back
   let raw: Record<string, unknown> = {};

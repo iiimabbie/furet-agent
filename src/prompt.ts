@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { parse } from "yaml";
 import { ROOT, WORKSPACE_DIR, SKILLS_DIR } from "./paths.js";
 import { loadConfig } from "./config.js";
 
@@ -46,10 +47,11 @@ interface SkillSummary {
 function parseSkillFrontmatter(content: string): { name?: string; description?: string } {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return {};
-  const yaml = match[1];
-  const name = yaml.match(/^name:\s*(.+)$/m)?.[1]?.trim();
-  const description = yaml.match(/^description:\s*(.+)$/m)?.[1]?.trim();
-  return { name, description };
+  try {
+    const meta = parse(match[1]) as Record<string, unknown>;
+    const desc = typeof meta.description === "string" ? meta.description.trim().split("\n")[0] : undefined;
+    return { name: meta.name as string | undefined, description: desc };
+  } catch { return {}; }
 }
 
 function loadSkills(): SkillSummary[] {
