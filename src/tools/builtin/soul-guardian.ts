@@ -68,14 +68,35 @@ function loadTargets(): Target[] {
   return loadConfig().soul_guardian.targets;
 }
 
+function reconstructFromSnapshots(): Baselines {
+  const baselines: Baselines = { version: 1, files: {} };
+  try {
+    const targets = loadTargets();
+    for (const t of targets) {
+      if (t.mode === "ignore") continue;
+      const snap = approvedSnapshotPath(t.path);
+      if (!existsSync(snap) || isSymlink(snap)) continue;
+      const content = readFileSync(snap);
+      baselines.files[t.path] = { sha256: sha256(content), approvedAt: "reconstructed" };
+    }
+  } catch { /* config not ready yet, return empty */ }
+  if (Object.keys(baselines.files).length > 0) {
+    logger.warn({ count: Object.keys(baselines.files).length }, "baselines reconstructed from approved snapshots");
+    saveBaselines(baselines);
+  }
+  return baselines;
+}
+
 function loadBaselines(): Baselines {
-  if (!existsSync(BASELINES_PATH)) return { version: 1, files: {} };
-  return JSON.parse(readFileSync(BASELINES_PATH, "utf-8"));
+  if (!existsSync(BASELINES_PATH)) return reconstructFromSnapshots();
+  const baselines: Baselines = JSON.parse(readFileSync(BASELINES_PATH, "utf-8"));
+  if (Object.keys(baselines.files).length === 0) return reconstructFromSnapshots();
+  return baselines;
 }
 
 function saveBaselines(b: Baselines): void {
   ensureDir(STATE_DIR);
-  atomicWrite(BASELINES_PATH, Buffer.from(JSON.stringify(b, Object.keys(b).sort(), 2) + "\n"));
+  atomicWrite(BASELINES_PATH, Buffer.from(JSON.stringify(b, null, 2) + "\n"));
 }
 
 function resolveTargets(): Target[] {
