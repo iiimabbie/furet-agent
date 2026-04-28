@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import {
   readFileSync, writeFileSync, mkdirSync, renameSync, lstatSync,
   existsSync, appendFileSync, openSync, readSync, closeSync, fstatSync,
-  globSync,
+  globSync, readdirSync,
 } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { loadConfig } from "../../config.js";
@@ -19,6 +19,7 @@ const AUDIT_PATH = resolve(STATE_DIR, "audit.jsonl");
 const APPROVED_DIR = resolve(STATE_DIR, "approved");
 const PATCH_DIR = resolve(STATE_DIR, "patches");
 const QUARANTINE_DIR = resolve(STATE_DIR, "quarantine");
+const HISTORY_DIR = resolve(STATE_DIR, "history");
 
 const CHAIN_GENESIS = "0".repeat(64);
 
@@ -181,6 +182,31 @@ function unifiedDiff(oldText: string, newText: string, fromFile: string, toFile:
 
 function approvedSnapshotPath(relp: string): string {
   return resolve(APPROVED_DIR, relp);
+}
+
+/** Archive current approved snapshot to history/ before overwriting */
+function archiveSnapshot(relp: string): string | null {
+  const snap = approvedSnapshotPath(relp);
+  if (!existsSync(snap) || isSymlink(snap)) return null;
+  ensureDir(HISTORY_DIR);
+  const fileTag = safePatchTag(relp.replace(/\//g, "_"));
+  const histPath = resolve(HISTORY_DIR, `${fileTag}.${tsTag()}`);
+  atomicWrite(histPath, readFileSync(snap));
+  return histPath;
+}
+
+/** List history versions for a file, newest first */
+function listHistory(relp: string): { path: string; timestamp: string }[] {
+  const fileTag = safePatchTag(relp.replace(/\//g, "_"));
+  const prefix = fileTag + ".";
+  if (!existsSync(HISTORY_DIR)) return [];
+  return readdirSync(HISTORY_DIR)
+    .filter(f => f.startsWith(prefix) && !f.endsWith(".tmp"))
+    .sort().reverse()
+    .map(f => ({
+      path: resolve(HISTORY_DIR, f),
+      timestamp: f.slice(prefix.length),
+    }));
 }
 
 function fileStatus(relp: string, baselines: Baselines) {
@@ -379,6 +405,7 @@ export const soulGuardianApprove: Tool = {
 
         const snap = approvedSnapshotPath(t.path);
         ensureDir(dirname(snap));
+        const histPath = archiveSnapshot(t.path);
         atomicWrite(snap, curBytes);
 
         baselines.files[t.path] = { sha256: curSha, approvedAt: utcNowIso() };
@@ -386,6 +413,7 @@ export const soulGuardianApprove: Tool = {
         appendAudit({
           ts: utcNowIso(), event: "approve", actor: "furet", note,
           path: t.path, mode: t.mode, prevApprovedSha: prevSha, approvedSha: curSha, patchPath,
+          ...(histPath ? { historyPath: histPath } : {}),
         });
 
         results.push(`✅ ${t.path}: sha256=${curSha.slice(0, 16)}...`);
@@ -401,18 +429,19 @@ export const soulGuardianApprove: Tool = {
 
 export const soulGuardianRestore: Tool = {
   name: "soul_guardian_restore",
-  description: "Manually restore a file to the last approved baseline version. OWNER-ONLY: NEVER use this tool unless the owner explicitly instructs you to restore.",
+  description: "Manually restore a file. Defaults to last approved baseline; use 'version' to restore from history. OWNER-ONLY.",
   parameters: {
     type: "object",
     properties: {
       file: { type: "string", description: "File path to restore (relative to workspace)" },
-      all: { type: "boolean", description: "Restore all restore-mode files (mutually exclusive with file)" },
+      all: { type: "boolean", description: "Restore all monitored files to baseline (mutually exclusive with file)" },
+      version: { type: "string", description: "History version timestamp to restore (from soul_guardian_history). If omitted, restores to latest approved baseline." },
       note: { type: "string", description: "Reason for this restore" },
     },
     required: ["note"],
   },
   execute: async (args) => {
-    const { file, all, note } = args as { file?: string; all?: boolean; note: string };
+    const { file, all, version, note } = args as { file?: string; all?: boolean; version?: string; note: string };
     const trigger = getTrigger();
     if (trigger !== "cli" && trigger !== "discord-owner") {
       logger.warn({ trigger, file, all }, "soul_guardian restore blocked: owner-only");
@@ -420,35 +449,100 @@ export const soulGuardianRestore: Tool = {
     }
     if (!file && !all) return "Error: must specify file or all";
     if (file && all) return "Error: file and all are mutually exclusive";
-    logger.info({ file, all, note }, "soul_guardian restore");
+    if (version && all) return "Error: version cannot be used with all";
+    logger.info({ file, all, version, note }, "soul_guardian restore");
 
     try {
       const baselines = loadBaselines();
-      const targets = resolveTargets().filter(t => t.mode === "restore");
+      const targets = resolveTargets().filter(t => t.mode !== "ignore");
 
       let chosen: Target[];
       if (all) {
         chosen = targets;
       } else {
         chosen = targets.filter(t => t.path === file);
-        if (!chosen.length) return `Error: ${file} is not in restore mode or not in policy`;
+        if (!chosen.length) return `Error: ${file} not found in policy or is ignored`;
       }
 
       const results: string[] = [];
       for (const t of chosen) {
-        const { drifted: isDrift, info } = detectDrift(t.path, baselines);
-        if ("error" in info) { results.push(`${t.path}: ${info.error}`); continue; }
-        if (!isDrift) { results.push(`${t.path}: no drift, nothing to restore`); continue; }
+        const abs = resolve(WORKSPACE_DIR, t.path);
 
-        const restored = restoreOne(t.path, info);
+        // Determine source: history version or approved snapshot
+        let sourceBytes: Buffer;
+        let sourceLabel: string;
+        if (version) {
+          const hist = listHistory(t.path);
+          const match = hist.find(h => h.timestamp === version);
+          if (!match) return `Error: version ${version} not found for ${t.path}. Use soul_guardian_history to list.`;
+          sourceBytes = readFileSync(match.path);
+          sourceLabel = `history/${version}`;
+        } else {
+          const snap = approvedSnapshotPath(t.path);
+          if (!existsSync(snap)) { results.push(`${t.path}: no approved snapshot`); continue; }
+          sourceBytes = readFileSync(snap);
+          sourceLabel = "approved";
+        }
+
+        // Quarantine current file before restoring
+        if (existsSync(abs) && !isSymlink(abs)) {
+          ensureDir(QUARANTINE_DIR);
+          const fileTag = safePatchTag(t.path.replace(/\//g, "_"));
+          const quarantinePath = resolve(QUARANTINE_DIR, `${fileTag}.${tsTag()}.quarantine`);
+          atomicWrite(quarantinePath, readFileSync(abs));
+        }
+
+        atomicWrite(abs, sourceBytes);
+
+        // If restoring from history, also update baseline to match
+        if (version) {
+          const newSha = sha256(sourceBytes);
+          baselines.files[t.path] = { sha256: newSha, approvedAt: utcNowIso() };
+          const snap = approvedSnapshotPath(t.path);
+          ensureDir(dirname(snap));
+          archiveSnapshot(t.path);
+          atomicWrite(snap, sourceBytes);
+        }
+
         appendAudit({
           ts: utcNowIso(), event: "restore", actor: "furet", note,
-          path: t.path, mode: t.mode, ...restored,
+          path: t.path, mode: t.mode, source: sourceLabel,
         });
-        results.push(`${t.path}: restored`);
+        results.push(`${t.path}: restored from ${sourceLabel}`);
       }
 
+      if (version) saveBaselines(baselines);
       return results.join("\n") || "No files needed restoring.";
+    } catch (e) { return `Error: ${(e as Error).message}`; }
+  },
+};
+
+// ── Tool: history ──
+
+export const soulGuardianHistory: Tool = {
+  name: "soul_guardian_history",
+  description: "List historical approved versions of a monitored file. Each version can be restored using soul_guardian_restore with the version timestamp.",
+  parameters: {
+    type: "object",
+    properties: {
+      file: { type: "string", description: "File path (relative to workspace)" },
+    },
+    required: ["file"],
+  },
+  execute: async (args) => {
+    const { file } = args as { file: string };
+    logger.info({ file }, "soul_guardian history");
+    try {
+      const hist = listHistory(file);
+      if (hist.length === 0) return `No history found for ${file}.`;
+
+      const lines = [`History for ${file} (${hist.length} versions, newest first):`, ""];
+      for (const h of hist) {
+        const bytes = readFileSync(h.path);
+        const hash = sha256(bytes);
+        lines.push(`- ${h.timestamp}  sha256=${hash.slice(0, 16)}...  (${bytes.length} bytes)`);
+      }
+      return lines.join("\n");
     } catch (e) { return `Error: ${(e as Error).message}`; }
   },
 };

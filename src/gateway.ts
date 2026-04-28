@@ -87,7 +87,8 @@ function scheduleCron(job: CronJob): void {
   const task = schedule(job.schedule, async () => {
     logger.info({ id: job.id, name: job.name, prompt: job.prompt.slice(0, 100) }, "cron triggered");
     try {
-      const response = await ask(job.prompt, { trigger: "cron" });
+      const cronContext = `[System] This is a scheduled cron task "${job.name}". Your response will be automatically sent to the designated Discord channel.\n\n`;
+      const response = await ask(cronContext + job.prompt, { trigger: "cron" });
       logger.info({ id: job.id, result: response.text.slice(0, 200) }, "cron result");
       if (job.channel_id && response.text) {
         await sendAndPersist(job.channel_id, response.text);

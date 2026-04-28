@@ -97,7 +97,8 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
     }
   }
 
-  const sessionMessages = session?.getMessages() ?? [];
+  const allSessionMessages = session?.getMessages() ?? [];
+  const sessionMessages = allSessionMessages.slice(-20);
   type ApiMessage = { role: "user" | "assistant"; content: string | ContentBlock[] };
 
   // session 歷史打包成第一則 assistant message，當前訊息是第一則 user message

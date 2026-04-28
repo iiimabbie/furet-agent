@@ -18,7 +18,7 @@ import { calendarListEvents, calendarCreateEvent, calendarUpdateEvent, calendarD
 import { gmailSearch, gmailRead, gmailSend, gmailCreateDraft } from "./builtin/google-gmail.js";
 import { driveSearch, driveRead, driveUpload } from "./builtin/google-drive.js";
 import { tasksList, tasksCreate, tasksComplete, tasksDelete } from "./builtin/google-tasks.js";
-import { soulGuardianStatus, soulGuardianCheck, soulGuardianApprove, soulGuardianRestore } from "./builtin/soul-guardian.js";
+import { soulGuardianStatus, soulGuardianCheck, soulGuardianApprove, soulGuardianRestore, soulGuardianHistory } from "./builtin/soul-guardian.js";
 import { skillInstall, skillUninstall, skillList } from "./builtin/skill.js";
 
 const tools: Tool[] = [
@@ -34,7 +34,7 @@ const tools: Tool[] = [
   gmailSearch, gmailRead, gmailSend, gmailCreateDraft,
   driveSearch, driveRead, driveUpload,
   tasksList, tasksCreate, tasksComplete, tasksDelete,
-  soulGuardianStatus, soulGuardianCheck, soulGuardianApprove, soulGuardianRestore,
+  soulGuardianStatus, soulGuardianCheck, soulGuardianApprove, soulGuardianRestore, soulGuardianHistory,
   skillInstall, skillUninstall, skillList,
 ];
 
