@@ -4,7 +4,7 @@ import {
   type Message, type Interaction,
 } from "discord.js";
 import { spawn } from "node:child_process";
-import { ask } from "./agent.js";
+import { ask, compactSession } from "./agent.js";
 import { Session } from "./session.js";
 import { SESSION_SUMMARIZE_PROMPT } from "./prompt.js";
 import { logger } from "./logger.js";
@@ -72,6 +72,10 @@ const SLASH_COMMANDS = [
   new SlashCommandBuilder()
     .setName("task")
     .setDescription("列出 Google Tasks 待辦事項")
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("compact")
+    .setDescription("壓縮當前 session（摘要舊對話，保留最近訊息）")
     .toJSON(),
 ];
 
@@ -320,6 +324,24 @@ export async function startBot(token: string): Promise<void> {
         await interaction.editReply({ embeds: [embed] });
       } catch (err) {
         await interaction.editReply(`取得 Tasks 失敗：${(err as Error).message}`);
+      }
+    }
+
+    if (interaction.commandName === "compact") {
+      const sessionId = interaction.guild
+        ? `discord-channel-${interaction.channelId}`
+        : `discord-dm-${interaction.user.id}`;
+      const session = new Session(sessionId);
+      if (session.length === 0) {
+        await interaction.reply({ content: "Session 是空的，不需要壓縮。", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const summary = await compactSession(session);
+      if (summary) {
+        await interaction.editReply(`Session 已壓縮（${session.length} 則訊息保留）。`);
+      } else {
+        await interaction.editReply("Session 太短，不需要壓縮。");
       }
     }
   });

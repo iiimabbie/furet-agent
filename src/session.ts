@@ -77,6 +77,18 @@ export class Session {
     return archivePath;
   }
 
+  /** 壓縮 session：用摘要替換前半段 messages，保留最近的 keepRecent 則 */
+  compact(summary: string, keepRecent: number): void {
+    if (this.messages.length <= keepRecent) return;
+    const kept = this.messages.slice(-keepRecent);
+    this.messages = [
+      { role: "user", content: `[System] Previous conversation summary:\n${summary}` },
+      ...kept,
+    ];
+    this.save();
+    logger.info({ sessionId: this.id, kept: kept.length, totalAfter: this.messages.length }, "session compacted");
+  }
+
   get length(): number {
     return this.messages.length;
   }

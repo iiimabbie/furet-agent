@@ -106,6 +106,41 @@ async function callAnthropic(system: string, messages: Message[], model?: string
   return res.json() as Promise<{ content: ContentBlock[]; stop_reason: string; usage: { input_tokens: number; output_tokens: number } }>;
 }
 
+const COMPACT_THRESHOLD = 0.8; // 80% of maxContextTokens triggers compaction
+const COMPACT_KEEP_RECENT = 10; // keep last 10 messages after compaction
+
+/** 壓縮 session：讓 AI 摘要舊對話，替換前半段 */
+export async function compactSession(session: import("./session.js").Session, model?: string): Promise<string | null> {
+  const messages = session.getMessages();
+  if (messages.length <= COMPACT_KEEP_RECENT) return null;
+
+  const toSummarize = messages.slice(0, -COMPACT_KEEP_RECENT);
+  const textParts = toSummarize.map(m => {
+    if (typeof m.content === "string") return `${m.role}: ${m.content}`;
+    const blocks = m.content as ContentBlock[];
+    const text = blocks.filter(b => b.type === "text").map(b => (b as { text: string }).text).join("");
+    return text ? `${m.role}: ${text}` : null;
+  }).filter(Boolean);
+
+  if (textParts.length === 0) return null;
+
+  const compactSystem = "Summarize this conversation concisely. Keep key facts, decisions, and context. Same language as the conversation. Max 500 words.";
+  const compactMessages = [{ role: "user" as const, content: textParts.join("\n") }];
+
+  try {
+    const response = await callAnthropic(compactSystem, compactMessages as Message[], model, false);
+    const summary = extractText(response.content as ContentBlock[]);
+    if (summary) {
+      session.compact(summary, COMPACT_KEEP_RECENT);
+      logger.info({ sessionId: session.id, summarizedMessages: toSummarize.length, summaryLength: summary.length }, "compaction done");
+      return summary;
+    }
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, "compaction failed");
+  }
+  return null;
+}
+
 export async function ask(prompt: string | null, options: AgentOptions = {}): Promise<AgentResponse> {
   const startTime = Date.now();
   const maxTurns = options.maxTurns ?? 50;
@@ -141,6 +176,16 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
 
   // 從 session 取歷史，用 token budget 控制上限
   const maxContextTokens = loadConfig().llm.maxContextTokens;
+
+  // 自動 compaction：session token 超過閾值時壓縮
+  if (session) {
+    const totalTokens = session.getMessages().reduce((sum, m) => sum + estimateTokens(m), 0);
+    if (totalTokens > maxContextTokens * COMPACT_THRESHOLD) {
+      logger.info({ totalTokens, threshold: maxContextTokens * COMPACT_THRESHOLD }, "auto compaction triggered");
+      await compactSession(session, options.model);
+    }
+  }
+
   const allSessionMessages = session?.getMessages() ?? [];
   const sessionMessages = trimToTokenBudget(allSessionMessages, maxContextTokens);
 
