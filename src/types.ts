@@ -56,6 +56,7 @@ export type TriggerSource = "cli" | "discord-owner" | "discord-other" | "cron" |
 export interface AgentOptions {
   systemPrompt?: string;
   maxTurns?: number;
+  model?: string;
   session?: import("./session.js").Session;
   onToolUse?: (tool: string, input: Record<string, unknown>) => void;
   onProgress?: (event: ProgressEvent) => void;

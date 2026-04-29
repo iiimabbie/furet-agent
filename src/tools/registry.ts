@@ -20,6 +20,7 @@ import { driveSearch, driveRead, driveUpload } from "./builtin/google-drive.js";
 import { tasksList, tasksCreate, tasksComplete, tasksDelete } from "./builtin/google-tasks.js";
 import { soulGuardianStatus, soulGuardianCheck, soulGuardianApprove, soulGuardianRestore, soulGuardianHistory } from "./builtin/soul-guardian.js";
 import { skillInstall, skillUninstall, skillList } from "./builtin/skill.js";
+import { selfEvolve } from "./builtin/self-evolve.js";
 
 const tools: Tool[] = [
   bash, readFileTool, writeFileTool, weather,
@@ -36,6 +37,7 @@ const tools: Tool[] = [
   tasksList, tasksCreate, tasksComplete, tasksDelete,
   soulGuardianStatus, soulGuardianCheck, soulGuardianApprove, soulGuardianRestore, soulGuardianHistory,
   skillInstall, skillUninstall, skillList,
+  selfEvolve,
 ];
 
 const executorMap = new Map(tools.map(t => [t.name, t.execute]));

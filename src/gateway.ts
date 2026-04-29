@@ -87,7 +87,7 @@ function scheduleCron(job: CronJob): void {
   const task = schedule(job.schedule, async () => {
     logger.info({ id: job.id, name: job.name, prompt: job.prompt.slice(0, 100) }, "cron triggered");
     try {
-      const cronContext = `[System] This is a scheduled cron task "${job.name}". Your response will be automatically sent to the designated Discord channel.\n\n`;
+      const cronContext = `[System] This is a scheduled cron task "${job.name}". Your text response will be automatically delivered to the correct channel. Do NOT use discord_send_message — just reply with text.\n\n`;
       const response = await ask(cronContext + job.prompt, { trigger: "cron" });
       logger.info({ id: job.id, result: response.text.slice(0, 200) }, "cron result");
       if (job.channel_id && response.text) {
@@ -143,7 +143,8 @@ function scheduleReminder(r: Reminder): void {
   const timeout = setTimeout(async () => {
     logger.info({ id: r.id, name: r.name, prompt: r.prompt.slice(0, 100) }, "reminder triggered");
     try {
-      const response = await ask(r.prompt, { trigger: "reminder" });
+      const reminderContext = `[System] This is a scheduled reminder "${r.name}". Your text response will be automatically delivered to the correct channel. Do NOT use discord_send_message — just reply with text.\n\n`;
+      const response = await ask(reminderContext + r.prompt, { trigger: "reminder" });
       logger.info({ id: r.id, result: response.text.slice(0, 200) }, "reminder result");
       if (r.channel_id && response.text) {
         await sendAndPersist(r.channel_id, response.text);

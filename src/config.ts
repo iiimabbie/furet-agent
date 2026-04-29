@@ -11,6 +11,7 @@ export interface FuretConfig {
     modelList: string[];
     maxContextTokens: number;
     memoryCharLimit: number;
+    codingModel: string;
   };
   discord: {
     enabled: boolean;
@@ -40,6 +41,7 @@ const DEFAULTS: FuretConfig = {
     modelList: [],
     maxContextTokens: 150_000,
     memoryCharLimit: 3000,
+    codingModel: "claude-opus-4-6",
   },
   discord: {
     enabled: false,

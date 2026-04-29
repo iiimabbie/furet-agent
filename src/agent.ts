@@ -79,7 +79,7 @@ const config = loadConfig();
 const API_URL = `${config.llm.base_url || "https://api.anthropic.com/v1"}/messages`;
 const API_KEY = config.llm.api_key;
 
-async function callAnthropic(system: string, messages: Message[]): Promise<{
+async function callAnthropic(system: string, messages: Message[], model?: string): Promise<{
   content: ContentBlock[];
   stop_reason: string;
   usage: { input_tokens: number; output_tokens: number };
@@ -92,7 +92,7 @@ async function callAnthropic(system: string, messages: Message[]): Promise<{
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: loadConfig().llm.currentModel,
+      model: model ?? loadConfig().llm.currentModel,
       max_tokens: 8192,
       system,
       messages,
@@ -177,7 +177,7 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
   }
 
   for (let turn = 0; turn < maxTurns; turn++) {
-    const response = await callAnthropic(systemPrompt, messages);
+    const response = await callAnthropic(systemPrompt, messages, options.model);
 
     logger.info({
       turn,
