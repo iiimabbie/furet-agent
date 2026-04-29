@@ -5,6 +5,22 @@ const GEMINI_API_KEY = process.env.GOOGLE_API_KEY ?? "";
 const EMBED_MODEL = "gemini-embedding-001";
 const EMBED_URL = `https://generativelanguage.googleapis.com/v1beta/models/${EMBED_MODEL}:embedContent?key=${GEMINI_API_KEY}`;
 
+/** 刪除某個檔案的所有向量 */
+export function removeVectorsByFile(file: string): void {
+  try {
+    const db = getDb();
+    const rows = db.prepare("SELECT id FROM memory_vectors WHERE file = ?").all(file) as Array<{ id: number }>;
+    if (rows.length === 0) return;
+    const ids = rows.map(r => Number(r.id));
+    db.prepare(`DELETE FROM memory_vectors_vec WHERE rowid IN (${ids.join(",")})`).run();
+    db.prepare(`DELETE FROM memory_fts WHERE rowid IN (${ids.join(",")})`).run();
+    db.prepare(`DELETE FROM memory_vectors WHERE file = ?`).run(file);
+    logger.info({ file, count: ids.length }, "vectors removed for file");
+  } catch (err) {
+    logger.error({ err: (err as Error).message, file }, "remove vectors failed");
+  }
+}
+
 /** 呼叫 Gemini embedding API */
 export async function embed(text: string): Promise<number[]> {
   const res = await fetch(EMBED_URL, {

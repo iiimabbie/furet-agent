@@ -1,10 +1,10 @@
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { resolve } from "node:path";
-import { WORKSPACE_DIR } from "./paths.js";
+import { WORKSPACE_CONFIG_DIR } from "./paths.js";
 import { logger } from "./logger.js";
 
-const DB_PATH = resolve(WORKSPACE_DIR, "furet.db");
+const DB_PATH = resolve(WORKSPACE_CONFIG_DIR, "furet.db");
 
 let db: Database.Database | null = null;
 

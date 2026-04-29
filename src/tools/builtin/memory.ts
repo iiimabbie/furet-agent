@@ -4,7 +4,7 @@ import { logger } from "../../logger.js";
 import { loadConfig } from "../../config.js";
 import { getDb } from "../../db.js";
 import { MEMORY_DIR, MEMORY_INDEX } from "../../paths.js";
-import { addVector, searchVectors } from "../../embedding.js";
+import { addVector, searchVectors, removeVectorsByFile } from "../../embedding.js";
 import type { Tool } from "../../types.js";
 
 function today(): string {
@@ -124,6 +124,14 @@ function readMemoryIndex(): string {
   try { return readFileSync(MEMORY_INDEX, "utf-8"); } catch { return ""; }
 }
 
+function rebuildMemoryVectors(content: string): void {
+  removeVectorsByFile("MEMORY.md");
+  const paragraphs = content.split(/\n{2,}/).filter(p => p.trim().length > 20);
+  for (const p of paragraphs) {
+    addVector(p.trim(), "MEMORY.md").catch(() => {});
+  }
+}
+
 function memoryUsageInfo(content: string): string {
   const { memoryCharLimit } = loadConfig().llm;
   const pct = Math.round((content.length / memoryCharLimit) * 100);
@@ -155,6 +163,8 @@ export const memoryReplace: Tool = {
         return `Error: replacement would exceed limit. ${memoryUsageInfo(current)}`;
       }
       writeFileSync(MEMORY_INDEX, updated);
+      // 重建 MEMORY.md 向量
+      rebuildMemoryVectors(updated);
       return `Replaced. ${memoryUsageInfo(updated)}`;
     } catch (err) {
       logger.error({ err }, "memory replace failed");
@@ -183,6 +193,7 @@ export const memoryRemove: Tool = {
       }
       const updated = current.replace(text, "").replace(/\n{3,}/g, "\n\n");
       writeFileSync(MEMORY_INDEX, updated);
+      rebuildMemoryVectors(updated);
       return `Removed. ${memoryUsageInfo(updated)}`;
     } catch (err) {
       logger.error({ err }, "memory remove failed");

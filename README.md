@@ -7,7 +7,7 @@ Personal AI assistant with self-evolving capabilities. Discord bot + CLI, powere
 - **Self-built agent loop** — no SDK dependency, full control over the inference cycle
 - **Multi-turn session** — standard message format with thinking + tool_use history
 - **Token-based context management** — auto-trim history within budget, preserving tool call pairs
-- **Memory system** — daily logs + long-term memory (MEMORY.md) with capacity limits + semantic recall (Gemini embedding)
+- **Memory system** — daily logs + long-term memory (MEMORY.md) with capacity limits + SQLite storage (better-sqlite3 + sqlite-vec + FTS5) for semantic recall and cross-session search
 - **Self-evolution** — can modify its own source code via `self_evolve` tool (delegates to a stronger model)
 - **Discord integration** — mention/DM trigger, progressive tool progress display, slash commands
 - **Scheduled tasks** — cron jobs + one-time reminders with auto-delivery to Discord channels
@@ -144,7 +144,8 @@ workspace/
 ├── PEOPLE.md        # People directory
 ├── JOURNAL.md       # Memory hook, session summarize, daily journal prompts
 ├── config/          # Structured data (crons, reminders, google token)
-├── memory/          # Daily memory files + vectors.json
+├── config/          # Structured data (crons, reminders, google token, furet.db)
+├── memory/          # Daily memory files
 ├── sessions/        # Conversation sessions + archive/
 └── skills/          # Installed skill plugins
 ```

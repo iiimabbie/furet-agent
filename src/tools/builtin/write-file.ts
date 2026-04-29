@@ -1,7 +1,11 @@
 import { writeFile, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, basename } from "node:path";
 import { logger } from "../../logger.js";
+import { addVector, removeVectorsByFile } from "../../embedding.js";
 import type { Tool } from "../../types.js";
+
+const VECTORIZE_FILES = new Set(["PEOPLE.md"]);
+const VECTORIZE_PATTERNS = [/^\d{4}-\d{2}-\d{2}\.md$/]; // 日記檔 YYYY-MM-DD.md
 
 export const writeFileTool: Tool = {
   name: "write_file",
@@ -20,6 +24,16 @@ export const writeFileTool: Tool = {
     try {
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, content, "utf-8");
+      // PEOPLE.md 等重要檔案寫入時，內容拆段存向量
+      const fileName = basename(path);
+      if (VECTORIZE_FILES.has(fileName) || VECTORIZE_PATTERNS.some(p => p.test(fileName))) {
+        // 先清舊向量，再存新的
+        removeVectorsByFile(fileName);
+        const paragraphs = content.split(/\n{2,}/).filter(p => p.trim().length > 20);
+        for (const p of paragraphs) {
+          addVector(p.trim(), basename(path)).catch(() => {});
+        }
+      }
       return `File written: ${path}`;
     } catch (err) {
       return `Error writing file: ${(err as Error).message}`;
