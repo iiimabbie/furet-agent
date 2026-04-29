@@ -183,7 +183,7 @@ export async function startBot(token: string): Promise<void> {
       session.archive();
       logger.info({ sessionId }, "session archived via /new");
 
-      const newSessionContent = `[System] <@${interaction.user.id}>(${interaction.user.username}) started a new session via /new. Your persona and memory are already in the system prompt. Read workspace/PEOPLE.md for user context, then greet them in character.`;
+      const newSessionContent = `[System] <@${interaction.user.id}>(${interaction.user.username}) started a new session via /new. Follow the Startup Sequence (read MEMORY.md, PEOPLE.md, and recent daily memory), then greet them in character.`;
       session.append({ role: "user", content: newSessionContent, time: ts });
 
       try {
@@ -383,7 +383,8 @@ export async function startBot(token: string): Promise<void> {
     }
 
     const fmt = await formatIncomingMessage(message);
-    session.append({ role: "user", content: fmt.content, time: fmt.time, msgId: fmt.msgId, ...(fmt.replyTo ? { replyTo: fmt.replyTo } : {}) });
+    const content = isTrigger ? fmt.content : `[context] ${fmt.content}`;
+    session.append({ role: "user", content, time: fmt.time, msgId: fmt.msgId, ...(fmt.replyTo ? { replyTo: fmt.replyTo } : {}) });
 
     if (!isTrigger) return;
 
