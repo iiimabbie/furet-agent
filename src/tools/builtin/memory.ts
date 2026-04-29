@@ -133,38 +133,9 @@ function memoryUsageInfo(content: string): string {
   return `[${content.length}/${memoryCharLimit} chars, ${pct}%]`;
 }
 
-export const memoryAdd: Tool = {
-  name: "memory_add",
-  description: "Add an entry to long-term memory (MEMORY.md). This file is loaded into every conversation. Use for durable facts, preferences, and rules. Returns current usage.",
-  parameters: {
-    type: "object",
-    properties: {
-      entry: { type: "string", description: "The memory entry to add" },
-    },
-    required: ["entry"],
-  },
-  execute: async (args) => {
-    const { entry } = args as { entry: string };
-    logger.info({ entry: entry.slice(0, 100) }, "memory add");
-    try {
-      const current = readMemoryIndex();
-      const newContent = current ? `${current.trimEnd()}\n${entry}\n` : `${entry}\n`;
-      const { memoryCharLimit } = loadConfig().llm;
-      if (newContent.length > memoryCharLimit) {
-        return `Error: MEMORY.md is full. ${memoryUsageInfo(current)} Consolidate or remove entries before adding new ones.`;
-      }
-      writeFileSync(MEMORY_INDEX, newContent);
-      return `Added. ${memoryUsageInfo(newContent)}`;
-    } catch (err) {
-      logger.error({ err }, "memory add failed");
-      return `Error: ${(err as Error).message}`;
-    }
-  },
-};
-
 export const memoryReplace: Tool = {
   name: "memory_replace",
-  description: "Replace text in long-term memory (MEMORY.md). Finds old_text by substring match and replaces it with new_text. Use to update stale facts.",
+  description: "Replace text in long-term memory (MEMORY.md). Finds old_text by substring match and replaces with new_text. Use to update facts, add new entries to existing sections (replace the section content with an expanded version), or consolidate entries. MEMORY.md is already in your system prompt — no need to read it first.",
   parameters: {
     type: "object",
     properties: {

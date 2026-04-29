@@ -14,8 +14,8 @@ Atomic fact constraint: every fact you save must be **self-contained**.
 - Include enough context that the fact is meaningful in isolation.
   Bad: "He went to the doctor." → Good: "John visited Dr. Smith on 2026-04-21."
 
-**memory_add / memory_replace / memory_remove** (update MEMORY.md) — use if:
-- User stated a long-term fact (preference, relationship, rule, resource) → `memory_add`
+**memory_replace / memory_remove** (update MEMORY.md) — use if:
+- User stated a new long-term fact → `memory_replace` to expand the relevant section
 - An existing fact in MEMORY.md became stale or wrong → `memory_replace`
 - A fact is no longer relevant → `memory_remove`
 - MEMORY.md has a character limit. If full, consolidate entries with `memory_replace` or `memory_remove` before adding.
@@ -28,7 +28,7 @@ This session is about to be archived. Save any important context before it's gon
 
 Use the appropriate tools:
 - `memory_save` — notable events, decisions, conversations worth recalling
-- `memory_add` — new long-term facts (preferences, rules, relationships)
+- `memory_replace` — new long-term facts (preferences, rules, relationships)
 - `memory_replace` — update stale facts in MEMORY.md
 - `memory_remove` — clean up outdated entries
 
@@ -75,8 +75,8 @@ Write the daily journal for {{DATE}}.
    - High confidence (3+ occurrences) → record as established fact.
 
 5. Update MEMORY.md using the appropriate tools:
-   - New atomic fact → `memory_add`
+   - New atomic fact → `memory_replace`
    - Already present → skip
    - [SUPERSEDED] → `memory_replace` (update) or `memory_remove` (delete)
-   - New pattern with 2+ evidence → `memory_add` to preferences/rules section
+   - New pattern with 2+ evidence → `memory_replace` to preferences/rules section
    - If MEMORY.md is near capacity, consolidate related entries with `memory_replace` first.

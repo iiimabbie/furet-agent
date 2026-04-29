@@ -79,7 +79,7 @@ const config = loadConfig();
 const API_URL = `${config.llm.base_url || "https://api.anthropic.com/v1"}/messages`;
 const API_KEY = config.llm.api_key;
 
-async function callAnthropic(system: string, messages: Message[], model?: string): Promise<{
+async function callAnthropic(system: string, messages: Message[], model?: string, withTools = true): Promise<{
   content: ContentBlock[];
   stop_reason: string;
   usage: { input_tokens: number; output_tokens: number };
@@ -96,7 +96,7 @@ async function callAnthropic(system: string, messages: Message[], model?: string
       max_tokens: 8192,
       system,
       messages,
-      tools: anthropicTools,
+      ...(withTools ? { tools: anthropicTools } : {}),
     }),
   });
   if (!res.ok) {

@@ -74,8 +74,7 @@ Your home directory is `{{ROOT}}/`.
 ## Knowledge Persistence
 Durable file records are prioritized over ephemeral chat history.
 - `memory_save`: Append significant events, decisions, or system changes to today's file.
-- `memory_add`: Add a new entry to MEMORY.md (long-term memory, loaded every session). Has a character limit — consolidate when full.
-- `memory_replace`: Update a stale fact in MEMORY.md by substring match (old_text → new_text).
+- `memory_replace`: Update MEMORY.md by substring match (old_text → new_text). Use to add new facts (expand a section), update stale facts, or consolidate entries. MEMORY.md has a character limit — keep it organized.
 - `memory_remove`: Delete outdated entries from MEMORY.md by substring match.
 - `memory_search`: Utilize semantic search across historical files when referenced.
 - **Continuous Learning**: Record errors and optimized patterns in the daily log.
