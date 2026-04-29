@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { logger } from "./logger.js";
+import { getDb } from "./db.js";
 import { SESSIONS_DIR, ARCHIVE_DIR } from "./paths.js";
 import type { Message, TokenUsage } from "./types.js";
 
@@ -73,6 +74,28 @@ export class Session {
     } catch (err) {
       logger.error({ err, sessionId: this.id }, "session archive failed");
     }
+
+    // 存進 SQLite（session_archive + session_fts）
+    try {
+      const db = getDb();
+      const insert = db.prepare("INSERT INTO session_archive (session_id, role, content, time, msg_id, reply_to) VALUES (?, ?, ?, ?, ?, ?)");
+      const insertFts = db.prepare("INSERT INTO session_fts (rowid, content, session_id) VALUES (?, ?, ?)");
+      const tx = db.transaction(() => {
+        for (const m of this.messages) {
+          const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+          const result = insert.run(this.id, m.role, content, m.time ?? null, m.msgId ?? null, m.replyTo ?? null);
+          // 只對有文字的 user/assistant message 建 FTS
+          if (typeof m.content === "string" && m.content.length > 0) {
+            insertFts.run(result.lastInsertRowid, m.content, this.id);
+          }
+        }
+      });
+      tx();
+      logger.info({ sessionId: this.id, count: this.messages.length }, "session archived to db");
+    } catch (err) {
+      logger.error({ err: (err as Error).message, sessionId: this.id }, "session db archive failed");
+    }
+
     this.clear();
     return archivePath;
   }

@@ -40,6 +40,7 @@ import { tasksList, tasksCreate, tasksComplete, tasksDelete } from "./builtin/go
 import { soulGuardianStatus, soulGuardianCheck, soulGuardianApprove, soulGuardianRestore, soulGuardianHistory } from "./builtin/soul-guardian.js";
 import { skillInstall, skillUninstall, skillList } from "./builtin/skill.js";
 import { selfEvolve } from "./builtin/self-evolve.js";
+import { sessionSearch } from "./builtin/session-search.js";
 
 const tools: Tool[] = [
   bash, readFileTool, writeFileTool, weather,
@@ -57,6 +58,7 @@ const tools: Tool[] = [
   soulGuardianStatus, soulGuardianCheck, soulGuardianApprove, soulGuardianRestore, soulGuardianHistory,
   skillInstall, skillUninstall, skillList,
   selfEvolve,
+  sessionSearch,
 ];
 
 const executorMap = new Map(tools.map(t => [t.name, t.execute]));

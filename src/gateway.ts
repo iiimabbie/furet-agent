@@ -253,6 +253,10 @@ writeFileSync(PID_FILE, String(process.pid));
 console.log("Furet Gateway starting...");
 logger.info("gateway start");
 
+// 初始化 SQLite（建表）
+import { getDb } from "./db.js";
+getDb();
+
 loadAndScheduleAll();
 loadAndScheduleReminders();
 scheduleJournal();

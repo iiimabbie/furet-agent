@@ -183,7 +183,7 @@ export async function startBot(token: string): Promise<void> {
       session.archive();
       logger.info({ sessionId }, "session archived via /new");
 
-      const newSessionContent = `[System] <@${interaction.user.id}>(${interaction.user.username}) started a new session via /new. Greet them in character. All context (persona, memory, people) is already in the system prompt — do NOT read any files.`;
+      const newSessionContent = `[System] <@${interaction.user.id}>(${interaction.user.username}) started a new session via /new. Your persona and memory are already in the system prompt. Read workspace/PEOPLE.md for user context, then greet them in character.`;
       session.append({ role: "user", content: newSessionContent, time: ts });
 
       try {

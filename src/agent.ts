@@ -157,6 +157,7 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
   }
 
   let systemPrompt = buildSystemPrompt(options.systemPrompt);
+  logger.debug({ systemPromptLength: systemPrompt.length, hasPersona: systemPrompt.includes("<persona>"), hasMemory: systemPrompt.includes("<memory>") }, "system prompt check");
 
   // 自動記憶召回：用使用者訊息搜尋相關記憶，注入 system prompt
   if (prompt) {

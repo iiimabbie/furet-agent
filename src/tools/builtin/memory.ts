@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { logger } from "../../logger.js";
 import { loadConfig } from "../../config.js";
+import { getDb } from "../../db.js";
 import { MEMORY_DIR, MEMORY_INDEX } from "../../paths.js";
 import { addVector, searchVectors } from "../../embedding.js";
 import type { Tool } from "../../types.js";
@@ -63,7 +64,7 @@ export const memorySearch: Tool = {
     try {
       const results: string[] = [];
 
-      // 語意搜尋（向量）
+      // 語意搜尋（向量，sqlite-vec）
       const vectorResults = await searchVectors(query);
       if (vectorResults.length > 0) {
         results.push("## Semantic matches\n" + vectorResults.map(r =>
@@ -71,27 +72,23 @@ export const memorySearch: Tool = {
         ).join("\n"));
       }
 
-      // 關鍵字搜尋（fallback + 補充）
-      mkdirSync(MEMORY_DIR, { recursive: true });
-      const files = readdirSync(MEMORY_DIR).filter(f => f.endsWith(".md")).sort().reverse();
-      const q = query.toLowerCase();
-      const keywordResults: string[] = [];
-
+      // 全文搜尋（SQLite FTS5）
       try {
-        const index = readFileSync(MEMORY_INDEX, "utf-8");
-        const lines = index.split("\n").filter(l => l.toLowerCase().includes(q));
-        if (lines.length > 0) keywordResults.push(`[MEMORY.md]\n${lines.join("\n")}`);
-      } catch { /* no index yet */ }
+        const db = getDb();
+        const ftsResults = db.prepare(`
+          SELECT text, file, highlight(memory_fts, 0, '**', '**') AS highlighted
+          FROM memory_fts
+          WHERE memory_fts MATCH ?
+          ORDER BY rank
+          LIMIT 20
+        `).all(query) as Array<{ text: string; file: string; highlighted: string }>;
 
-      for (const file of files.slice(0, 30)) {
-        const content = readFileSync(resolve(MEMORY_DIR, file), "utf-8");
-        const lines = content.split("\n").filter(l => l.toLowerCase().includes(q));
-        if (lines.length > 0) keywordResults.push(`[${file}]\n${lines.join("\n")}`);
-      }
-
-      if (keywordResults.length > 0) {
-        results.push("## Keyword matches\n" + keywordResults.join("\n\n"));
-      }
+        if (ftsResults.length > 0) {
+          results.push("## Full-text matches\n" + ftsResults.map(r =>
+            `- [${r.file}] ${r.highlighted}`
+          ).join("\n"));
+        }
+      } catch { /* FTS query error (bad syntax etc), skip */ }
 
       return results.length > 0 ? results.join("\n\n") : "No matching memories found.";
     } catch (err) {
