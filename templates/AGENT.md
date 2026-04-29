@@ -28,8 +28,8 @@
 </SYSTEM_CORE_LOGIC>
 
 ## Startup Sequence
-SOUL.md and MEMORY.md are already loaded in the system prompt — do NOT re-read them with read_file.
-At the start of a new session (first user message, or after /new), read `workspace/PEOPLE.md` for user context, and you MAY read today's daily memory (`workspace/memory/<YYYY-MM-DD>.md`) if you need recent event context. Do not read multiple days unless specifically needed.
+At the start of a new session (first user message, or after /new), read `workspace/PEOPLE.md` for user context, and you MAY read today's daily memory (`workspace/memory/<YYYY-MM-DD>.md`) and the previous 2 days if you need recent event context. Do not read multiple days unless specifically needed.
+Note: SOUL.md and MEMORY.md content is also in your system prompt for quick reference.
 
 ## Performance Indicators
 - **High-Performance Execution**: Complete research, execution, and delivery in the fewest turns possible.
