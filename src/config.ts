@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, statSync } from "node:fs";
 import { parse, stringify } from "yaml";
 import { CONFIG_PATH } from "./paths.js";
 import "dotenv/config";
@@ -9,6 +9,7 @@ export interface FuretConfig {
     base_url: string;
     currentModel: string;
     modelList: string[];
+    maxContextTokens: number;
   };
   discord: {
     enabled: boolean;
@@ -36,6 +37,7 @@ const DEFAULTS: FuretConfig = {
     base_url: "",
     currentModel: "claude-sonnet-4-20250514",
     modelList: [],
+    maxContextTokens: 150_000,
   },
   discord: {
     enabled: false,
@@ -75,12 +77,23 @@ function resolveEnvVars(value: unknown): unknown {
 }
 
 let cached: FuretConfig | null = null;
+let cachedMtimeMs = 0;
 
 export function loadConfig(): FuretConfig {
-  if (cached) return cached;
+  // 有 cache 時檢查 mtime，沒變就直接回傳
+  if (cached) {
+    try {
+      const stat = statSync(CONFIG_PATH);
+      if (stat.mtimeMs === cachedMtimeMs) return cached;
+    } catch {
+      return cached;
+    }
+  }
 
   let raw: Record<string, unknown> = {};
   try {
+    const stat = statSync(CONFIG_PATH);
+    cachedMtimeMs = stat.mtimeMs;
     const content = readFileSync(CONFIG_PATH, "utf-8");
     raw = (parse(content) as Record<string, unknown>) ?? {};
   } catch {

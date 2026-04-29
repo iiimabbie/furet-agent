@@ -10,11 +10,51 @@ function sanitizeContent(blocks: ContentBlock[]): ContentBlock[] {
   return blocks.map(b => {
     switch (b.type) {
       case "text": return { type: b.type, text: b.text };
+      case "thinking": return { type: b.type, thinking: b.thinking, ...(b.signature ? { signature: b.signature } : {}) };
       case "tool_use": return { type: b.type, id: b.id, name: b.name, input: b.input };
       case "tool_result": return { type: b.type, tool_use_id: b.tool_use_id, content: b.content };
       default: return b;
     }
   });
+}
+
+/** 粗估 message 的 token 數（JSON 長度 / 4） */
+function estimateTokens(msg: { role: string; content: string | ContentBlock[] }): number {
+  const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+  return Math.ceil(text.length / 4);
+}
+
+/**
+ * 從 session messages 中取出符合 token 上限的歷史，確保：
+ * 1. tool_use / tool_result 配對不被拆散
+ * 2. 從最新的往回取，優先保留近期對話
+ */
+function trimToTokenBudget(messages: Message[], maxTokens: number): Message[] {
+  // 從後往前累加 token，找到能放進預算的起點
+  let totalTokens = 0;
+  let startIdx = messages.length;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const tokens = estimateTokens(messages[i]);
+    if (totalTokens + tokens > maxTokens) break;
+    totalTokens += tokens;
+    startIdx = i;
+  }
+
+  // 往前推確保不拆散 tool_use/tool_result 配對：
+  // 如果起點是一則 user message 且 content 是 tool_result 陣列，
+  // 它的配對 assistant（含 tool_use）在前一則，必須一起帶上
+  while (startIdx > 0) {
+    const msg = messages[startIdx];
+    if (msg.role === "user" && Array.isArray(msg.content) &&
+        (msg.content as ContentBlock[]).some(b => b.type === "tool_result")) {
+      startIdx--;
+    } else {
+      break;
+    }
+  }
+
+  return messages.slice(startIdx);
 }
 
 function extractText(blocks: ContentBlock[]): string {
@@ -97,24 +137,37 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
     }
   }
 
-  const allSessionMessages = session?.getMessages() ?? [];
-  const sessionMessages = allSessionMessages.slice(-20);
   type ApiMessage = { role: "user" | "assistant"; content: string | ContentBlock[] };
 
-  // session 歷史打包成第一則 assistant message，當前訊息是第一則 user message
+  // 從 session 取歷史，用 token budget 控制上限
+  const maxContextTokens = loadConfig().llm.maxContextTokens;
+  const allSessionMessages = session?.getMessages() ?? [];
+  const sessionMessages = trimToTokenBudget(allSessionMessages, maxContextTokens);
+
+  // 標準 multi-turn：直接展開 session messages 送 API
   const messages: ApiMessage[] = [];
-  if (sessionMessages.length > 0) {
-    messages.push({ role: "assistant", content: `對話紀錄：\n${JSON.stringify(sessionMessages, null, 2)}` });
-  }
-  // 當前 prompt（已在 session 裡的不重複加）
-  const images = options.images;
-  if (prompt !== null && !session) {
-    messages.push({ role: "user", content: buildUserContent(prompt + MEMORY_HOOK, images) });
-  } else if (session && sessionMessages.length > 0) {
-    const last = sessionMessages[sessionMessages.length - 1];
-    if (last.role === "user" && typeof last.content === "string") {
-      messages.push({ role: "user", content: buildUserContent(last.content + MEMORY_HOOK, images) });
+
+  if (session) {
+    // 有 session：歷史已在 session 中（含 thinking + tool_use，但不含 tool_result）
+    // 送 API 時：含 tool_use 的 assistant message 要過濾掉 tool_use blocks（因為沒有配對的 tool_result）
+    for (let i = 0; i < sessionMessages.length; i++) {
+      const m = sessionMessages[i];
+      const isLast = i === sessionMessages.length - 1;
+
+      if (m.role === "assistant" && Array.isArray(m.content)) {
+        // 過濾掉 tool_use blocks，只保留 thinking + text 送 API
+        const apiBlocks = (m.content as ContentBlock[]).filter(b => b.type !== "tool_use");
+        if (apiBlocks.length === 0) continue; // 整則都是 tool_use，跳過
+        messages.push({ role: m.role, content: apiBlocks });
+      } else if (isLast && m.role === "user" && typeof m.content === "string") {
+        messages.push({ role: m.role, content: buildUserContent(m.content + MEMORY_HOOK, options.images) });
+      } else {
+        messages.push({ role: m.role, content: m.content });
+      }
     }
+  } else if (prompt !== null) {
+    // 無 session（單次推理，如 cron/reminder）
+    messages.push({ role: "user", content: buildUserContent(prompt + MEMORY_HOOK, options.images) });
   }
 
   for (let turn = 0; turn < maxTurns; turn++) {
@@ -163,21 +216,20 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
     // Skip empty assistant content — some routers (Gemini) reject empty parts
     if (cleanContent.length > 0) {
       messages.push({ role: "assistant", content: cleanContent });
+      // 存進 session：thinking + text + tool_use（不存 tool_result）
+      session?.append({ role: "assistant", content: cleanContent, time: nowTimestamp() });
     }
 
     // 沒有 tool call → 最後一輪
     if (toolUseBlocks.length === 0) {
-      let finalText = extractText(cleanContent);
+      const finalText = extractText(cleanContent);
 
       // 如果沒有文字回覆（agent 只做了 tool call），強制再跑一輪要求回話
       if (!finalText && turn < maxTurns - 1) {
-        messages.push({ role: "user", content: "Please reply to the user with a text response." });
+        messages.push({ role: "user", content: "[System] Please reply to the user with a text response." });
         continue;
       }
 
-      if (finalText) {
-        session?.append({ role: "assistant", content: finalText, time: nowTimestamp() });
-      }
       const durationMs = Date.now() - startTime;
       session?.addUsage(totalUsage);
       logger.info({ durationMs, toolsUsed: toolsUsed.map(t => t.tool), textLength: finalText.length, usage: totalUsage }, "query done");

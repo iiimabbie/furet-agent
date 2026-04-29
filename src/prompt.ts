@@ -27,7 +27,7 @@ function loadJournalSection(section: string): string {
   }
 }
 
-export const MEMORY_HOOK = `\n\n---\n[hook] ${loadJournalSection("Memory Hook")}`;
+export const MEMORY_HOOK = `\n\n${loadJournalSection("Memory Hook")}`;
 
 export const SESSION_SUMMARIZE_PROMPT = loadJournalSection("Session Summarize");
 

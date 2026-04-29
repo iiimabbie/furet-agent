@@ -164,7 +164,7 @@ export async function startBot(token: string): Promise<void> {
       const session = new Session(sessionId);
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const channelContext = `Current Discord context: channel (ID: ${interaction.channelId})`;
+      const channelContext = `Current Discord context: channel (ID: ${interaction.channelId}), session: ${sessionId}`;
       const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
 
       // 歸檔前：讓 agent 總結當前 session 存進記憶
@@ -179,7 +179,7 @@ export async function startBot(token: string): Promise<void> {
       session.archive();
       logger.info({ sessionId }, "session archived via /new");
 
-      const newSessionContent = `<@${interaction.user.id}>(${interaction.user.username}) 使用 /new 開始了新對話。請根據 system prompt 中的人格設定和長期記憶，以你的身份打招呼。`;
+      const newSessionContent = `[System] <@${interaction.user.id}>(${interaction.user.username}) started a new session via /new. Greet them in character. All context (persona, memory, people) is already in the system prompt — do NOT read any files.`;
       session.append({ role: "user", content: newSessionContent, time: ts });
 
       try {
@@ -351,10 +351,8 @@ export async function startBot(token: string): Promise<void> {
           const authorName = starter.member?.displayName ?? starter.author.username;
           const threadName = message.channel.name;
           session.append({
-            role: starter.author.bot ? "assistant" : "user",
-            content: starter.author.bot
-              ? `[thread: ${threadName}]\n${starter.content}`
-              : `<@${starter.author.id}>(${authorName}): [thread: ${threadName}]\n${starter.content}`,
+            role: "user",
+            content: `[System] This is the initial message of forum post "${threadName}" (by ${authorName}):\n${starter.content}`,
             time: ts,
             msgId: starter.id,
           });
@@ -506,7 +504,7 @@ async function handleTrigger(message: Message, session: Session, images?: string
       : (ch.isDMBased() ? "DM" : "channel");
     const parentInfo = ch.isThread() && ch.parentId ? `, parent channel: ${ch.parentId}` : "";
     const threadName = ch.isThread() ? `, name: "${ch.name}"` : "";
-    const channelContext = `Current Discord context: ${channelType} (ID: ${message.channelId}${parentInfo}${threadName})`;
+    const channelContext = `Current Discord context: ${channelType} (ID: ${message.channelId}${parentInfo}${threadName}), session: ${session.id}`;
     const isOwner = message.author.id === loadConfig().discord.owner_id;
     const response = await ask(null, { session, systemPrompt: channelContext, images, onProgress, trigger: isOwner ? "discord-owner" : "discord-other" });
     await flushChain; // 確保進度訊息已發送完成

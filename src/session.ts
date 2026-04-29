@@ -86,37 +86,12 @@ export class Session {
       const data = JSON.parse(readFileSync(this.filePath, "utf-8"));
       this.messages = data.messages ?? [];
       this.usage = data.usage ?? { inputTokens: 0, outputTokens: 0 };
-      this.migrateOldFormat();
       logger.info({ sessionId: this.id, count: this.messages.length }, "session loaded");
     } catch {
       this.messages = [];
     }
   }
 
-  /** 遷移舊格式：ContentBlock[] → string，過濾 tool blocks */
-  private migrateOldFormat(): void {
-    let changed = false;
-    const migrated: Message[] = [];
-    for (const m of this.messages) {
-      if (typeof m.content === "string") {
-        migrated.push(m);
-      } else if (Array.isArray(m.content)) {
-        const blocks = m.content as Array<{ type: string; text?: string }>;
-        const textBlocks = blocks.filter(b => b.type === "text");
-        if (textBlocks.length > 0) {
-          migrated.push({ ...m, content: textBlocks.map(b => b.text ?? "").join("") });
-          changed = true;
-        } else {
-          changed = true; // 整則跳過（純 tool blocks）
-        }
-      }
-    }
-    if (changed) {
-      this.messages = migrated;
-      logger.info({ sessionId: this.id, before: this.messages.length, after: migrated.length }, "migrated old session format");
-      this.save();
-    }
-  }
 
   /** 檢查 session 檔是否已存在（用於區分「從未觸發過」跟「已有對話歷史」） */
   static exists(id: string): boolean {
