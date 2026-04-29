@@ -147,6 +147,12 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
   // 標準 multi-turn：直接展開 session messages 送 API
   const messages: ApiMessage[] = [];
 
+  // Memory hook 只在每 N 則 user message 時附加（定期 nudge，非每輪）
+  const MEMORY_NUDGE_INTERVAL = 5;
+  const userMsgCount = session ? allSessionMessages.filter(m => m.role === "user" && typeof m.content === "string").length : 1;
+  const shouldNudge = userMsgCount % MEMORY_NUDGE_INTERVAL === 0 || userMsgCount <= 1;
+  const hook = shouldNudge ? MEMORY_HOOK : "";
+
   if (session) {
     // 有 session：歷史已在 session 中（含 thinking + tool_use，但不含 tool_result）
     // 送 API 時：含 tool_use 的 assistant message 要過濾掉 tool_use blocks（因為沒有配對的 tool_result）
@@ -160,14 +166,14 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
         if (apiBlocks.length === 0) continue; // 整則都是 tool_use，跳過
         messages.push({ role: m.role, content: apiBlocks });
       } else if (isLast && m.role === "user" && typeof m.content === "string") {
-        messages.push({ role: m.role, content: buildUserContent(m.content + MEMORY_HOOK, options.images) });
+        messages.push({ role: m.role, content: buildUserContent(m.content + hook, options.images) });
       } else {
         messages.push({ role: m.role, content: m.content });
       }
     }
   } else if (prompt !== null) {
     // 無 session（單次推理，如 cron/reminder）
-    messages.push({ role: "user", content: buildUserContent(prompt + MEMORY_HOOK, options.images) });
+    messages.push({ role: "user", content: buildUserContent(prompt + hook, options.images) });
   }
 
   for (let turn = 0; turn < maxTurns; turn++) {

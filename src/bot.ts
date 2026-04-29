@@ -167,12 +167,12 @@ export async function startBot(token: string): Promise<void> {
       const channelContext = `Current Discord context: channel (ID: ${interaction.channelId}), session: ${sessionId}`;
       const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
 
-      // 歸檔前：讓 agent 總結當前 session 存進記憶
+      // 歸檔前：silent memory flush — 讓 agent 自由整理記憶
       if (session.length > 0) {
-        const summarizePrompt = SESSION_SUMMARIZE_PROMPT;
-        session.append({ role: "user", content: summarizePrompt, time: ts });
-        await ask(null, { session, systemPrompt: channelContext, trigger: "discord-owner" }).catch(err =>
-          logger.error({ err: (err as Error).message }, "session summarize before /new failed")
+        const flushContext = `${channelContext}\n\n[System] ${SESSION_SUMMARIZE_PROMPT}`;
+        session.append({ role: "user", content: "[System] Session ending — flush memory now.", time: ts });
+        await ask(null, { session, systemPrompt: flushContext, trigger: "discord-owner" }).catch(err =>
+          logger.error({ err: (err as Error).message }, "memory flush before /new failed")
         );
       }
 

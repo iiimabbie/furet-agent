@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { logger } from "../../logger.js";
+import { loadConfig } from "../../config.js";
 import { MEMORY_DIR, MEMORY_INDEX } from "../../paths.js";
 import { addVector, searchVectors } from "../../embedding.js";
 import type { Tool } from "../../types.js";
@@ -122,24 +123,101 @@ export const memoryList: Tool = {
   },
 };
 
-export const memoryUpdateIndex: Tool = {
-  name: "memory_update_index",
-  description: "Update the long-term memory index (MEMORY.md). This file is loaded into every conversation. Use this to maintain a summary of the most important, persistent facts about the user. Keep it concise.",
+function readMemoryIndex(): string {
+  try { return readFileSync(MEMORY_INDEX, "utf-8"); } catch { return ""; }
+}
+
+function memoryUsageInfo(content: string): string {
+  const { memoryCharLimit } = loadConfig().llm;
+  const pct = Math.round((content.length / memoryCharLimit) * 100);
+  return `[${content.length}/${memoryCharLimit} chars, ${pct}%]`;
+}
+
+export const memoryAdd: Tool = {
+  name: "memory_add",
+  description: "Add an entry to long-term memory (MEMORY.md). This file is loaded into every conversation. Use for durable facts, preferences, and rules. Returns current usage.",
   parameters: {
     type: "object",
     properties: {
-      content: { type: "string", description: "The full content to write to MEMORY.md" },
+      entry: { type: "string", description: "The memory entry to add" },
     },
-    required: ["content"],
+    required: ["entry"],
   },
   execute: async (args) => {
-    const { content } = args as { content: string };
-    logger.info({ content: content.slice(0, 100) }, "memory update index");
+    const { entry } = args as { entry: string };
+    logger.info({ entry: entry.slice(0, 100) }, "memory add");
     try {
-      writeFileSync(MEMORY_INDEX, content);
-      return "MEMORY.md updated.";
+      const current = readMemoryIndex();
+      const newContent = current ? `${current.trimEnd()}\n${entry}\n` : `${entry}\n`;
+      const { memoryCharLimit } = loadConfig().llm;
+      if (newContent.length > memoryCharLimit) {
+        return `Error: MEMORY.md is full. ${memoryUsageInfo(current)} Consolidate or remove entries before adding new ones.`;
+      }
+      writeFileSync(MEMORY_INDEX, newContent);
+      return `Added. ${memoryUsageInfo(newContent)}`;
     } catch (err) {
-      logger.error({ err }, "memory update index failed");
+      logger.error({ err }, "memory add failed");
+      return `Error: ${(err as Error).message}`;
+    }
+  },
+};
+
+export const memoryReplace: Tool = {
+  name: "memory_replace",
+  description: "Replace text in long-term memory (MEMORY.md). Finds old_text by substring match and replaces it with new_text. Use to update stale facts.",
+  parameters: {
+    type: "object",
+    properties: {
+      old_text: { type: "string", description: "The existing text to find (substring match)" },
+      new_text: { type: "string", description: "The replacement text" },
+    },
+    required: ["old_text", "new_text"],
+  },
+  execute: async (args) => {
+    const { old_text, new_text } = args as { old_text: string; new_text: string };
+    logger.info({ old: old_text.slice(0, 80), new: new_text.slice(0, 80) }, "memory replace");
+    try {
+      const current = readMemoryIndex();
+      if (!current.includes(old_text)) {
+        return `Error: old_text not found in MEMORY.md. Use memory_add to create new entries.`;
+      }
+      const updated = current.replace(old_text, new_text);
+      const { memoryCharLimit } = loadConfig().llm;
+      if (updated.length > memoryCharLimit) {
+        return `Error: replacement would exceed limit. ${memoryUsageInfo(current)}`;
+      }
+      writeFileSync(MEMORY_INDEX, updated);
+      return `Replaced. ${memoryUsageInfo(updated)}`;
+    } catch (err) {
+      logger.error({ err }, "memory replace failed");
+      return `Error: ${(err as Error).message}`;
+    }
+  },
+};
+
+export const memoryRemove: Tool = {
+  name: "memory_remove",
+  description: "Remove text from long-term memory (MEMORY.md). Finds and deletes the matching text. Use to clean up outdated or duplicate entries.",
+  parameters: {
+    type: "object",
+    properties: {
+      text: { type: "string", description: "The text to find and remove (substring match)" },
+    },
+    required: ["text"],
+  },
+  execute: async (args) => {
+    const { text } = args as { text: string };
+    logger.info({ text: text.slice(0, 100) }, "memory remove");
+    try {
+      const current = readMemoryIndex();
+      if (!current.includes(text)) {
+        return `Error: text not found in MEMORY.md.`;
+      }
+      const updated = current.replace(text, "").replace(/\n{3,}/g, "\n\n");
+      writeFileSync(MEMORY_INDEX, updated);
+      return `Removed. ${memoryUsageInfo(updated)}`;
+    } catch (err) {
+      logger.error({ err }, "memory remove failed");
       return `Error: ${(err as Error).message}`;
     }
   },

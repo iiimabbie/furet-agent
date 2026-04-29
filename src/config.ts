@@ -10,6 +10,7 @@ export interface FuretConfig {
     currentModel: string;
     modelList: string[];
     maxContextTokens: number;
+    memoryCharLimit: number;
   };
   discord: {
     enabled: boolean;
@@ -38,6 +39,7 @@ const DEFAULTS: FuretConfig = {
     currentModel: "claude-sonnet-4-20250514",
     modelList: [],
     maxContextTokens: 150_000,
+    memoryCharLimit: 3000,
   },
   discord: {
     enabled: false,

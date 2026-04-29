@@ -190,19 +190,19 @@ async function summarizeAndArchiveAll(): Promise<void> {
   if (ids.length === 0) return;
 
   const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
-  const summarizePrompt = SESSION_SUMMARIZE_PROMPT;
 
   for (const id of ids) {
     const session = new Session(id);
     if (session.length === 0) continue;
     try {
-      session.append({ role: "user", content: summarizePrompt, time: ts });
-      await ask(null, { session, trigger: "journal" });
+      const flushContext = `[System] ${SESSION_SUMMARIZE_PROMPT}`;
+      session.append({ role: "user", content: "[System] Session ending — flush memory now.", time: ts });
+      await ask(null, { session, systemPrompt: flushContext, trigger: "journal" });
       session.archive();
-      logger.info({ sessionId: id }, "session summarized and archived (journal)");
+      logger.info({ sessionId: id }, "memory flushed and archived (journal)");
     } catch (err) {
-      logger.error({ err: (err as Error).message, sessionId: id }, "session summarize failed (journal)");
-      session.archive(); // 總結失敗也歸檔，避免 context 無限增長
+      logger.error({ err: (err as Error).message, sessionId: id }, "memory flush failed (journal)");
+      session.archive(); // flush 失敗也歸檔，避免 context 無限增長
     }
   }
 }
