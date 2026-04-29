@@ -41,7 +41,7 @@ const DEFAULTS: FuretConfig = {
     modelList: [],
     maxContextTokens: 150_000,
     memoryCharLimit: 3000,
-    codingModel: "claude-opus-4-6",
+    codingModel: "",  // 空字串 = 使用 currentModel
   },
   discord: {
     enabled: false,

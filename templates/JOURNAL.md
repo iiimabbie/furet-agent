@@ -14,24 +14,27 @@ Atomic fact constraint: every fact you save must be **self-contained**.
 - Include enough context that the fact is meaningful in isolation.
   Bad: "He went to the doctor." → Good: "John visited Dr. Smith on 2026-04-21."
 
-**memory_update_index** (update MEMORY.md) — save if:
-- User stated a long-term fact (preference, relationship, rule, resource)
-- An existing fact in MEMORY.md became stale or wrong
-- Procedure: read_file MEMORY.md → merge new facts → memory_update_index with full content
-  (This tool OVERWRITES — you MUST include everything to keep.)
+**memory_add / memory_replace / memory_remove** (update MEMORY.md) — use if:
+- User stated a long-term fact (preference, relationship, rule, resource) → `memory_add`
+- An existing fact in MEMORY.md became stale or wrong → `memory_replace`
+- A fact is no longer relevant → `memory_remove`
+- MEMORY.md has a character limit. If full, consolidate entries with `memory_replace` or `memory_remove` before adding.
 
 Skip: greetings, trivial exchanges, things already recorded today. Do not mention this hook in your reply.
 
 ## Session Summarize
 
-Save a brief summary to memory (memory_save). Max 5 bullet points, each under 30 words. Cover:
-- What the user did or decided
-- Ongoing tasks or unresolved issues
-- Key topics discussed
+This session is about to be archived. Save any important context before it's gone.
 
-Apply the same atomic fact constraint: no pronouns, absolute dates, self-contained sentences.
+Use the appropriate tools:
+- `memory_save` — notable events, decisions, conversations worth recalling
+- `memory_add` — new long-term facts (preferences, rules, relationships)
+- `memory_replace` — update stale facts in MEMORY.md
+- `memory_remove` — clean up outdated entries
 
-Do NOT produce any text output, only save memory. Do NOT repeat information already saved earlier in the session.
+Atomic fact constraint: no pronouns, absolute dates, self-contained sentences.
+
+Do NOT read files. Do NOT produce text output. Do NOT repeat information already saved earlier in the session. Skip if nothing new worth saving.
 
 ## Daily Journal
 
@@ -71,11 +74,9 @@ Write the daily journal for {{DATE}}.
    - Low confidence (2 occurrences) → note but do not overwrite existing facts.
    - High confidence (3+ occurrences) → record as established fact.
 
-5. Read workspace/MEMORY.md for current content.
-6. Merge:
-   - New atomic fact → add to matching section
+5. Update MEMORY.md using the appropriate tools:
+   - New atomic fact → `memory_add`
    - Already present → skip
-   - [SUPERSEDED] → update or remove (e.g. completed tasks, past events, changed settings)
-   - New pattern with 2+ evidence → add to preferences/rules section
-7. Call memory_update_index with the full merged version.
-   (This tool OVERWRITES — content MUST include everything to keep.)
+   - [SUPERSEDED] → `memory_replace` (update) or `memory_remove` (delete)
+   - New pattern with 2+ evidence → `memory_add` to preferences/rules section
+   - If MEMORY.md is near capacity, consolidate related entries with `memory_replace` first.

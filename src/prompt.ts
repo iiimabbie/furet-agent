@@ -98,12 +98,20 @@ export function buildSystemPrompt(extra?: string): string {
   const date = `Current datetime: ${now.toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).replace("T", " ")} (Asia/Taipei)`;
   const persona = loadWorkspaceFile("SOUL.md");
   const memory = loadWorkspaceFile("MEMORY.md");
-  const memorySection = memory ? `\n## Long-term Memory\n${memory}` : "";
 
   const skills = loadSkills();
   const skillsSection = skills.length > 0
-    ? `\n## Active Skills\n${skills.map(s => `- **${s.name}**: ${s.description} → \`${s.path}\``).join("\n")}`
+    ? skills.map(s => `- **${s.name}**: ${s.description} → \`${s.path}\``).join("\n")
     : "";
 
-  return [loadAgentInstructions(), date, persona, memorySection, skillsSection, extra].filter(Boolean).join("\n");
+  const parts = [
+    loadAgentInstructions(),
+    date,
+    persona,
+    memory,
+    skillsSection,
+    extra,
+  ];
+
+  return parts.filter(Boolean).join("\n\n");
 }

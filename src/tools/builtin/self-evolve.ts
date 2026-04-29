@@ -34,7 +34,7 @@ export const selfEvolve: Tool = {
   execute: async (args) => {
     const { task } = args as { task: string };
     const config = loadConfig();
-    const model = config.llm.codingModel;
+    const model = config.llm.codingModel || config.llm.currentModel;
 
     logger.info({ task: task.slice(0, 200), model }, "self_evolve triggered");
 

@@ -1,7 +1,10 @@
 llm:
   api_key: "${LLM_API_KEY}"             # required
   base_url: "${LLM_BASE_URL}"           # required (OpenAI-compatible endpoint)
-  currentModel: "claude-sonnet-4-20250514"
+  currentModel: "claude-sonnet-4-6"
+  codingModel: "claude-opus-4-6"        # model used by self_evolve tool
+  maxContextTokens: 150000              # token budget for conversation context
+  memoryCharLimit: 3000                 # MEMORY.md character limit
   modelList:
     - claude-opus-4-6
     - claude-sonnet-4-6

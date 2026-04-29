@@ -1,4 +1,4 @@
-# Long-term Memory
+<memory>
 
 ## Owner
 (Name, nickname, occupation, contact info, etc.)
@@ -17,3 +17,5 @@
 
 ## Pending Work
 (Ongoing tasks, to-do items)
+
+</memory>
