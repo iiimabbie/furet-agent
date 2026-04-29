@@ -4,7 +4,7 @@ export { setTrigger, getTrigger } from "./context.js";
 import { getTrigger } from "./context.js";
 
 const OWNER_ONLY_TOOLS = new Set([
-  "bash", "write_file",
+  // "bash", — 暫時開放，非 owner 也需要 curl/find 等操作
   "memory_replace", "memory_remove",
   "cron_create", "cron_delete", "cron_toggle", "cron_update",
   "reminder_create", "reminder_delete",
