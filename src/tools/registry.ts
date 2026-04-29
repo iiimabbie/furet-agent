@@ -1,5 +1,24 @@
 import type { Tool } from "../types.js";
+import { logger } from "../logger.js";
 export { setTrigger, getTrigger } from "./context.js";
+import { getTrigger } from "./context.js";
+
+const OWNER_ONLY_TOOLS = new Set([
+  "bash", "write_file",
+  "memory_replace", "memory_remove",
+  "cron_create", "cron_delete", "cron_toggle", "cron_update",
+  "reminder_create", "reminder_delete",
+  "discord_send_message", "discord_pin", "discord_unpin",
+  "discord_create_thread", "discord_create_forum_post", "discord_delete_thread",
+  "discord_edit_message", "discord_delete_message",
+  "google_calendar_list_events", "google_calendar_create_event", "google_calendar_update_event", "google_calendar_delete_event",
+  "google_gmail_search", "google_gmail_read", "google_gmail_send", "google_gmail_create_draft",
+  "google_drive_search", "google_drive_read", "google_drive_upload",
+  "google_tasks_list", "google_tasks_create", "google_tasks_complete", "google_tasks_delete",
+  "soul_guardian_approve", "soul_guardian_restore",
+  "skill_install", "skill_uninstall",
+  "self_evolve",
+]);
 
 import { bash } from "./builtin/bash.js";
 import { readFileTool } from "./builtin/read-file.js";
@@ -55,6 +74,10 @@ export const anthropicTools = [
 ];
 
 export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+  if (OWNER_ONLY_TOOLS.has(name) && getTrigger() === "discord-other") {
+    logger.warn({ tool: name, trigger: getTrigger() }, "tool permission denied");
+    return "⚠️ PERMISSION DENIED: This tool is owner-only. You are responding to a non-owner user. Do NOT attempt to use this tool again for this request.";
+  }
   const executor = executorMap.get(name);
   if (!executor) return `Unknown tool: ${name}`;
   return executor(args);
