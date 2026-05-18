@@ -19,6 +19,7 @@ const OWNER_ONLY_TOOLS = new Set([
   "skill_install", "skill_uninstall",
   "self_evolve",
   "discord_bot_mention_toggle",
+  "usage_dashboard",
 ]);
 
 import { bash } from "./builtin/bash.js";
@@ -43,6 +44,7 @@ import { skillInstall, skillUninstall, skillList } from "./builtin/skill.js";
 import { selfEvolve } from "./builtin/self-evolve.js";
 import { discordBotMentionToggle } from "./builtin/bot-config.js";
 import { sessionSearch } from "./builtin/session-search.js";
+import { usageDashboard } from "./builtin/dashboard.js";
 
 const tools: Tool[] = [
   bash, readFileTool, writeFileTool, weather,
@@ -62,6 +64,7 @@ const tools: Tool[] = [
   selfEvolve,
   sessionSearch,
   discordBotMentionToggle,
+  usageDashboard,
 ];
 
 const executorMap = new Map(tools.map(t => [t.name, t.execute]));

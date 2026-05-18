@@ -440,7 +440,7 @@ async function formatIncomingMessage(message: Message): Promise<FormattedMessage
   }
 
   return {
-    content: `<@${authorId}>(${authorName}): ${content}${attach}`,
+    content: `[msg:${message.id} ${ts}] <@${authorId}>(${authorName}):${message.reference?.messageId ? ` (reply to msg:${message.reference.messageId})` : ""} ${content}${attach}`,
     time: ts,
     msgId: message.id,
     ...(message.reference?.messageId ? { replyTo: message.reference.messageId } : {}),
