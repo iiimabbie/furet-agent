@@ -21,6 +21,7 @@ export interface FuretConfig {
     owner_id: string;
     status: string;
     activity: string;
+    respond_to_bots: boolean;
   };
   journal: {
     enabled: boolean;
@@ -51,6 +52,7 @@ const DEFAULTS: FuretConfig = {
     owner_id: "",
     status: "online",
     activity: "Burrowing around…🦦✨",
+    respond_to_bots: false,
   },
   journal: {
     enabled: false,
@@ -137,7 +139,6 @@ export function removeSkill(name: string): void {
 }
 
 export function setCurrentModel(model: string): void {
-  // read raw yaml, update currentModel, write back
   let raw: Record<string, unknown> = {};
   try {
     raw = (parse(readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) ?? {};
@@ -146,6 +147,17 @@ export function setCurrentModel(model: string): void {
   llm.currentModel = model;
   raw.llm = llm;
   writeFileSync(CONFIG_PATH, stringify(raw, { lineWidth: 0 }));
-  // clear cache so next loadConfig() picks up the change
+  cached = null;
+}
+
+export function setRespondToBots(enabled: boolean): void {
+  let raw: Record<string, unknown> = {};
+  try {
+    raw = (parse(readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) ?? {};
+  } catch {}
+  const discord = (raw.discord as Record<string, unknown>) ?? {};
+  discord.respond_to_bots = enabled;
+  raw.discord = discord;
+  writeFileSync(CONFIG_PATH, stringify(raw, { lineWidth: 0 }));
   cached = null;
 }

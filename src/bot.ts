@@ -346,16 +346,16 @@ export async function startBot(token: string): Promise<void> {
     }
   });
 
-  const config = loadConfig();
-
   client.on(Events.MessageCreate, async (message) => {
-    // 自己的訊息不處理；其他 bot 的訊息只記錄不觸發
+    // 自己的訊息不處理
     if (message.author.id === client.user?.id) return;
 
+    const config = loadConfig();
     const sessionId = sessionIdForMessage(message);
     const isMentioned = client.user ? message.mentions.has(client.user) : false;
     const isDM = !message.guild;
-    const isTrigger = !message.author.bot && (isMentioned || isDM);
+    const isBot = message.author.bot;
+    const isTrigger = (isMentioned || isDM) && (!isBot || config.discord.respond_to_bots);
 
     // Session 隔離：未被觸發且尚未有 session → 不偷看、不記錄
     // （只有 bot 被 @mention / reply / DM 後才會開啟這個 channel 的 session；

@@ -61,13 +61,59 @@ function extractText(blocks: ContentBlock[]): string {
   return blocks.filter((b): b is ContentBlock & { type: "text" } => b.type === "text").map(b => b.text).join("");
 }
 
-/** 組裝 user message content：純文字 or 文字+圖片 */
-function buildUserContent(text: string, images?: string[]): string | ContentBlock[] {
+/** Fetch a single image URL and return a base64 image block for the Anthropic API */
+async function fetchImageAsBase64(url: string): Promise<ContentBlock | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      logger.warn({ url, status: res.status }, "image fetch failed (non-OK status)");
+      return null;
+    }
+    const contentType = res.headers.get("content-type") ?? "image/png";
+    // Normalise media type — Anthropic accepts image/jpeg, image/png, image/gif, image/webp
+    const media_type = contentType.split(";")[0].trim();
+    const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+    if (!ALLOWED_TYPES.has(media_type)) {
+      logger.warn({ url, media_type }, "image fetch returned unsupported content-type");
+      return null;
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    const data = buf.toString("base64");
+    return {
+      type: "image",
+      source: { type: "base64", media_type, data },
+    } as unknown as ContentBlock;
+  } catch (err) {
+    logger.warn({ url, err: (err as Error).message }, "image fetch failed (exception)");
+    return null;
+  }
+}
+
+/** 組裝 user message content：純文字 or 文字+圖片 (base64) */
+async function buildUserContent(text: string, images?: string[]): Promise<string | ContentBlock[]> {
   if (!images || images.length === 0) return text;
-  return [
-    ...images.map(url => ({ type: "image" as const, source: { type: "url" as const, url } })),
-    { type: "text" as const, text },
-  ] as unknown as ContentBlock[];
+
+  const blocks = await Promise.all(images.map(url => fetchImageAsBase64(url)));
+  const validBlocks = blocks.filter((b): b is ContentBlock => b !== null);
+  const failedCount = images.length - validBlocks.length;
+
+  if (failedCount > 0) {
+    logger.warn({ total: images.length, failed: failedCount }, "some images could not be fetched");
+  }
+
+  if (validBlocks.length === 0) {
+    // All images failed — add honesty hint so the model knows it has no visual data
+    const honestyNote = "\n\n[System note: The user attached image(s) but they could not be loaded. You have NO visual information. Do not guess or hallucinate image contents — honestly tell the user you cannot see the image.]";
+    return text + honestyNote;
+  }
+
+  const content: ContentBlock[] = [
+    ...validBlocks,
+    { type: "text" as const, text: failedCount > 0
+      ? text + `\n\n[System note: ${failedCount} of ${images.length} image(s) failed to load. Only describe what you can actually see in the successfully loaded images. If you're unsure about visual details, say so honestly.]`
+      : text },
+  ];
+  return content;
 }
 
 function nowTimestamp(): string {
@@ -157,7 +203,7 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
   }
 
   let systemPrompt = buildSystemPrompt(options.systemPrompt);
-  logger.debug({ systemPromptLength: systemPrompt.length, hasPersona: systemPrompt.includes("<persona>"), hasMemory: systemPrompt.includes("<memory>") }, "system prompt check");
+  logger.info({ systemPromptLength: systemPrompt.length, hasPersona: systemPrompt.includes("<persona>"), hasMemory: systemPrompt.includes("<memory>"), first500: systemPrompt.slice(0, 500) }, "system prompt check");
 
   // 自動記憶召回：用使用者訊息搜尋相關記憶，注入 system prompt
   if (prompt) {
@@ -212,14 +258,14 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
         if (apiBlocks.length === 0) continue; // 整則都是 tool_use，跳過
         messages.push({ role: m.role, content: apiBlocks });
       } else if (isLast && m.role === "user" && typeof m.content === "string") {
-        messages.push({ role: m.role, content: buildUserContent(m.content + hook, options.images) });
+        messages.push({ role: m.role, content: await buildUserContent(m.content + hook, options.images) });
       } else {
         messages.push({ role: m.role, content: m.content });
       }
     }
   } else if (prompt !== null) {
     // 無 session（單次推理，如 cron/reminder）
-    messages.push({ role: "user", content: buildUserContent(prompt + hook, options.images) });
+    messages.push({ role: "user", content: await buildUserContent(prompt + hook, options.images) });
   }
 
   for (let turn = 0; turn < maxTurns; turn++) {

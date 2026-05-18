@@ -18,6 +18,7 @@ const OWNER_ONLY_TOOLS = new Set([
   "soul_guardian_approve", "soul_guardian_restore",
   "skill_install", "skill_uninstall",
   "self_evolve",
+  "discord_bot_mention_toggle",
 ]);
 
 import { bash } from "./builtin/bash.js";
@@ -40,6 +41,7 @@ import { tasksList, tasksCreate, tasksComplete, tasksDelete } from "./builtin/go
 import { soulGuardianStatus, soulGuardianCheck, soulGuardianApprove, soulGuardianRestore, soulGuardianHistory } from "./builtin/soul-guardian.js";
 import { skillInstall, skillUninstall, skillList } from "./builtin/skill.js";
 import { selfEvolve } from "./builtin/self-evolve.js";
+import { discordBotMentionToggle } from "./builtin/bot-config.js";
 import { sessionSearch } from "./builtin/session-search.js";
 
 const tools: Tool[] = [
@@ -59,6 +61,7 @@ const tools: Tool[] = [
   skillInstall, skillUninstall, skillList,
   selfEvolve,
   sessionSearch,
+  discordBotMentionToggle,
 ];
 
 const executorMap = new Map(tools.map(t => [t.name, t.execute]));
