@@ -16,6 +16,7 @@ discord:
   allowed_channels: []                  # empty = all channels; specify channel IDs to restrict
   allowed_guilds: []                    # empty = all servers; specify guild IDs to restrict
   owner_id: ""                          # your Discord user ID (only owner can DM the bot)
+  respond_to_bots: false                # whether to process messages from other bots
   status: "online"                      # online | idle | dnd | invisible
   activity: "Burrowing around…🦦✨"    # custom activity text
 
@@ -31,6 +32,12 @@ soul_guardian:                           # file integrity monitor
     - path: MEMORY.md
       mode: alert
     - path: AGENT.md
+      mode: alert
+    - path: JOURNAL.md
+      mode: alert
+    - path: PEOPLE.md
+      mode: alert
+    - path: config/crons.json
       mode: alert
 
 skills: []                              # enabled skill names (must exist in workspace/skills/<name>/)
