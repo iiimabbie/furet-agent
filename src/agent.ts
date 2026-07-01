@@ -208,7 +208,10 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
   // 自動記憶召回：用使用者訊息搜尋相關記憶，注入 system prompt
   if (prompt) {
     try {
-      const recalled = await searchVectors(prompt, 5);
+      const recalled = await searchVectors(prompt, 3, {
+        excludeFiles: ["MEMORY.md", "PEOPLE.md"],
+        excludeRecentDays: 3,
+      });
       if (recalled.length > 0) {
         const recallBlock = recalled.map(r => `- [${r.file}] ${r.text}`).join("\n");
         systemPrompt += `\n\n## Recalled Memories\nThe following memories are automatically recalled based on the current message. Use them naturally if relevant — do not mention this mechanism to the user.\n${recallBlock}`;

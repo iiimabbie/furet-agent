@@ -98,8 +98,18 @@ export async function addVector(text: string, file: string): Promise<void> {
   }
 }
 
+export interface SearchOptions {
+  /** 排除特定檔案（例如已在 prompt 中的 MEMORY.md） */
+  excludeFiles?: string[];
+  /** 排除最近 N 天的日記檔（startup 已讀，避免重複） */
+  excludeRecentDays?: number;
+}
+
+const DATE_FILE_RE = /^\d{4}-\d{2}-\d{2}\.md$/;
+const SCORE_THRESHOLD = 0.65;
+
 /** 語意搜尋：回傳最相關的記憶 */
-export async function searchVectors(query: string, topK = 10): Promise<Array<{ text: string; file: string; score: number }>> {
+export async function searchVectors(query: string, topK = 10, options: SearchOptions = {}): Promise<Array<{ text: string; file: string; score: number }>> {
   if (!GEMINI_API_KEY) return [];
 
   try {
@@ -114,9 +124,22 @@ export async function searchVectors(query: string, topK = 10): Promise<Array<{ t
       WHERE v.embedding MATCH ? AND k = ?
     `).all(blob, topK) as Array<{ text: string; file: string; distance: number }>;
 
+    const { excludeFiles = [], excludeRecentDays } = options;
+    let cutoffDate: string | null = null;
+    if (excludeRecentDays) {
+      const d = new Date();
+      d.setDate(d.getDate() - excludeRecentDays);
+      cutoffDate = d.toISOString().split("T")[0];
+    }
+
     return results
       .map(r => ({ text: r.text, file: r.file, score: 1 - r.distance }))
-      .filter(r => r.score > 0.3);
+      .filter(r => {
+        if (r.score <= SCORE_THRESHOLD) return false;
+        if (excludeFiles.includes(r.file)) return false;
+        if (cutoffDate && DATE_FILE_RE.test(r.file) && r.file.slice(0, 10) >= cutoffDate) return false;
+        return true;
+      });
   } catch (err) {
     logger.error({ err: (err as Error).message }, "vector search failed");
     return [];
