@@ -3,7 +3,7 @@ import { loadConfig } from "./config.js";
 import { buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
 import { anthropicTools, executeTool, setTrigger } from "./tools/registry.js";
 import { searchVectors } from "./embedding.js";
-import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions, ProgressEvent } from "./types.js";
+import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions } from "./types.js";
 
 /** 清除 API 回傳 content blocks 中的多餘欄位（如 caller），只保留我們定義的欄位 */
 function sanitizeContent(blocks: ContentBlock[]): ContentBlock[] {
@@ -210,7 +210,7 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
     try {
       const recalled = await searchVectors(prompt, 3, {
         excludeFiles: ["MEMORY.md", "PEOPLE.md"],
-        excludeRecentDays: 3,
+        excludeRecentDays: 2,
       });
       if (recalled.length > 0) {
         const recallBlock = recalled.map(r => `- [${r.file}] ${r.text}`).join("\n");
