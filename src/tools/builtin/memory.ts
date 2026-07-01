@@ -131,6 +131,35 @@ function memoryUsageInfo(content: string): string {
   return `[${content.length}/${memoryCharLimit} chars, ${pct}%]`;
 }
 
+export const memoryAdd: Tool = {
+  name: "memory_add",
+  description: "Append a new entry or section to long-term memory (MEMORY.md). Use when the content has no existing match in MEMORY.md. To update existing content, use memory_replace instead.",
+  parameters: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "New content to append (e.g. a new section or bullet entry)" },
+    },
+    required: ["content"],
+  },
+  execute: async (args) => {
+    const { content } = args as { content: string };
+    logger.info({ content: content.slice(0, 80) }, "memory add");
+    try {
+      const current = readMemoryIndex();
+      const updated = current.trimEnd() + "\n\n" + content;
+      const { memoryCharLimit } = loadConfig().llm;
+      if (updated.length > memoryCharLimit) {
+        return `Error: would exceed character limit. ${memoryUsageInfo(current)} — consolidate existing entries first with memory_replace or memory_remove.`;
+      }
+      writeFileSync(MEMORY_INDEX, updated);
+      return `Added. ${memoryUsageInfo(updated)}`;
+    } catch (err) {
+      logger.error({ err }, "memory add failed");
+      return `Error: ${(err as Error).message}`;
+    }
+  },
+};
+
 export const memoryReplace: Tool = {
   name: "memory_replace",
   description: "Replace text in long-term memory (MEMORY.md). Finds old_text by substring match and replaces with new_text. Use to update facts, add new entries to existing sections (replace the section content with an expanded version), or consolidate entries. MEMORY.md is already in your system prompt — no need to read it first.",
