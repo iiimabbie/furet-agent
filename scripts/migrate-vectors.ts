@@ -15,19 +15,7 @@ async function migrate() {
 
   const files: Array<{ path: string; name: string }> = [];
 
-  // MEMORY.md
-  try {
-    files.push({ path: MEMORY_INDEX, name: "MEMORY.md" });
-  } catch {}
-
-  // PEOPLE.md
-  const peoplePath = resolve(MEMORY_DIR, "..", "PEOPLE.md");
-  try {
-    readFileSync(peoplePath);
-    files.push({ path: peoplePath, name: "PEOPLE.md" });
-  } catch {}
-
-  // 日記檔
+  // 日記檔（只灌日記，MEMORY.md / PEOPLE.md 已在 system prompt，不需要向量）
   try {
     const memoryFiles = readdirSync(MEMORY_DIR).filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f));
     for (const f of memoryFiles) {

@@ -1,9 +1,12 @@
 import { logger } from "./logger.js";
 import { getDb } from "./db.js";
 
-const GEMINI_API_KEY = process.env.GOOGLE_API_KEY ?? "";
 const EMBED_MODEL = "gemini-embedding-001";
-const EMBED_URL = `https://generativelanguage.googleapis.com/v1beta/models/${EMBED_MODEL}:embedContent?key=${GEMINI_API_KEY}`;
+
+function getApiKey(): string { return process.env.GOOGLE_API_KEY ?? ""; }
+function getEmbedUrl(): string {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${EMBED_MODEL}:embedContent?key=${getApiKey()}`;
+}
 
 /** 刪除某個檔案的所有向量 */
 export function removeVectorsByFile(file: string): void {
@@ -23,7 +26,7 @@ export function removeVectorsByFile(file: string): void {
 
 /** 呼叫 Gemini embedding API */
 export async function embed(text: string): Promise<number[]> {
-  const res = await fetch(EMBED_URL, {
+  const res = await fetch(getEmbedUrl(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -48,7 +51,7 @@ const DEDUP_THRESHOLD = 0.92;
 
 /** 新增一筆記憶的向量（自動去重） */
 export async function addVector(text: string, file: string): Promise<void> {
-  if (!GEMINI_API_KEY) {
+  if (!getApiKey()) {
     logger.warn("GOOGLE_API_KEY not set, skipping embedding");
     return;
   }
@@ -110,7 +113,7 @@ const SCORE_THRESHOLD = 0.65;
 
 /** 語意搜尋：回傳最相關的記憶 */
 export async function searchVectors(query: string, topK = 10, options: SearchOptions = {}): Promise<Array<{ text: string; file: string; score: number }>> {
-  if (!GEMINI_API_KEY) return [];
+  if (!getApiKey()) return [];
 
   try {
     const db = getDb();
