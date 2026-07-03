@@ -106,11 +106,11 @@ export function buildSystemPrompt(extra?: string): string {
 
   const parts = [
     loadAgentInstructions(),
+    extra,          // channel context / session-specific runtime info — injected early for visibility
     date,
     persona,
     memory,
     skillsSection,
-    extra,
   ];
 
   return parts.filter(Boolean).join("\n\n");

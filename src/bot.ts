@@ -20,6 +20,18 @@ import { google } from "googleapis";
 import { loadReminders } from "./tools/builtin/reminder.js";
 import type { TokenUsage, ProgressEvent } from "./types.js";
 
+function buildChannelContext(channelId: string, sessionId: string, extra?: string): string {
+  const lines = [
+    `<discord-context>`,
+    `Channel ID: ${channelId}`,
+    ...(extra ? [extra] : []),
+    `Session: ${sessionId}`,
+    `Use this channel_id when creating reminders or cron jobs for this conversation.`,
+    `</discord-context>`,
+  ];
+  return lines.join("\n");
+}
+
 // model pricing (USD per million tokens) — from Anthropic official pricing
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   "claude-opus-4-7": { input: 5, output: 25 },
@@ -168,7 +180,7 @@ export async function startBot(token: string): Promise<void> {
       const session = new Session(sessionId);
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const channelContext = `Current Discord context: channel (ID: ${interaction.channelId}), session: ${sessionId}`;
+      const channelContext = buildChannelContext(interaction.channelId, sessionId);
       const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
 
       // 歸檔前：silent memory flush — 讓 agent 自由整理記憶
@@ -525,9 +537,14 @@ async function handleTrigger(message: Message, session: Session, images?: string
     const channelType = ch.isThread()
       ? (ch.parent && "type" in ch.parent && ch.parent.type === 15 ? "forum post" : "thread")
       : (ch.isDMBased() ? "DM" : "channel");
-    const parentInfo = ch.isThread() && ch.parentId ? `, parent channel: ${ch.parentId}` : "";
-    const threadName = ch.isThread() ? `, name: "${ch.name}"` : "";
-    const channelContext = `Current Discord context: ${channelType} (ID: ${message.channelId}${parentInfo}${threadName}), session: ${session.id}`;
+    const parentInfo = ch.isThread() && ch.parentId ? `Parent channel: ${ch.parentId}` : "";
+    const threadName = ch.isThread() ? `Thread name: "${ch.name}"` : "";
+    const channelTypeInfo = [
+      `Channel type: ${channelType}`,
+      parentInfo,
+      threadName,
+    ].filter(Boolean).join("\n");
+    const channelContext = buildChannelContext(message.channelId, session.id, channelTypeInfo);
     const isOwner = message.author.id === loadConfig().discord.owner_id;
     const response = await ask(null, { session, systemPrompt: channelContext, images, onProgress, trigger: isOwner ? "discord-owner" : "discord-other" });
     await flushChain; // 確保進度訊息已發送完成

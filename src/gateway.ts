@@ -122,10 +122,14 @@ function loadAndScheduleAll(): void {
 }
 
 function startWatcher(): void {
+  // Reload cron jobs every hour
   setInterval(() => {
     loadAndScheduleAll();
-    loadAndScheduleReminders();
   }, 60 * 60 * 1000);
+  // Poll for new reminders every 15 seconds
+  setInterval(() => {
+    loadAndScheduleReminders();
+  }, 15 * 1000);
 }
 
 // --- Reminders ---
