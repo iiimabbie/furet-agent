@@ -14,6 +14,8 @@ export interface CronJob {
   enabled: boolean;
   createdAt: string;
   channel_id?: string;
+  /** "always": send any response to Discord (default). "on_event": agent replies with empty text to stay silent, text only when something is worth reporting. */
+  notify?: "always" | "on_event";
 }
 
 export function loadCrons(): CronJob[] {
@@ -39,11 +41,12 @@ export const cronCreate: Tool = {
       schedule: { type: "string", description: "Cron expression (e.g. '0 9 * * *' for daily 9am, '*/30 * * * *' for every 30 min)" },
       prompt: { type: "string", description: "The prompt to execute when triggered" },
       channel_id: { type: "string", description: "Discord channel ID to send the result to." },
+      notify: { type: "string", enum: ["always", "on_event"], description: "'always' (default): every response is sent to Discord. 'on_event': agent replies with empty text to stay silent, only sends text when something is worth reporting (errors, anomalies, important updates)." },
     },
     required: ["name", "schedule", "prompt", "channel_id"],
   },
   execute: async (args) => {
-    const { name, schedule, prompt, channel_id } = args as { name: string; schedule: string; prompt: string; channel_id: string };
+    const { name, schedule, prompt, channel_id, notify } = args as { name: string; schedule: string; prompt: string; channel_id: string; notify?: "always" | "on_event" };
     if (!validate(schedule)) return `Invalid cron expression: "${schedule}"`;
     const crons = loadCrons();
     const job: CronJob = {
@@ -54,6 +57,7 @@ export const cronCreate: Tool = {
       enabled: true,
       createdAt: new Date().toISOString(),
       ...(channel_id ? { channel_id } : {}),
+      ...(notify ? { notify } : {}),
     };
     crons.push(job);
     saveCrons(crons);
@@ -131,16 +135,18 @@ export const cronUpdate: Tool = {
       schedule: { type: "string", description: "New cron expression" },
       prompt: { type: "string", description: "New prompt to execute when triggered" },
       channel_id: { type: "string", description: "New Discord channel ID to send results to." },
+      notify: { type: "string", enum: ["always", "on_event"], description: "Change notify mode." },
     },
     required: ["id"],
   },
   execute: async (args) => {
-    const { id, name, schedule, prompt, channel_id } = args as {
+    const { id, name, schedule, prompt, channel_id, notify } = args as {
       id: string;
       name?: string;
       schedule?: string;
       prompt?: string;
       channel_id?: string;
+      notify?: "always" | "on_event";
     };
     if (schedule !== undefined && !validate(schedule)) return `Invalid cron expression: "${schedule}"`;
     const crons = loadCrons();
@@ -151,6 +157,7 @@ export const cronUpdate: Tool = {
     if (schedule !== undefined) job.schedule = schedule;
     if (prompt !== undefined) job.prompt = prompt;
     if (channel_id !== undefined) job.channel_id = channel_id;
+    if (notify !== undefined) job.notify = notify;
 
     saveCrons(crons);
     logger.info({ id: job.id, name: job.name }, "cron updated");

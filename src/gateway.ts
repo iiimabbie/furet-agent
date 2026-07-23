@@ -87,7 +87,10 @@ function scheduleCron(job: CronJob): void {
   const task = schedule(job.schedule, async () => {
     logger.info({ id: job.id, name: job.name, prompt: job.prompt.slice(0, 100) }, "cron triggered");
     try {
-      const cronContext = `[System] This is a scheduled cron task "${job.name}". Your text response will be automatically delivered to the correct channel. Do NOT use discord_send_message — just reply with text.\n\n`;
+      const notifyInstruction = job.notify === "on_event"
+        ? "If the result is normal / OK with nothing to report, reply with EMPTY TEXT — the owner will not be notified. Only reply with text when there is an error, anomaly, or something genuinely worth the owner's attention."
+        : "Your text response will be automatically delivered to the correct channel.";
+      const cronContext = `[System] This is a scheduled cron task "${job.name}". Do NOT use discord_send_message — just reply with text. ${notifyInstruction}\n\n`;
       const response = await ask(cronContext + job.prompt, { trigger: "cron" });
       logger.info({ id: job.id, result: response.text.slice(0, 200) }, "cron result");
       if (job.channel_id && response.text) {
