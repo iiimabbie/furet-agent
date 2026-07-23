@@ -1,7 +1,7 @@
 import {
   Client, GatewayIntentBits, Events, REST, Routes,
   SlashCommandBuilder, MessageFlags, EmbedBuilder, ActivityType, PresenceStatusData,
-  type Message, type Interaction,
+  type Message, type Interaction, type TextBasedChannel,
 } from "discord.js";
 import { spawn } from "node:child_process";
 import { ask, compactSession } from "./agent.js";
@@ -13,6 +13,7 @@ import { setDiscordClient } from "./tools/builtin/discord.js";
 import { clearAttachments, drainAttachments } from "./tools/context.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { normalizeMentions } from "./utils/discord-mentions.js";
+import { estimateCost } from "./utils/pricing.js";
 
 import { loadCrons } from "./tools/builtin/cron.js";
 import { getAuthClient, getAuthUrl, exchangeCode } from "./google/auth.js";
@@ -32,26 +33,18 @@ function buildChannelContext(channelId: string, sessionId: string, extra?: strin
   return lines.join("\n");
 }
 
-// model pricing (USD per million tokens) — from Anthropic official pricing
-const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  "claude-opus-4-7": { input: 5, output: 25 },
-  "claude-opus-4-6": { input: 5, output: 25 },
-  "claude-opus-4-5-20251101": { input: 5, output: 25 },
-  "claude-opus-4-1-20250805": { input: 15, output: 75 },
-  "claude-opus-4-20250514": { input: 15, output: 75 },
-  "claude-sonnet-4-6": { input: 3, output: 15 },
-  "claude-sonnet-4-5-20250929": { input: 3, output: 15 },
-  "claude-sonnet-4-20250514": { input: 3, output: 15 },
-  "claude-sonnet-3-7-20250219": { input: 3, output: 15 },
-  "claude-haiku-4-5-20251001": { input: 1, output: 5 },
-  "claude-3-5-haiku-20241022": { input: 0.8, output: 4 },
-};
-
-function estimateCost(usage: TokenUsage, model: string): string {
-  const pricing = MODEL_PRICING[model];
-  if (!pricing) return "unknown";
-  const cost = (usage.inputTokens * pricing.input + usage.outputTokens * pricing.output) / 1_000_000;
-  return `$${cost.toFixed(4)}`;
+function getChannelTypeInfo(channel: TextBasedChannel | null | undefined): string {
+  if (!channel) return "";
+  const channelType = channel.isThread()
+    ? (channel.parent && "type" in channel.parent && channel.parent.type === 15 ? "forum post" : "thread")
+    : (channel.isDMBased() ? "DM" : "channel");
+  const parentInfo = channel.isThread() && channel.parentId ? `Parent channel: ${channel.parentId}` : "";
+  const threadName = channel.isThread() ? `Thread name: "${channel.name}"` : "";
+  return [
+    `Channel type: ${channelType}`,
+    parentInfo,
+    threadName,
+  ].filter(Boolean).join("\n");
 }
 
 const SLASH_COMMANDS = [
@@ -180,7 +173,7 @@ export async function startBot(token: string): Promise<void> {
       const session = new Session(sessionId);
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const channelContext = buildChannelContext(interaction.channelId, sessionId);
+      const channelContext = buildChannelContext(interaction.channelId, sessionId, getChannelTypeInfo(interaction.channel));
       const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
 
       // 歸檔前：silent memory flush — 讓 agent 自由整理記憶
@@ -533,18 +526,7 @@ async function handleTrigger(message: Message, session: Session, images?: string
   };
 
   try {
-    const ch = channel;
-    const channelType = ch.isThread()
-      ? (ch.parent && "type" in ch.parent && ch.parent.type === 15 ? "forum post" : "thread")
-      : (ch.isDMBased() ? "DM" : "channel");
-    const parentInfo = ch.isThread() && ch.parentId ? `Parent channel: ${ch.parentId}` : "";
-    const threadName = ch.isThread() ? `Thread name: "${ch.name}"` : "";
-    const channelTypeInfo = [
-      `Channel type: ${channelType}`,
-      parentInfo,
-      threadName,
-    ].filter(Boolean).join("\n");
-    const channelContext = buildChannelContext(message.channelId, session.id, channelTypeInfo);
+    const channelContext = buildChannelContext(message.channelId, session.id, getChannelTypeInfo(channel));
     const isOwner = message.author.id === loadConfig().discord.owner_id;
     const response = await ask(null, { session, systemPrompt: channelContext, images, onProgress, trigger: isOwner ? "discord-owner" : "discord-other" });
     await flushChain; // 確保進度訊息已發送完成

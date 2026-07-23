@@ -43,7 +43,7 @@ export const cronCreate: Tool = {
     required: ["name", "schedule", "prompt", "channel_id"],
   },
   execute: async (args) => {
-    const { name, schedule, prompt, channel_id } = args as { name: string; schedule: string; prompt: string; channel_id?: string };
+    const { name, schedule, prompt, channel_id } = args as { name: string; schedule: string; prompt: string; channel_id: string };
     if (!validate(schedule)) return `Invalid cron expression: "${schedule}"`;
     const crons = loadCrons();
     const job: CronJob = {
