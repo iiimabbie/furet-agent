@@ -88,14 +88,15 @@ function scheduleCron(job: CronJob): void {
     logger.info({ id: job.id, name: job.name, prompt: job.prompt.slice(0, 100) }, "cron triggered");
     try {
       const notifyInstruction = job.notify === "on_event"
-        ? "If the result is normal / OK with nothing to report, reply with EMPTY TEXT — the owner will not be notified. Only reply with text when there is an error, anomaly, or something genuinely worth the owner's attention."
+        ? "If the result is normal / OK with nothing to report, reply with exactly `[noreply]` and nothing else — the owner will NOT be notified. Only reply with actual content when there is an error, anomaly, or something genuinely worth the owner's attention."
         : "Your text response will be automatically delivered to the correct channel.";
       const cronContext = `[System] This is a scheduled cron task "${job.name}". Do NOT use discord_send_message — just reply with text. ${notifyInstruction}\n\n`;
       const response = await ask(cronContext + job.prompt, { trigger: "cron" });
-      logger.info({ id: job.id, result: response.text.slice(0, 200) }, "cron result");
-      if (job.channel_id && response.text) {
+      const isNoreply = response.text.trim().startsWith("[noreply]");
+      logger.info({ id: job.id, noreply: isNoreply, result: response.text.slice(0, 200) }, "cron result");
+      if (job.channel_id && response.text && !isNoreply) {
         await sendAndPersist(job.channel_id, response.text);
-      } else {
+      } else if (!isNoreply) {
         console.log(`[cron:${job.name}] ${response.text}`);
       }
     } catch (err) {
