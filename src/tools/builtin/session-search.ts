@@ -17,6 +17,10 @@ export const sessionSearch: Tool = {
     const { query, limit = 20 } = args as { query: string; limit?: number };
     logger.info({ query, limit }, "session search");
 
+    // FTS5 treats "word:word" as a column filter (e.g. "07:27" -> column "07"),
+    // which isn't part of the supported syntax here, so strip stray colons.
+    const sanitizedQuery = query.replace(/:/g, " ");
+
     try {
       const db = getDb();
       const results = db.prepare(`
@@ -27,7 +31,7 @@ export const sessionSearch: Tool = {
         WHERE session_fts MATCH ?
         ORDER BY sf.rank
         LIMIT ?
-      `).all(query, limit) as Array<{
+      `).all(sanitizedQuery, limit) as Array<{
         session_id: string;
         role: string;
         content: string;
