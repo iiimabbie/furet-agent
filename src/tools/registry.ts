@@ -10,7 +10,7 @@ const OWNER_ONLY_TOOLS = new Set([
   "reminder_create", "reminder_delete",
   "discord_send_message", "discord_pin", "discord_unpin",
   "discord_create_thread", "discord_create_forum_post", "discord_delete_thread",
-  "discord_edit_message", "discord_delete_message",
+  "discord_edit_message", "discord_delete_message", "discord_archive_thread",
   "google_calendar_list_events", "google_calendar_create_event", "google_calendar_update_event", "google_calendar_delete_event",
   "google_gmail_search", "google_gmail_read", "google_gmail_send", "google_gmail_create_draft",
   "google_drive_search", "google_drive_read", "google_drive_upload",
@@ -33,7 +33,7 @@ import {
   discordFetchMessage, discordSendMessage, discordReact, discordFetchChannelMessages,
   discordPin, discordUnpin,
   discordCreateThread, discordCreateForumPost, discordDeleteThread,
-  discordEditMessage, discordDeleteMessage, discordAttachToReply,
+  discordEditMessage, discordDeleteMessage, discordAttachToReply, discordArchiveThread,
 } from "./builtin/discord.js";
 import { calendarListEvents, calendarCreateEvent, calendarUpdateEvent, calendarDeleteEvent } from "./builtin/google-calendar.js";
 import { gmailSearch, gmailRead, gmailSend, gmailCreateDraft } from "./builtin/google-gmail.js";
@@ -54,7 +54,7 @@ const tools: Tool[] = [
   discordFetchMessage, discordSendMessage, discordReact, discordFetchChannelMessages,
   discordPin, discordUnpin,
   discordCreateThread, discordCreateForumPost, discordDeleteThread,
-  discordEditMessage, discordDeleteMessage, discordAttachToReply,
+  discordEditMessage, discordDeleteMessage, discordAttachToReply, discordArchiveThread,
   calendarListEvents, calendarCreateEvent, calendarUpdateEvent, calendarDeleteEvent,
   gmailSearch, gmailRead, gmailSend, gmailCreateDraft,
   driveSearch, driveRead, driveUpload,

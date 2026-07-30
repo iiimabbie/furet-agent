@@ -379,7 +379,7 @@ export async function startBot(token: string): Promise<void> {
           const threadName = message.channel.name;
           session.append({
             role: "user",
-            content: `[System] This is the initial message of forum post "${threadName}" (by ${authorName}):\n${starter.content}`,
+            content: `[System] This is the initial message of forum post "${threadName}" (by ${authorName}) [thread_id: ${message.channelId}]:\n${starter.content}`,
             time: ts,
             msgId: starter.id,
           });

@@ -262,6 +262,31 @@ export const discordDeleteThread: Tool = {
   },
 };
 
+export const discordArchiveThread: Tool = {
+  name: "discord_archive_thread",
+  description: "Archive or unarchive a thread/forum post in Discord.",
+  parameters: {
+    type: "object",
+    properties: {
+      thread_id: { type: "string", description: "The thread ID to archive/unarchive" },
+      archived: { type: "boolean", description: "true to archive, false to unarchive (default: true)" },
+    },
+    required: ["thread_id"],
+  },
+  execute: async (args) => {
+    const { thread_id, archived = true } = args as { thread_id: string; archived?: boolean };
+    logger.info({ thread_id, archived }, "discord_archive_thread");
+    try {
+      const channel = await getClient().channels.fetch(thread_id);
+      if (!channel || !channel.isThread()) return `Error: ${thread_id} is not a thread`;
+      await channel.setArchived(archived);
+      return `Thread ${archived ? "archived" : "unarchived"}`;
+    } catch (err) {
+      return `Error: ${(err as Error).message}`;
+    }
+  },
+};
+
 export const discordEditMessage: Tool = {
   name: "discord_edit_message",
   description: "Edit one of the bot's own messages. Can update text and/or replace attachments.",
