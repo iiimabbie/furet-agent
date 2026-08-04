@@ -8,6 +8,39 @@ const DB_PATH = resolve(WORKSPACE_CONFIG_DIR, "furet.db");
 
 let db: Database.Database | null = null;
 
+/** 向量表名稱（cosine 版）。embedding.ts 一律走這張。 */
+export const VEC_TABLE = "memory_vectors_vec_cos";
+
+/**
+ * 把舊的 L2 向量表搬到 cosine 表。
+ * 向量值本身不變（只是距離算法不同），所以直接複製 blob，不用重打 embedding API。
+ */
+function migrateVecTable(database: Database.Database): void {
+  const hasOld = database.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_vectors_vec'"
+  ).get();
+  if (!hasOld) return;
+
+  const target = (database.prepare(`SELECT count(*) c FROM ${VEC_TABLE}`).get() as { c: number }).c;
+  if (target > 0) return; // 已經搬過
+
+  try {
+    const rows = database.prepare(
+      "SELECT rowid, embedding FROM memory_vectors_vec"
+    ).all() as Array<{ rowid: number; embedding: Buffer }>;
+    if (rows.length === 0) return;
+
+    const insert = database.prepare(`INSERT INTO ${VEC_TABLE} (rowid, embedding) VALUES (?, ?)`);
+    database.transaction(() => {
+      // vec0 的 rowid 綁定只吃 BigInt，傳一般 number 會被拒
+      for (const r of rows) insert.run(BigInt(r.rowid), r.embedding);
+    })();
+    logger.info({ count: rows.length }, "vec table migrated to cosine metric");
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, "vec table migration failed");
+  }
+}
+
 export function getDb(): Database.Database {
   if (db) return db;
 
@@ -24,11 +57,16 @@ export function getDb(): Database.Database {
       created_at TEXT DEFAULT (datetime('now'))
     )
   `);
+  // vec0 預設用 L2 距離，但 searchVectors 把 (1 - distance) 當成 cosine 相似度在比。
+  // 兩者對不上（L2 ∈ [0,2] 但意義不同），閾值形同永遠不成立。
+  // 改用 distance_metric=cosine，此時 distance = 1 - cos，(1 - distance) 才真的是相似度。
+  // CREATE TABLE IF NOT EXISTS 不會改既有表的 schema，所以開一張新表並搬遷。
   db.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors_vec USING vec0(
-      embedding FLOAT[3072]
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors_vec_cos USING vec0(
+      embedding FLOAT[3072] distance_metric=cosine
     )
   `);
+  migrateVecTable(db);
 
   // 全文搜尋：記憶
   db.exec(`

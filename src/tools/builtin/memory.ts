@@ -73,6 +73,9 @@ export const memorySearch: Tool = {
       }
 
       // 全文搜尋（SQLite FTS5）
+      // FTS5 把 "word:word" 當成 column filter（例如 "07:27" → column "07"），
+      // 不是這裡支援的語法，所以把冒號換成空白。
+      const sanitizedQuery = query.replace(/:/g, " ");
       try {
         const db = getDb();
         const ftsResults = db.prepare(`
@@ -81,7 +84,7 @@ export const memorySearch: Tool = {
           WHERE memory_fts MATCH ?
           ORDER BY rank
           LIMIT 20
-        `).all(query) as Array<{ text: string; file: string; highlighted: string }>;
+        `).all(sanitizedQuery) as Array<{ text: string; file: string; highlighted: string }>;
 
         if (ftsResults.length > 0) {
           results.push("## Full-text matches\n" + ftsResults.map(r =>

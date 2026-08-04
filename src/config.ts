@@ -82,6 +82,14 @@ function resolveEnvVars(value: unknown): unknown {
   return value;
 }
 
+/** 過濾掉 null/undefined，避免 yaml 空值（`key:`）覆蓋掉預設值 */
+function defined(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== null && v !== undefined)
+  );
+}
+
 let cached: FuretConfig | null = null;
 let cachedMtimeMs = 0;
 
@@ -109,10 +117,10 @@ export function loadConfig(): FuretConfig {
   const resolved = resolveEnvVars(raw) as Record<string, unknown>;
 
   cached = {
-    llm: { ...DEFAULTS.llm, ...(resolved.llm as Record<string, unknown>) } as FuretConfig["llm"],
-    discord: { ...DEFAULTS.discord, ...(resolved.discord as Record<string, unknown>) } as FuretConfig["discord"],
-    journal: { ...DEFAULTS.journal, ...(resolved.journal as Record<string, unknown>) } as FuretConfig["journal"],
-    soul_guardian: { ...DEFAULTS.soul_guardian, ...(resolved.soul_guardian as Record<string, unknown>) } as FuretConfig["soul_guardian"],
+    llm: { ...DEFAULTS.llm, ...defined(resolved.llm) } as FuretConfig["llm"],
+    discord: { ...DEFAULTS.discord, ...defined(resolved.discord) } as FuretConfig["discord"],
+    journal: { ...DEFAULTS.journal, ...defined(resolved.journal) } as FuretConfig["journal"],
+    soul_guardian: { ...DEFAULTS.soul_guardian, ...defined(resolved.soul_guardian) } as FuretConfig["soul_guardian"],
     skills: (resolved.skills as string[] | undefined) ?? DEFAULTS.skills,
   };
 

@@ -7,3 +7,5 @@ logs/
 DESIGN.md
 furet.pid
 CLAUDE.md
+.codegraph/
+BUGFIX.md

@@ -45,6 +45,8 @@ export interface AgentResponse {
   toolsUsed: ToolActivity[];
   durationMs: number;
   usage: TokenUsage;
+  /** 工具在這次請求中排隊的檔案附件（由 ask() 從 request context 收集） */
+  attachments: string[];
 }
 
 export type ProgressEvent =

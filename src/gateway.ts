@@ -62,13 +62,22 @@ async function resolveSessionIdForChannel(channelId: string): Promise<string | n
 }
 
 /** 發訊息到 channel 並把 assistant 回覆 append 進對應 session（附 msgId） */
-async function sendAndPersist(channelId: string, text: string): Promise<void> {
+async function sendAndPersist(channelId: string, text: string, label: string): Promise<void> {
   const sentIds = await sendToChannel(channelId, text);
   if (sentIds.length === 0) return;
   const sessionId = await resolveSessionIdForChannel(channelId);
   if (!sessionId) return;
   const session = new Session(sessionId);
   const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
+  // session 是空的時候不能直接 append assistant——Anthropic API 要求第一則是 user，
+  // 否則這個頻道下次對話會直接 400。先補一則說明這是排程主動推播。
+  if (session.length === 0) {
+    session.append({
+      role: "user",
+      content: `[System] ${label} pushed the following message to this channel proactively (no user message preceded it).`,
+      time: ts,
+    });
+  }
   session.append({
     role: "assistant",
     content: text,
@@ -95,7 +104,7 @@ function scheduleCron(job: CronJob): void {
       const isNoreply = response.text.includes("[noreply]");
       logger.info({ id: job.id, noreply: isNoreply, result: response.text.slice(0, 200) }, "cron result");
       if (job.channel_id && response.text && !isNoreply) {
-        await sendAndPersist(job.channel_id, response.text);
+        await sendAndPersist(job.channel_id, response.text, `Scheduled task "${job.name}"`);
       } else if (!isNoreply) {
         console.log(`[cron:${job.name}] ${response.text}`);
       }
@@ -155,7 +164,7 @@ function scheduleReminder(r: Reminder): void {
       const response = await ask(reminderContext + r.prompt, { trigger: "reminder" });
       logger.info({ id: r.id, result: response.text.slice(0, 200) }, "reminder result");
       if (r.channel_id && response.text) {
-        await sendAndPersist(r.channel_id, response.text);
+        await sendAndPersist(r.channel_id, response.text, `Reminder "${r.name}"`);
       } else {
         console.log(`[reminder:${r.name}] ${response.text}`);
       }

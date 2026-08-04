@@ -1,7 +1,8 @@
 import { logger } from "./logger.js";
 import { loadConfig } from "./config.js";
 import { buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
-import { anthropicTools, executeTool, setTrigger } from "./tools/registry.js";
+import { anthropicTools, executeTool } from "./tools/registry.js";
+import { runWithContext, drainAttachments } from "./tools/context.js";
 import { searchVectors } from "./embedding.js";
 import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions } from "./types.js";
 
@@ -41,6 +42,12 @@ function trimToTokenBudget(messages: Message[], maxTokens: number): Message[] {
     startIdx = i;
   }
 
+  // 保底：就算單則訊息本身就超過預算，也至少留最後一則，
+  // 否則會回傳空陣列，送出去的 messages 是空的 → API 400
+  if (startIdx >= messages.length && messages.length > 0) {
+    startIdx = messages.length - 1;
+  }
+
   // 往前推確保不拆散 tool_use/tool_result 配對：
   // 如果起點是一則 user message 且 content 是 tool_result 陣列，
   // 它的配對 assistant（含 tool_use）在前一則，必須一起帶上
@@ -55,6 +62,41 @@ function trimToTokenBudget(messages: Message[], maxTokens: number): Message[] {
   }
 
   return messages.slice(startIdx);
+}
+
+/**
+ * 取最後一則純文字 user message 的內容（用於自動記憶召回的 query）。
+ * 剝掉 formatIncomingMessage 加的 `[msg:id 時間] <@id>(暱稱):` 前綴——
+ * 那些是路由用的中繼資料，留著只會稀釋語意搜尋的訊號。
+ */
+function lastUserText(messages: Message[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "user" && typeof m.content === "string") {
+      const stripped = m.content
+        .replace(/^\[msg:\S+\s[^\]]*\]\s*/, "")
+        .replace(/^<@!?\d+>(?:\([^)]*\))?:\s*/, "")
+        .replace(/^\(reply to msg:\d+\)\s*/, "")
+        .trim();
+      return stripped || m.content;
+    }
+  }
+  return null;
+}
+
+const PUSH_CONTEXT_NOTE = "[System] The following messages were proactively pushed to this channel by scheduled tasks, with no user message before them.";
+
+/**
+ * Anthropic API 要求 messages 第一則必須是 user role。
+ * 但 session 開頭可能是 assistant——cron/reminder 主動推播時
+ * sendAndPersist() 會直接 append assistant，或 trim 從中間切開。
+ *
+ * 開頭是 assistant 時，補一則 user 說明而不是把它們丟掉：
+ * 那些內容是真的推播出去過的對話紀錄，砍掉會讓 agent 失去上下文。
+ */
+function ensureUserFirst(messages: Message[]): Message[] {
+  if (messages.length === 0 || messages[0].role === "user") return messages;
+  return [{ role: "user", content: PUSH_CONTEXT_NOTE }, ...messages];
 }
 
 function extractText(blocks: ContentBlock[]): string {
@@ -121,24 +163,22 @@ function nowTimestamp(): string {
 }
 
 
-const config = loadConfig();
-const API_URL = `${config.llm.base_url || "https://api.anthropic.com/v1"}/messages`;
-const API_KEY = config.llm.api_key;
-
 async function callAnthropic(system: string, messages: Message[], model?: string, withTools = true): Promise<{
   content: ContentBlock[];
   stop_reason: string;
   usage: { input_tokens: number; output_tokens: number };
 }> {
-  const res = await fetch(API_URL, {
+  // 每次都重讀 config —— base_url / api_key 跟 currentModel 一樣要能熱更新
+  const { llm } = loadConfig();
+  const res = await fetch(`${llm.base_url || "https://api.anthropic.com/v1"}/messages`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": API_KEY,
+      "x-api-key": llm.api_key,
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: model ?? loadConfig().llm.currentModel,
+      model: model ?? llm.currentModel,
       max_tokens: 8192,
       system,
       messages,
@@ -187,13 +227,22 @@ export async function compactSession(session: import("./session.js").Session, mo
   return null;
 }
 
-export async function ask(prompt: string | null, options: AgentOptions = {}): Promise<AgentResponse> {
+/**
+ * 執行一次 agent 請求。
+ *
+ * 整段包在獨立的 request context 裡，讓 trigger（權限判定）跟工具排隊的附件
+ * 不會被並行的 cron / reminder / 其他使用者請求互相污染。
+ */
+export function ask(prompt: string | null, options: AgentOptions = {}): Promise<AgentResponse> {
+  return runWithContext(options.trigger ?? "unknown", () => askInContext(prompt, options));
+}
+
+async function askInContext(prompt: string | null, options: AgentOptions = {}): Promise<AgentResponse> {
   const startTime = Date.now();
   const maxTurns = options.maxTurns ?? 50;
   const toolsUsed: ToolActivity[] = [];
   const totalUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
 
-  setTrigger(options.trigger ?? "unknown");
   logger.info({ prompt: prompt?.slice(0, 200) ?? "(session tail)", trigger: options.trigger }, "query start");
 
   const session = options.session;
@@ -205,10 +254,13 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
   let systemPrompt = buildSystemPrompt(options.systemPrompt);
   logger.info({ systemPromptLength: systemPrompt.length, hasPersona: systemPrompt.includes("<persona>"), hasMemory: systemPrompt.includes("<memory>"), first500: systemPrompt.slice(0, 500) }, "system prompt check");
 
-  // 自動記憶召回：用使用者訊息搜尋相關記憶，注入 system prompt
-  if (prompt) {
+  // 自動記憶召回：用使用者訊息搜尋相關記憶，注入 system prompt。
+  // Discord 路徑一律用 ask(null)（訊息已經 append 進 session），
+  // 所以 prompt 為 null 時改拿 session 最後一則 user message 當 query。
+  const recallQuery = prompt ?? lastUserText(session?.getMessages() ?? []);
+  if (recallQuery) {
     try {
-      const recalled = await searchVectors(prompt, 3, {
+      const recalled = await searchVectors(recallQuery, 3, {
         excludeFiles: ["MEMORY.md", "PEOPLE.md"],
         excludeRecentDays: 2,
       });
@@ -237,7 +289,7 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
   }
 
   const allSessionMessages = session?.getMessages() ?? [];
-  const sessionMessages = trimToTokenBudget(allSessionMessages, maxContextTokens);
+  const sessionMessages = ensureUserFirst(trimToTokenBudget(allSessionMessages, maxContextTokens));
 
   // 標準 multi-turn：直接展開 session messages 送 API
   const messages: ApiMessage[] = [];
@@ -334,7 +386,7 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
       const durationMs = Date.now() - startTime;
       session?.addUsage(totalUsage);
       logger.info({ durationMs, toolsUsed: toolsUsed.map(t => t.tool), textLength: finalText.length, usage: totalUsage }, "query done");
-      return { text: finalText, toolsUsed, durationMs, usage: totalUsage };
+      return { text: finalText, toolsUsed, durationMs, usage: totalUsage, attachments: drainAttachments() };
     }
 
     // 有 tool call → 執行，結果只進 messages（不存 session）
@@ -366,5 +418,5 @@ export async function ask(prompt: string | null, options: AgentOptions = {}): Pr
   const durationMs = Date.now() - startTime;
   session?.addUsage(totalUsage);
   logger.error({ maxTurns }, "max turns reached");
-  return { text: "達到最大回合數限制。", toolsUsed, durationMs, usage: totalUsage };
+  return { text: "達到最大回合數限制。", toolsUsed, durationMs, usage: totalUsage, attachments: drainAttachments() };
 }

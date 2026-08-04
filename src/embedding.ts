@@ -1,5 +1,5 @@
 import { logger } from "./logger.js";
-import { getDb } from "./db.js";
+import { getDb, VEC_TABLE } from "./db.js";
 
 const EMBED_MODEL = "gemini-embedding-001";
 
@@ -15,9 +15,11 @@ export function removeVectorsByFile(file: string): void {
     const rows = db.prepare("SELECT id FROM memory_vectors WHERE file = ?").all(file) as Array<{ id: number }>;
     if (rows.length === 0) return;
     const ids = rows.map(r => Number(r.id));
-    db.prepare(`DELETE FROM memory_vectors_vec WHERE rowid IN (${ids.join(",")})`).run();
-    db.prepare(`DELETE FROM memory_fts WHERE rowid IN (${ids.join(",")})`).run();
-    db.prepare(`DELETE FROM memory_vectors WHERE file = ?`).run(file);
+    db.transaction(() => {
+      db.prepare(`DELETE FROM ${VEC_TABLE} WHERE rowid IN (${ids.join(",")})`).run();
+      db.prepare(`DELETE FROM memory_fts WHERE rowid IN (${ids.join(",")})`).run();
+      db.prepare(`DELETE FROM memory_vectors WHERE file = ?`).run(file);
+    })();
     logger.info({ file, count: ids.length }, "vectors removed for file");
   } catch (err) {
     logger.error({ err: (err as Error).message, file }, "remove vectors failed");
@@ -75,7 +77,7 @@ export async function addVector(text: string, file: string): Promise<void> {
     if (count > 0) {
       try {
         const similar = db.prepare(`
-          SELECT rowid, distance FROM memory_vectors_vec
+          SELECT rowid, distance FROM ${VEC_TABLE}
           WHERE embedding MATCH ? AND k = 1
         `).get(blob) as { rowid: number; distance: number } | undefined;
 
@@ -88,14 +90,23 @@ export async function addVector(text: string, file: string): Promise<void> {
       }
     }
 
-    // 插入 memory_vectors + memory_vectors_vec + memory_fts
-    const insertResult = db.prepare("INSERT INTO memory_vectors (text, file) VALUES (?, ?)").run(text, file);
-    const id = Number(insertResult.lastInsertRowid);
-    db.prepare("INSERT INTO memory_vectors_vec (embedding) VALUES (?)").run(blob);
-    db.prepare("INSERT INTO memory_fts (rowid, text, file) VALUES (?, ?, ?)").run(id, text, file);
-    logger.info({ file, id, textLen: text.length }, "vector added to db");
+    // 插入 memory_vectors + memory_vectors_vec + memory_fts。
+    // 三張表用同一個 rowid 對齊，必須明寫 rowid（不能靠隱式遞增）並包在
+    // transaction 裡——任何一句失敗就整批回滾，否則 rowid 會永久錯位，
+    // 之後所有搜尋都會 JOIN 到錯誤的記憶內容。
+    const insertMain = db.prepare("INSERT INTO memory_vectors (text, file) VALUES (?, ?)");
+    const insertVec = db.prepare(`INSERT INTO ${VEC_TABLE} (rowid, embedding) VALUES (?, ?)`);
+    const insertFts = db.prepare("INSERT INTO memory_fts (rowid, text, file) VALUES (?, ?, ?)");
 
-    logger.debug({ file, textLen: text.length, id }, "vector added to db");
+    const id = db.transaction(() => {
+      const rowId = Number(insertMain.run(text, file).lastInsertRowid);
+      // vec0 的 rowid 綁定只吃 BigInt，傳一般 number 會被拒
+      insertVec.run(BigInt(rowId), blob);
+      insertFts.run(rowId, text, file);
+      return rowId;
+    })();
+
+    logger.info({ file, id, textLen: text.length }, "vector added to db");
   } catch (err) {
     logger.error({ err: (err as Error).message }, "embedding failed");
   }
@@ -122,7 +133,7 @@ export async function searchVectors(query: string, topK = 10, options: SearchOpt
 
     const results = db.prepare(`
       SELECT v.rowid, mv.text, mv.file, v.distance
-      FROM memory_vectors_vec v
+      FROM ${VEC_TABLE} v
       JOIN memory_vectors mv ON mv.id = v.rowid
       WHERE v.embedding MATCH ? AND k = ?
     `).all(blob, topK) as Array<{ text: string; file: string; distance: number }>;
