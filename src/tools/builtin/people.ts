@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { logger } from "../../logger.js";
 import { PEOPLE_FILE } from "../../paths.js";
 import { addVector, removeVectorsByFile } from "../../embedding.js";
+import { stripTag, wrapTag } from "../../utils/tagged-file.js";
 import type { Tool } from "../../types.js";
 
 /**
@@ -12,8 +13,9 @@ import type { Tool } from "../../types.js";
  * 這裡改成 substring 操作，只動要改的段落。
  */
 
-const OPEN_TAG = "<people>";
-const CLOSE_TAG = "</people>";
+const PEOPLE_TAG = "people";
+const OPEN_TAG = `<${PEOPLE_TAG}>`;
+const CLOSE_TAG = `</${PEOPLE_TAG}>`;
 
 function readPeople(): string {
   try { return readFileSync(PEOPLE_FILE, "utf-8"); } catch { return ""; }
@@ -24,10 +26,8 @@ function readPeople(): string {
  * 掉了會讓人物資料跟前後文糊在一起。
  */
 function writePeople(content: string): void {
-  let out = content.trim();
-  if (!out.includes(OPEN_TAG)) out = `${OPEN_TAG}\n\n${out}`;
-  if (!out.includes(CLOSE_TAG)) out = `${out}\n\n${CLOSE_TAG}`;
-  writeFileSync(PEOPLE_FILE, out + "\n");
+  const out = wrapTag(content, PEOPLE_TAG);
+  writeFileSync(PEOPLE_FILE, out);
   reindexVectors(out);
 }
 
@@ -48,7 +48,7 @@ function reindexVectors(content: string): void {
 
 /** 去掉包裝標籤後的內容，用來判斷是不是空的 */
 function bodyOf(content: string): string {
-  return content.replace(OPEN_TAG, "").replace(CLOSE_TAG, "").trim();
+  return stripTag(content, PEOPLE_TAG);
 }
 
 export const peopleAdd: Tool = {

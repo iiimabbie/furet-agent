@@ -7,6 +7,7 @@ import { MEMORY_DIR, MEMORY_INDEX } from "../../paths.js";
 import { addVector, searchVectors } from "../../embedding.js";
 import { toSearchQuery, highlightMatches } from "../../utils/cjk.js";
 import { today, clockTime } from "../../utils/time.js";
+import { appendInsideTag, stripTag } from "../../utils/tagged-file.js";
 import type { Tool } from "../../types.js";
 
 
@@ -127,6 +128,8 @@ export const memoryList: Tool = {
   },
 };
 
+const MEMORY_TAG = "memory";
+
 function readMemoryIndex(): string {
   try { return readFileSync(MEMORY_INDEX, "utf-8"); } catch { return ""; }
 }
@@ -134,8 +137,10 @@ function readMemoryIndex(): string {
 
 function memoryUsageInfo(content: string): string {
   const { memoryCharLimit } = loadConfig().llm;
-  const pct = Math.round((content.length / memoryCharLimit) * 100);
-  return `[${content.length}/${memoryCharLimit} chars, ${pct}%]`;
+  // 只算標籤內的實質內容，<memory> 包裝本身不該吃掉額度
+  const len = stripTag(content, MEMORY_TAG).length;
+  const pct = Math.round((len / memoryCharLimit) * 100);
+  return `[${len}/${memoryCharLimit} chars, ${pct}%]`;
 }
 
 export const memoryAdd: Tool = {
@@ -153,7 +158,8 @@ export const memoryAdd: Tool = {
     logger.info({ content: content.slice(0, 80) }, "memory add");
     try {
       const current = readMemoryIndex();
-      const updated = current.trimEnd() + "\n\n" + content;
+      // 一定要接在 </memory> 裡面——直接往檔案尾端接的話，新條目會落到標籤外
+      const updated = appendInsideTag(current, content, MEMORY_TAG);
       const { memoryCharLimit } = loadConfig().llm;
       if (updated.length > memoryCharLimit) {
         return `Error: would exceed character limit. ${memoryUsageInfo(current)} — consolidate existing entries first with memory_replace or memory_remove.`;
