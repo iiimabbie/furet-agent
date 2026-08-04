@@ -1,6 +1,7 @@
 import { Session } from "../src/session.ts";
 import { ask } from "../src/agent.ts";
 import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt } from "../src/prompt.ts";
+import { stamp } from "../src/utils/time.ts";
 
 const date = process.argv[2];
 if (!date) {
@@ -9,7 +10,7 @@ if (!date) {
 }
 
 function ts(): string {
-  return new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
+  return stamp();
 }
 
 async function summarizeAndArchiveAll(): Promise<void> {

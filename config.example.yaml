@@ -1,3 +1,8 @@
+# IANA timezone name, e.g. "Asia/Taipei", "America/New_York", "Europe/Berlin".
+# Leave empty to use the system timezone. Affects timestamps, memory filenames
+# and journal dates.
+timezone: ""
+
 llm:
   api_key: "${LLM_API_KEY}"             # required
   base_url: "${LLM_BASE_URL}"           # required (OpenAI-compatible endpoint)
@@ -39,5 +44,10 @@ soul_guardian:                           # file integrity monitor
       mode: alert
     - path: config/crons.json
       mode: alert
+
+tools:
+  bash_owner_only: true                 # bash runs arbitrary shell commands with no sandbox.
+                                        # Setting this to false lets ANY user who can mention
+                                        # the bot execute commands on your machine.
 
 skills: []                              # enabled skill names (must exist in workspace/skills/<name>/)

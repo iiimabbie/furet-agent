@@ -1,6 +1,7 @@
 import { logger } from "./logger.js";
 import { getDb, VEC_TABLE } from "./db.js";
 import { toSearchTokens } from "./utils/cjk.js";
+import { today } from "./utils/time.js";
 
 const EMBED_MODEL = "gemini-embedding-001";
 
@@ -145,7 +146,8 @@ export async function searchVectors(query: string, topK = 10, options: SearchOpt
     if (excludeRecentDays) {
       const d = new Date();
       d.setDate(d.getDate() - excludeRecentDays);
-      cutoffDate = d.toISOString().split("T")[0];
+      // 比較對象是日記檔名（當地日期），所以這裡也要用當地日期
+      cutoffDate = today(d);
     }
 
     return results

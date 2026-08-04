@@ -4,6 +4,7 @@ import { buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
 import { anthropicTools, executeTool } from "./tools/registry.js";
 import { runWithContext, drainAttachments } from "./tools/context.js";
 import { searchVectors } from "./embedding.js";
+import { stamp } from "./utils/time.js";
 import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions } from "./types.js";
 
 /** 清除 API 回傳 content blocks 中的多餘欄位（如 caller），只保留我們定義的欄位 */
@@ -159,7 +160,7 @@ async function buildUserContent(text: string, images?: string[]): Promise<string
 }
 
 function nowTimestamp(): string {
-  return new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
+  return stamp();
 }
 
 

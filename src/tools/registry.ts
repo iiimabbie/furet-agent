@@ -1,10 +1,10 @@
 import type { Tool } from "../types.js";
 import { logger } from "../logger.js";
+import { loadConfig } from "../config.js";
 export { setTrigger, getTrigger } from "./context.js";
 import { getTrigger } from "./context.js";
 
 const OWNER_ONLY_TOOLS = new Set([
-  // "bash", — 暫時開放，非 owner 也需要 curl/find 等操作
   "memory_replace", "memory_remove",
   "cron_create", "cron_delete", "cron_toggle", "cron_update",
   "reminder_create", "reminder_delete",
@@ -81,8 +81,17 @@ export const anthropicTools = [
   { type: "code_execution_20250825", name: "code_execution" },
 ];
 
+/**
+ * bash 是沒有沙箱的任意指令執行——開放給非 owner 等於把 shell 開給任何
+ * 能 @ 到 bot 的人。預設鎖成 owner-only，要放寬得自己在 config 明示。
+ */
+function isOwnerOnly(name: string): boolean {
+  if (name === "bash") return loadConfig().tools.bash_owner_only;
+  return OWNER_ONLY_TOOLS.has(name);
+}
+
 export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
-  if (OWNER_ONLY_TOOLS.has(name) && getTrigger() === "discord-other") {
+  if (isOwnerOnly(name) && getTrigger() === "discord-other") {
     logger.warn({ tool: name, trigger: getTrigger() }, "tool permission denied");
     return "⚠️ PERMISSION DENIED: This tool is owner-only. You are responding to a non-owner user. Do NOT attempt to use this tool again for this request.";
   }

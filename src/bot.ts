@@ -13,6 +13,7 @@ import { setDiscordClient } from "./tools/builtin/discord.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { normalizeMentions } from "./utils/discord-mentions.js";
 import { estimateCost } from "./utils/pricing.js";
+import { stamp } from "./utils/time.js";
 
 import { loadCrons } from "./tools/builtin/cron.js";
 import { getAuthClient, getAuthUrl, exchangeCode } from "./google/auth.js";
@@ -173,7 +174,7 @@ export async function startBot(token: string): Promise<void> {
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const channelContext = buildChannelContext(interaction.channelId, sessionId, getChannelTypeInfo(interaction.channel));
-      const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
+      const ts = stamp();
 
       // 歸檔前：silent memory flush — 讓 agent 自由整理記憶
       if (session.length > 0) {
@@ -373,7 +374,7 @@ export async function startBot(token: string): Promise<void> {
       try {
         const starter = await message.channel.fetchStarterMessage();
         if (starter) {
-          const ts = new Date(starter.createdTimestamp).toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
+          const ts = stamp(new Date(starter.createdTimestamp));
           const authorName = starter.member?.displayName ?? starter.author.username;
           const threadName = message.channel.name;
           session.append({
@@ -422,7 +423,7 @@ async function formatIncomingMessage(message: Message): Promise<FormattedMessage
   const authorName = message.member?.displayName ?? message.author.username;
   const authorId = message.author.id;
 
-  const ts = new Date(message.createdTimestamp).toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
+  const ts = stamp(new Date(message.createdTimestamp));
   const content = await normalizeMentions(message.content, message.client, message.guild);
   const attach = message.attachments.size > 0
     ? ` [附件: ${[...message.attachments.values()].map(a => a.url).join(", ")}]`

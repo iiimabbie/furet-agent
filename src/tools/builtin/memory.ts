@@ -6,11 +6,9 @@ import { getDb } from "../../db.js";
 import { MEMORY_DIR, MEMORY_INDEX } from "../../paths.js";
 import { addVector, searchVectors } from "../../embedding.js";
 import { toSearchQuery, highlightMatches } from "../../utils/cjk.js";
+import { today, clockTime } from "../../utils/time.js";
 import type { Tool } from "../../types.js";
 
-function today(): string {
-  return new Date().toISOString().split("T")[0];
-}
 
 export const memorySave: Tool = {
   name: "memory_save",
@@ -33,7 +31,7 @@ export const memorySave: Tool = {
       let existing = "";
       try { existing = readFileSync(filePath, "utf-8"); } catch { /* new file */ }
 
-      const timestamp = new Date().toLocaleTimeString("zh-TW", { hour12: false });
+      const timestamp = clockTime();
       const entry = `\n- [${timestamp}] ${content}`;
       writeFileSync(filePath, existing + entry + "\n");
 

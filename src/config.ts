@@ -31,7 +31,13 @@ export interface FuretConfig {
   soul_guardian: {
     targets: { path: string; mode: "restore" | "alert" | "ignore" }[];
   };
+  tools: {
+    /** bash 是沒有沙箱的任意指令執行，預設只有 owner 能用 */
+    bash_owner_only: boolean;
+  };
   skills: string[];
+  /** IANA 時區名（如 "Asia/Taipei"）。留空 = 用系統時區 */
+  timezone: string;
 }
 
 const DEFAULTS: FuretConfig = {
@@ -62,7 +68,11 @@ const DEFAULTS: FuretConfig = {
   soul_guardian: {
     targets: [],
   },
+  tools: {
+    bash_owner_only: true,
+  },
   skills: [],
+  timezone: "",
 };
 
 function resolveEnvVars(value: unknown): unknown {
@@ -121,7 +131,9 @@ export function loadConfig(): FuretConfig {
     discord: { ...DEFAULTS.discord, ...defined(resolved.discord) } as FuretConfig["discord"],
     journal: { ...DEFAULTS.journal, ...defined(resolved.journal) } as FuretConfig["journal"],
     soul_guardian: { ...DEFAULTS.soul_guardian, ...defined(resolved.soul_guardian) } as FuretConfig["soul_guardian"],
+    tools: { ...DEFAULTS.tools, ...defined(resolved.tools) } as FuretConfig["tools"],
     skills: (resolved.skills as string[] | undefined) ?? DEFAULTS.skills,
+    timezone: (resolved.timezone as string | undefined) ?? DEFAULTS.timezone,
   };
 
   return cached!;

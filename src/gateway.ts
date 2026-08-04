@@ -11,6 +11,7 @@ import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt } from "./prompt.js";
 import { loadConfig } from "./config.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { ROOT } from "./paths.js";
+import { stamp, today } from "./utils/time.js";
 
 async function sendToChannel(channelId: string, text: string): Promise<string[]> {
   const client = getDiscordClient();
@@ -68,7 +69,7 @@ async function sendAndPersist(channelId: string, text: string, label: string): P
   const sessionId = await resolveSessionIdForChannel(channelId);
   if (!sessionId) return;
   const session = new Session(sessionId);
-  const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
+  const ts = stamp();
   // session 是空的時候不能直接 append assistant——Anthropic API 要求第一則是 user，
   // 否則這個頻道下次對話會直接 400。先補一則說明這是排程主動推播。
   if (session.length === 0) {
@@ -207,7 +208,7 @@ async function summarizeAndArchiveAll(): Promise<void> {
   const ids = Session.listActive();
   if (ids.length === 0) return;
 
-  const ts = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).slice(5, 16).replace("-", "/");
+  const ts = stamp();
 
   for (const id of ids) {
     const session = new Session(id);
@@ -237,7 +238,7 @@ function scheduleJournal(): void {
     await summarizeAndArchiveAll();
 
     // 再整理日記 + 更新 MEMORY.md
-    const date = new Date().toISOString().split("T")[0];
+    const date = today();
     const prompt = buildJournalPrompt(date);
     ask(prompt, { trigger: "journal" })
       .then(response => logger.info({ date, result: response.text.slice(0, 200) }, "journal done"))

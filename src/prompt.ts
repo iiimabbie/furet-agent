@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { parse } from "yaml";
 import { ROOT, WORKSPACE_DIR, SKILLS_DIR } from "./paths.js";
 import { loadConfig } from "./config.js";
+import { nowWithZone } from "./utils/time.js";
 
 // --- External prompt loading ---
 
@@ -94,8 +95,7 @@ function loadWorkspaceFile(name: string): string {
 }
 
 export function buildSystemPrompt(extra?: string): string {
-  const now = new Date();
-  const date = `Current datetime: ${now.toLocaleString("sv-SE", { timeZone: "Asia/Taipei" }).replace("T", " ")} (Asia/Taipei)`;
+  const date = `Current datetime: ${nowWithZone()}`;
   const persona = loadWorkspaceFile("SOUL.md");
   const memory = loadWorkspaceFile("MEMORY.md");
 

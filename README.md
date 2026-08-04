@@ -7,7 +7,7 @@ Personal AI assistant with self-evolving capabilities. Discord bot + CLI, powere
 - **Self-built agent loop** — no SDK dependency, full control over the inference cycle
 - **Multi-turn session** — standard message format with thinking + tool_use history
 - **Token-based context management** — auto-trim history within budget, preserving tool call pairs
-- **Memory system** — daily logs + long-term memory (MEMORY.md) with capacity limits + SQLite storage (better-sqlite3 + sqlite-vec + FTS5) for semantic recall and cross-session search
+- **Memory system** — daily logs + long-term memory (MEMORY.md) with capacity limits + SQLite storage (better-sqlite3 + sqlite-vec + FTS5) for semantic recall and cross-session search, with CJK-aware full-text tokenization
 - **Self-evolution** — can modify its own source code via `self_evolve` tool (delegates to a stronger model)
 - **Discord integration** — mention/DM trigger, progressive tool progress display, slash commands
 - **Scheduled tasks** — cron jobs + one-time reminders with auto-delivery to Discord channels
@@ -43,7 +43,8 @@ The install script will automatically:
 - Copy `config.example.yaml` → `config.yaml` and `.env.example` → `.env` (if not exist)
 - Set up `workspace/` with templates (AGENT.md, SOUL.md, MEMORY.md, PEOPLE.md, JOURNAL.md)
 - Run `npm link` to register the global `furet` command
-- Create and enable a systemd service (`furet.service`)
+- Create and enable a systemd service (`furet.service`) — Linux only; on other
+  platforms this step is skipped and you start the gateway manually
 
 ## Starting & Managing
 
@@ -83,6 +84,7 @@ journalctl -u furet -f         # live logs
 | `/model` | Switch AI model (owner only) |
 | `/google-auth` | Google OAuth setup (owner only) |
 | `/task` | List Google Tasks |
+| `/compact` | Summarize old messages, keep recent ones |
 
 ## Configuration
 
@@ -90,15 +92,22 @@ journalctl -u furet -f         # live logs
 
 ```
 LLM_API_KEY=                # Anthropic API key
-LLM_BASE_URL=http://localhost:8317/v1  # API endpoint
+LLM_BASE_URL=               # empty = https://api.anthropic.com/v1,
+                            # or point at any compatible proxy/router
 DISCORD_TOKEN=              # Discord bot token
-GOOGLE_CLIENT_ID=           # Google OAuth client ID
-GOOGLE_CLIENT_SECRET=       # Google OAuth client secret
+GOOGLE_API_KEY=             # optional: enables semantic memory recall (Gemini embeddings)
+GOOGLE_CLIENT_ID=           # optional: Google OAuth client ID
+GOOGLE_CLIENT_SECRET=       # optional: Google OAuth client secret
 ```
+
+Without `GOOGLE_API_KEY`, memory still works — semantic recall is skipped and
+search falls back to full-text only.
 
 ### config.yaml (non-sensitive)
 
 ```yaml
+timezone: ""                          # IANA name, e.g. "Asia/Taipei". Empty = system timezone
+
 llm:
   api_key: "${LLM_API_KEY}"
   base_url: "${LLM_BASE_URL}"
@@ -122,7 +131,21 @@ journal:
   enabled: true
   hour: 23
   minute: 59
+
+tools:
+  bash_owner_only: true               # see Security below
 ```
+
+### Security
+
+The `bash` tool executes arbitrary shell commands with **no sandboxing**. By default
+it is restricted to the configured `owner_id`. Setting `tools.bash_owner_only: false`
+grants shell access to anyone who can mention the bot — only do this on a server
+where you trust every member.
+
+Use `discord.allowed_guilds` and `discord.allowed_channels` to limit where the bot
+responds at all. The `self_evolve` tool, which lets the agent rewrite its own source,
+is owner-only and cannot be opened up.
 
 ### Google API
 
@@ -143,7 +166,6 @@ workspace/
 ├── MEMORY.md        # Long-term memory (auto-managed, has capacity limit)
 ├── PEOPLE.md        # People directory
 ├── JOURNAL.md       # Memory hook, session summarize, daily journal prompts
-├── config/          # Structured data (crons, reminders, google token)
 ├── config/          # Structured data (crons, reminders, google token, furet.db)
 ├── memory/          # Daily memory files
 ├── sessions/        # Conversation sessions + archive/
@@ -155,6 +177,10 @@ All `.md` files use XML tags (e.g. `<agent-instructions>`, `<persona>`, `<memory
 ## Architecture
 
 See [DESIGN.md](DESIGN.md) for full architecture documentation.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 ## Uninstall
 

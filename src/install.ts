@@ -103,12 +103,28 @@ console.log("\n=== Registering furet command ===");
 run("npm link");
 
 // --- 5. systemd service ---
-console.log("\n=== Installing systemd service ===");
-
 const nodeBinDir = dirname(process.execPath);
 const furetBin = `${nodeBinDir}/furet`;
 
-const unit = `[Unit]
+/** systemd 只在 Linux 上有，而且不是每個 Linux 都跑 systemd（容器、WSL1、Alpine…） */
+function hasSystemd(): boolean {
+  if (process.platform !== "linux") return false;
+  try {
+    execSync("command -v systemctl", { stdio: "ignore" });
+    return existsSync("/run/systemd/system");
+  } catch {
+    return false;
+  }
+}
+
+if (!hasSystemd()) {
+  console.log("\n=== Skipping systemd service ===");
+  console.log(`No systemd on this platform (${process.platform}).`);
+  console.log(`Start the gateway manually with: ${furetBin} gateway`);
+} else {
+  console.log("\n=== Installing systemd service ===");
+
+  const unit = `[Unit]
 Description=Furet Discord Bot
 After=network-online.target
 Wants=network-online.target
@@ -126,13 +142,14 @@ Environment=PATH=${nodeBinDir}:${ROOT}/node_modules/.bin:/usr/bin
 WantedBy=multi-user.target
 `;
 
-const tmp = "/tmp/furet.service";
-writeFileSync(tmp, unit);
-run(`cp ${tmp} /etc/systemd/system/furet.service`, { sudo: true });
-unlinkSync(tmp);
+  const tmp = "/tmp/furet.service";
+  writeFileSync(tmp, unit);
+  run(`cp ${tmp} /etc/systemd/system/furet.service`, { sudo: true });
+  unlinkSync(tmp);
 
-run("systemctl daemon-reload", { sudo: true });
-run("systemctl enable furet", { sudo: true });
+  run("systemctl daemon-reload", { sudo: true });
+  run("systemctl enable furet", { sudo: true });
+}
 
 console.log("\n=== Done ===");
 console.log("Edit .env and config.yaml, then run: furet gateway");
