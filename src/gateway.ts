@@ -92,7 +92,7 @@ function scheduleCron(job: CronJob): void {
         : "Your text response will be automatically delivered to the correct channel.";
       const cronContext = `[System] This is a scheduled cron task "${job.name}". Do NOT use discord_send_message — just reply with text. ${notifyInstruction}\n\n`;
       const response = await ask(cronContext + job.prompt, { trigger: "cron" });
-      const isNoreply = response.text.trim().startsWith("[noreply]");
+      const isNoreply = response.text.includes("[noreply]");
       logger.info({ id: job.id, noreply: isNoreply, result: response.text.slice(0, 200) }, "cron result");
       if (job.channel_id && response.text && !isNoreply) {
         await sendAndPersist(job.channel_id, response.text);
