@@ -35,6 +35,13 @@ export interface FuretConfig {
     /** bash 是沒有沙箱的任意指令執行，預設只有 owner 能用 */
     bash_owner_only: boolean;
   };
+  prompt: {
+    /**
+     * PEOPLE.md 內嵌進 system prompt 的字元上限。
+     * 超過就只放一行指標，讓 agent 需要時自己 read_file。0 = 永不內嵌。
+     */
+    peopleInlineLimit: number;
+  };
   skills: string[];
   /** IANA 時區名（如 "Asia/Taipei"）。留空 = 用系統時區 */
   timezone: string;
@@ -70,6 +77,9 @@ const DEFAULTS: FuretConfig = {
   },
   tools: {
     bash_owner_only: true,
+  },
+  prompt: {
+    peopleInlineLimit: 1500,
   },
   skills: [],
   timezone: "",
@@ -132,6 +142,7 @@ export function loadConfig(): FuretConfig {
     journal: { ...DEFAULTS.journal, ...defined(resolved.journal) } as FuretConfig["journal"],
     soul_guardian: { ...DEFAULTS.soul_guardian, ...defined(resolved.soul_guardian) } as FuretConfig["soul_guardian"],
     tools: { ...DEFAULTS.tools, ...defined(resolved.tools) } as FuretConfig["tools"],
+    prompt: { ...DEFAULTS.prompt, ...defined(resolved.prompt) } as FuretConfig["prompt"],
     skills: (resolved.skills as string[] | undefined) ?? DEFAULTS.skills,
     timezone: (resolved.timezone as string | undefined) ?? DEFAULTS.timezone,
   };

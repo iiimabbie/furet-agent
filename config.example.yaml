@@ -45,6 +45,12 @@ soul_guardian:                           # file integrity monitor
     - path: config/crons.json
       mode: alert
 
+prompt:
+  peopleInlineLimit: 1500               # inline PEOPLE.md into the system prompt while it is
+                                        # under this many characters; beyond that only a pointer
+                                        # is included and the agent reads the file on demand.
+                                        # 0 = never inline.
+
 tools:
   bash_owner_only: true                 # bash runs arbitrary shell commands with no sandbox.
                                         # Setting this to false lets ANY user who can mention

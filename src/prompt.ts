@@ -105,11 +105,31 @@ const PERSONA_ANCHOR = `<persona-reminder>
 Stay in character as defined in <persona> above. Your voice — tone, how you address people, how much you say — comes from there. The operational rules govern what you do and how you structure it, never how you sound.
 </persona-reminder>`;
 
+/**
+ * PEOPLE.md 會隨著認識的人變多而長大，不適合無條件塞進每一次請求。
+ *
+ * 小的時候直接內嵌——成本幾十個 token，換到稱謂和權限一定正確；
+ * 超過門檻就只留一行指標，讓 agent 需要時自己 `read_file`。
+ * 門檻由 `config.prompt.peopleInlineLimit` 控制，0 = 永不內嵌。
+ */
+function buildPeopleSection(): string {
+  const people = loadWorkspaceFile("PEOPLE.md");
+  if (!people) return "";
+
+  const limit = loadConfig().prompt.peopleInlineLimit;
+  if (limit > 0 && people.length <= limit) return people;
+
+  return `<people-index>
+PEOPLE.md (${people.length} chars) is not inlined in this prompt.
+Read \`workspace/PEOPLE.md\` with read_file when you need someone's identity, title, or permissions — do this before addressing an unfamiliar user or performing a permission-sensitive action.
+</people-index>`;
+}
+
 export function buildSystemPrompt(extra?: string): string {
   const date = `Current datetime: ${nowWithZone()}`;
   const persona = loadWorkspaceFile("SOUL.md");
   const memory = loadWorkspaceFile("MEMORY.md");
-  const people = loadWorkspaceFile("PEOPLE.md");
+  const people = buildPeopleSection();
 
   const skills = loadSkills();
   const skillsSection = skills.length > 0
@@ -122,7 +142,7 @@ export function buildSystemPrompt(extra?: string): string {
     extra,          // channel context / session-specific runtime info — injected early for visibility
     date,
     memory,
-    people,         // AGENT.md 明確引用 PEOPLE.md（稱謂、權限），沒載入的話那些指令沒有依據
+    people,         // AGENT.md 明確引用 PEOPLE.md（稱謂、權限）；太大時退化成指標
     skillsSection,
     persona ? PERSONA_ANCHOR : "",
   ];
