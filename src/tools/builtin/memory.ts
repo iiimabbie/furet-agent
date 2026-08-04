@@ -5,6 +5,7 @@ import { loadConfig } from "../../config.js";
 import { getDb } from "../../db.js";
 import { MEMORY_DIR, MEMORY_INDEX } from "../../paths.js";
 import { addVector, searchVectors } from "../../embedding.js";
+import { toSearchQuery, highlightMatches } from "../../utils/cjk.js";
 import type { Tool } from "../../types.js";
 
 function today(): string {
@@ -72,26 +73,31 @@ export const memorySearch: Tool = {
         ).join("\n"));
       }
 
-      // 全文搜尋（SQLite FTS5）
-      // FTS5 把 "word:word" 當成 column filter（例如 "07:27" → column "07"），
-      // 不是這裡支援的語法，所以把冒號換成空白。
-      const sanitizedQuery = query.replace(/:/g, " ");
-      try {
-        const db = getDb();
-        const ftsResults = db.prepare(`
-          SELECT text, file, highlight(memory_fts, 0, '**', '**') AS highlighted
-          FROM memory_fts
-          WHERE memory_fts MATCH ?
-          ORDER BY rank
-          LIMIT 20
-        `).all(sanitizedQuery) as Array<{ text: string; file: string; highlighted: string }>;
+      // 全文搜尋（SQLite FTS5）。
+      // FTS 表存的是 bigram 展開後的 token（中文不斷詞問題），所以查詢也要展開，
+      // 顯示則用 memory_vectors 的原文。
+      const ftsQuery = toSearchQuery(query);
+      if (ftsQuery) {
+        try {
+          const db = getDb();
+          const ftsResults = db.prepare(`
+            SELECT mv.text, mv.file
+            FROM memory_fts f
+            JOIN memory_vectors mv ON mv.id = f.rowid
+            WHERE memory_fts MATCH ?
+            ORDER BY rank
+            LIMIT 20
+          `).all(ftsQuery) as Array<{ text: string; file: string }>;
 
-        if (ftsResults.length > 0) {
-          results.push("## Full-text matches\n" + ftsResults.map(r =>
-            `- [${r.file}] ${r.highlighted}`
-          ).join("\n"));
+          if (ftsResults.length > 0) {
+            results.push("## Full-text matches\n" + ftsResults.map(r =>
+              `- [${r.file}] ${highlightMatches(r.text, query)}`
+            ).join("\n"));
+          }
+        } catch (err) {
+          logger.warn({ err: (err as Error).message, query }, "memory FTS query failed");
         }
-      } catch { /* FTS query error (bad syntax etc), skip */ }
+      }
 
       return results.length > 0 ? results.join("\n\n") : "No matching memories found.";
     } catch (err) {

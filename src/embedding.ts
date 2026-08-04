@@ -1,5 +1,6 @@
 import { logger } from "./logger.js";
 import { getDb, VEC_TABLE } from "./db.js";
+import { toSearchTokens } from "./utils/cjk.js";
 
 const EMBED_MODEL = "gemini-embedding-001";
 
@@ -102,7 +103,8 @@ export async function addVector(text: string, file: string): Promise<void> {
       const rowId = Number(insertMain.run(text, file).lastInsertRowid);
       // vec0 的 rowid 綁定只吃 BigInt，傳一般 number 會被拒
       insertVec.run(BigInt(rowId), blob);
-      insertFts.run(rowId, text, file);
+      // FTS 存 bigram 展開版本（unicode61 不斷中文），原文在 memory_vectors
+      insertFts.run(rowId, toSearchTokens(text), file);
       return rowId;
     })();
 

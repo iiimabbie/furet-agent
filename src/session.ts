@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { logger } from "./logger.js";
 import { getDb } from "./db.js";
 import { SESSIONS_DIR, ARCHIVE_DIR } from "./paths.js";
+import { toSearchTokens } from "./utils/cjk.js";
 import type { Message, TokenUsage } from "./types.js";
 
 export class Session {
@@ -84,9 +85,10 @@ export class Session {
         for (const m of this.messages) {
           const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
           const result = insert.run(this.id, m.role, content, m.time ?? null, m.msgId ?? null, m.replyTo ?? null);
-          // 只對有文字的 user/assistant message 建 FTS
+          // 只對有文字的 user/assistant message 建 FTS。
+          // 存 bigram 展開版本（unicode61 不斷中文），原文在 session_archive
           if (typeof m.content === "string" && m.content.length > 0) {
-            insertFts.run(result.lastInsertRowid, m.content, this.id);
+            insertFts.run(result.lastInsertRowid, toSearchTokens(m.content), this.id);
           }
         }
       });

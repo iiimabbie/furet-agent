@@ -3,6 +3,7 @@ import * as sqliteVec from "sqlite-vec";
 import { resolve } from "node:path";
 import { WORKSPACE_CONFIG_DIR } from "./paths.js";
 import { logger } from "./logger.js";
+import { toSearchTokens } from "./utils/cjk.js";
 
 const DB_PATH = resolve(WORKSPACE_CONFIG_DIR, "furet.db");
 
@@ -96,8 +97,62 @@ export function getDb(): Database.Database {
     )
   `);
 
+  rebuildFtsIfNeeded(db);
+
   logger.info({ path: DB_PATH }, "database initialized");
   return db;
+}
+
+/**
+ * FTS 索引的內容格式版本。
+ *
+ * FTS 表存的不是原文，而是 `toSearchTokens()` 展開後的 token 序列
+ * （中文 bigram 化，否則 unicode61 不斷中文，中文查詢永遠搜不到）。
+ * 展開規則改變時把這個數字 +1，開機就會用新規則重建索引。
+ */
+const FTS_CONTENT_VERSION = 2;
+
+function isJsonArray(s: string): boolean {
+  if (!s.startsWith("[")) return false;
+  try { return Array.isArray(JSON.parse(s)); } catch { return false; }
+}
+
+/** 用 bigram 展開規則重建 FTS 索引。原文都還在來源表，重建是安全的。 */
+function rebuildFtsIfNeeded(database: Database.Database): void {
+  database.exec(`CREATE TABLE IF NOT EXISTS fts_meta (key TEXT PRIMARY KEY, value INTEGER)`);
+  const row = database.prepare("SELECT value FROM fts_meta WHERE key='content_version'").get() as { value: number } | undefined;
+  if (row?.value === FTS_CONTENT_VERSION) return;
+
+  try {
+    const memRows = database.prepare("SELECT id, text, file FROM memory_vectors").all() as Array<{ id: number; text: string; file: string }>;
+    const sessRows = database.prepare("SELECT id, content, session_id FROM session_archive").all() as Array<{ id: number; content: string; session_id: string }>;
+
+    const insMem = database.prepare("INSERT INTO memory_fts (rowid, text, file) VALUES (?, ?, ?)");
+    const insSess = database.prepare("INSERT INTO session_fts (rowid, content, session_id) VALUES (?, ?, ?)");
+
+    database.transaction(() => {
+      database.exec("DELETE FROM memory_fts");
+      for (const r of memRows) insMem.run(r.id, toSearchTokens(r.text), r.file);
+
+      database.exec("DELETE FROM session_fts");
+      for (const r of sessRows) {
+        // 歸檔時只對純文字訊息建 FTS。content blocks 是 JSON.stringify 存的，
+        // 這裡靠 parse 得到 array 來排除——不能用 startsWith("[") 判斷，
+        // 因為使用者訊息本身就常以 "[System] " / "[msg:123 …]" 開頭。
+        if (r.content && !isJsonArray(r.content)) insSess.run(r.id, toSearchTokens(r.content), r.session_id);
+      }
+
+      database.prepare("INSERT INTO fts_meta (key, value) VALUES ('content_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        .run(FTS_CONTENT_VERSION);
+    })();
+
+    logger.info(
+      { version: FTS_CONTENT_VERSION, memory: memRows.length, session: sessRows.length },
+      "FTS index rebuilt with CJK bigram tokens"
+    );
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, "FTS rebuild failed");
+  }
 }
 
 export function closeDb(): void {
