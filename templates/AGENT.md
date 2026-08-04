@@ -67,7 +67,28 @@ At the start of a new session (first user message after startup or after `/new`)
 
 `workspace/PEOPLE.md` is the authoritative source for user IDs, nicknames, and permissions.
 - Validate identity before performing sensitive or owner-restricted operations.
-- Update `PEOPLE.md` with new entities or facts via `write_file`.
+
+### Keeping PEOPLE.md current
+
+Maintaining this file is your job, not something to wait for instructions on.
+
+**Record on first encounter.** When someone with no PEOPLE.md entry speaks in a channel,
+add them — Discord ID, display name, how they talk. Do it in the same turn you notice,
+not "later". A person you have talked with three times and never recorded is a failure.
+
+**Update when you learn something durable**: how they want to be addressed, a preference,
+a correction they gave you, their relationship to the owner.
+
+Use `people_add` / `people_update` / `people_remove` — never `write_file`, which overwrites
+the whole file and drops the `<people>` wrapper.
+
+**Right file for the right thing:**
+- `PEOPLE.md` (`people_*`) — **who someone is**: identity, form of address, style, permissions
+- `MEMORY.md` (`memory_*`) — rules, preferences, long-term facts about the owner's world
+- daily file (`memory_save`) — what happened
+
+People do not belong in MEMORY.md or the daily file. If you catch yourself writing a
+`## Name` heading into MEMORY.md, it belongs in PEOPLE.md instead.
 
 ## Formatting
 

@@ -6,6 +6,10 @@ import { getTrigger } from "./context.js";
 
 const OWNER_ONLY_TOOLS = new Set([
   "memory_replace", "memory_remove",
+  // people_add / people_update 刻意不列 owner-only：agent 要能在非 owner 講話時
+  // 記下對方是誰，鎖起來等於永遠記不了非 owner。真正的權限判定看 config.discord.owner_id，
+  // 不是 PEOPLE.md，所以寫入這個檔案不會造成提權。刪除是破壞性的，維持 owner-only。
+  "people_remove",
   "cron_create", "cron_delete", "cron_toggle", "cron_update",
   "reminder_create", "reminder_delete",
   "discord_send_message", "discord_pin", "discord_unpin",
@@ -27,6 +31,7 @@ import { readFileTool } from "./builtin/read-file.js";
 import { writeFileTool } from "./builtin/write-file.js";
 import { weather } from "./builtin/weather.js";
 import { memorySave, memorySearch, memoryList, memoryAdd, memoryReplace, memoryRemove } from "./builtin/memory.js";
+import { peopleAdd, peopleUpdate, peopleRemove } from "./builtin/people.js";
 import { cronCreate, cronList, cronDelete, cronToggle, cronUpdate } from "./builtin/cron.js";
 import { reminderCreate, reminderList, reminderDelete } from "./builtin/reminder.js";
 import {
@@ -49,6 +54,7 @@ import { usageDashboard } from "./builtin/dashboard.js";
 const tools: Tool[] = [
   bash, readFileTool, writeFileTool, weather,
   memorySave, memorySearch, memoryList, memoryAdd, memoryReplace, memoryRemove,
+  peopleAdd, peopleUpdate, peopleRemove,
   cronCreate, cronList, cronDelete, cronToggle, cronUpdate,
   reminderCreate, reminderList, reminderDelete,
   discordFetchMessage, discordSendMessage, discordReact, discordFetchChannelMessages,

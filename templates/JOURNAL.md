@@ -2,8 +2,17 @@
 
 Check if anything from this turn is worth saving. If yes, save it — do not skip.
 
+**people_add / people_update** (PEOPLE.md — who they are) — use if:
+- Someone you have no entry for spoke in the channel → `people_add` with their Discord ID,
+  display name, and how they talk. Do this on first encounter, without being asked.
+- You learned something durable about someone already listed → `people_update`
+  (how they want to be addressed, a preference, a correction, a relationship)
+
+PEOPLE.md is for **who someone is**. Never record people in MEMORY.md or the daily file —
+those are for events and rules. Use `people_*` tools, not `write_file`.
+
 **memory_save** (append to daily file) — save if:
-- User mentioned a new preference, rule, person, or schedule
+- User mentioned a new preference, rule, or schedule
 - User corrected your behavior or gave feedback
 - A notable event, decision, or conversation happened
 
@@ -35,6 +44,10 @@ Use the appropriate tools:
 - `memory_save` — notable events, decisions, conversations
 - `memory_replace` — new or updated facts in MEMORY.md
 - `memory_remove` — outdated entries
+- `people_add` — anyone who appeared this session with no PEOPLE.md entry
+- `people_update` — anything durable you learned about someone already listed
+
+Check the participants of this session against PEOPLE.md before finishing.
 
 Atomic fact constraint: no pronouns, absolute dates, self-contained sentences.
 
@@ -82,3 +95,19 @@ Proceed directly to Step 2. Do not stop here.
    - List the `memory_replace` / `memory_remove` / `memory_add` calls made and why.
    - Or explicitly confirm: "MEMORY.md is up to date, no changes needed."
    Do not silently skip Step 2.
+
+### Step 3 — Update PEOPLE.md
+
+7. Read `workspace/PEOPLE.md` with `read_file`.
+8. Go through the people who appeared in the past 3 days of daily memory:
+
+   → **No entry yet?** → `people_add` (Discord ID, display name, how they talk)
+   → **Entry exists but something durable changed or was learned?** → `people_update`
+   → **Entry is a duplicate or the person is long gone?** → `people_remove`
+
+   Record only what helps you address them correctly and judge permissions:
+   identity, form of address, communication style, relationship to the owner.
+   Do not record one-off remarks or mood — those belong in the daily journal.
+
+9. End by listing the `people_*` calls made, or confirm: "PEOPLE.md is up to date, no changes needed."
+   Do not silently skip Step 3.
