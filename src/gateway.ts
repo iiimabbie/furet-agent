@@ -140,65 +140,54 @@ function startWatcher(): void {
   setInterval(() => {
     loadAndScheduleAll();
   }, 60 * 60 * 1000);
-  // Poll for new reminders every 15 seconds
+  // 每 15 秒掃一次到期的提醒
   setInterval(() => {
-    loadAndScheduleReminders();
-  }, 15 * 1000);
+    void tickReminders();
+  }, REMINDER_POLL_MS);
 }
 
 // --- Reminders ---
-const activeReminders = new Map<string, NodeJS.Timeout>();
+/**
+ * 提醒用輪詢而不是 setTimeout：檔案是唯一真相，手改 reminders.json 立即生效，
+ * 沒有 setTimeout 的 32-bit delay 上限，停機期間錯過的到期提醒下次掃到就會補發。
+ */
+const REMINDER_POLL_MS = 15 * 1000;
 
-function scheduleReminder(r: Reminder): void {
-  if (activeReminders.has(r.id)) {
-    clearTimeout(activeReminders.get(r.id)!);
-  }
-  const delay = new Date(r.triggerAt).getTime() - Date.now();
-  if (delay <= 0) {
+/** 已經在跑的提醒，避免同一筆被下一輪重複撈到 */
+const runningReminders = new Set<string>();
+
+async function tickReminders(): Promise<void> {
+  const now = Date.now();
+  const due = loadReminders().filter(
+    r => !runningReminders.has(r.id) && new Date(r.triggerAt).getTime() <= now
+  );
+  for (const r of due) {
+    runningReminders.add(r.id);
+    // 先移除再執行：中途崩潰不會在重啟後重複推播
     removeReminder(r.id);
-    return;
+    void runReminder(r).finally(() => runningReminders.delete(r.id));
   }
-  const timeout = setTimeout(async () => {
-    logger.info({ id: r.id, name: r.name, prompt: r.prompt.slice(0, 100) }, "reminder triggered");
-    try {
-      const reminderContext = `[System] This is a scheduled reminder "${r.name}". Your text response will be automatically delivered to the correct channel. Do NOT use discord_send_message — just reply with text.\n\n`;
-      const response = await ask(reminderContext + r.prompt, { trigger: "reminder" });
-      logger.info({ id: r.id, result: response.text.slice(0, 200) }, "reminder result");
-      if (r.channel_id && response.text) {
-        await sendAndPersist(r.channel_id, response.text, `Reminder "${r.name}"`);
-      } else {
-        console.log(`[reminder:${r.name}] ${response.text}`);
-      }
-    } catch (err) {
-      logger.error({ id: r.id, err }, "reminder execution failed");
+}
+
+async function runReminder(r: Reminder): Promise<void> {
+  const lateBySec = Math.round((Date.now() - new Date(r.triggerAt).getTime()) / 1000);
+  logger.info({ id: r.id, name: r.name, lateBySec, prompt: r.prompt.slice(0, 100) }, "reminder triggered");
+  try {
+    const reminderContext = `[System] This is a scheduled reminder "${r.name}". Your text response will be automatically delivered to the correct channel. Do NOT use discord_send_message — just reply with text.\n\n`;
+    const response = await ask(reminderContext + r.prompt, { trigger: "reminder" });
+    logger.info({ id: r.id, result: response.text.slice(0, 200) }, "reminder result");
+    if (r.channel_id && response.text) {
+      await sendAndPersist(r.channel_id, response.text, `Reminder "${r.name}"`);
+    } else {
+      console.log(`[reminder:${r.name}] ${response.text}`);
     }
-    removeReminder(r.id);
-  }, delay);
-  activeReminders.set(r.id, timeout);
+  } catch (err) {
+    logger.error({ id: r.id, err }, "reminder execution failed");
+  }
 }
 
 function removeReminder(id: string): void {
-  const list = loadReminders().filter(r => r.id !== id);
-  saveReminders(list);
-  const t = activeReminders.get(id);
-  if (t) {
-    clearTimeout(t);
-    activeReminders.delete(id);
-  }
-}
-
-function loadAndScheduleReminders(): void {
-  const list = loadReminders();
-  let count = 0;
-  for (const r of list) {
-    if (!activeReminders.has(r.id)) {
-      scheduleReminder(r);
-      count++;
-    }
-  }
-  if (count > 0) {
-    logger.info({ count, total: list.length }, "new reminders scheduled");
-  }
+  saveReminders(loadReminders().filter(r => r.id !== id));
 }
 
 // --- Journal ---
@@ -276,7 +265,7 @@ import { getDb } from "./db.js";
 getDb();
 
 loadAndScheduleAll();
-loadAndScheduleReminders();
+console.log(`Loaded ${loadReminders().length} reminders`);
 scheduleJournal();
 startWatcher();
 
