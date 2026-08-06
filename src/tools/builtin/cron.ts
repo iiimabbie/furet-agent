@@ -39,7 +39,7 @@ export const cronCreate: Tool = {
     properties: {
       name: { type: "string", description: "Short name for this task" },
       schedule: { type: "string", description: "Cron expression (e.g. '0 9 * * *' for daily 9am, '*/30 * * * *' for every 30 min)" },
-      prompt: { type: "string", description: "The prompt to execute when triggered" },
+      prompt: { type: "string", description: "Instruction for your future self on every run, NOT the message the user sees (you write that then). Include the facts needed, and nothing that is only true today — look those up at run time." },
       channel_id: { type: "string", description: "Discord channel ID to send the result to." },
       notify: { type: "string", enum: ["always", "on_event"], description: "'always' (default): every response is sent to Discord. 'on_event': agent replies with empty text to stay silent, only sends text when something is worth reporting (errors, anomalies, important updates)." },
     },
@@ -133,7 +133,7 @@ export const cronUpdate: Tool = {
       id: { type: "string", description: "The cron job ID to update" },
       name: { type: "string", description: "New short name for this task" },
       schedule: { type: "string", description: "New cron expression" },
-      prompt: { type: "string", description: "New prompt to execute when triggered" },
+      prompt: { type: "string", description: "New instruction for your future self (see cron_create — an instruction, not the final message)" },
       channel_id: { type: "string", description: "New Discord channel ID to send results to." },
       notify: { type: "string", enum: ["always", "on_event"], description: "Change notify mode." },
     },

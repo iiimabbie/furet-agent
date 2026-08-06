@@ -100,7 +100,11 @@ function scheduleCron(job: CronJob): void {
       const notifyInstruction = job.notify === "on_event"
         ? "If the result is normal / OK with nothing to report, reply with exactly `[noreply]` and nothing else — the owner will NOT be notified. Only reply with actual content when there is an error, anomaly, or something genuinely worth the owner's attention."
         : "Your text response will be automatically delivered to the correct channel.";
-      const cronContext = `[System] This is a scheduled cron task "${job.name}". Do NOT use discord_send_message — just reply with text. ${notifyInstruction}\n\n`;
+      const cronContext =
+        `[System] The scheduled task "${job.name}" you set up is now running. ` +
+        `Below is the instruction you left for your future self — carry it out now and write the actual message for the user. ` +
+        `It is an instruction, not a message to repeat verbatim; anything in it that depends on "today" must be looked up or recomputed against the current time. ` +
+        `Do NOT use discord_send_message — just reply with text. ${notifyInstruction}\n\n`;
       const response = await ask(cronContext + job.prompt, { trigger: "cron" });
       const isNoreply = response.text.includes("[noreply]");
       logger.info({ id: job.id, noreply: isNoreply, result: response.text.slice(0, 200) }, "cron result");
@@ -173,7 +177,13 @@ async function runReminder(r: Reminder): Promise<void> {
   const lateBySec = Math.round((Date.now() - new Date(r.triggerAt).getTime()) / 1000);
   logger.info({ id: r.id, name: r.name, lateBySec, prompt: r.prompt.slice(0, 100) }, "reminder triggered");
   try {
-    const reminderContext = `[System] This is a scheduled reminder "${r.name}". Your text response will be automatically delivered to the correct channel. Do NOT use discord_send_message — just reply with text.\n\n`;
+    const reminderContext =
+      `[System] The reminder "${r.name}" you scheduled earlier has just fired. ` +
+      `Below is the instruction you left for your future self — carry it out now and write the actual message for the user. ` +
+      `It is an instruction, not a message to repeat verbatim. ` +
+      `Any relative time in it (dates, days remaining) must be recomputed against the current time; ` +
+      `this reminder was due at ${r.triggerAt} and may be firing late. ` +
+      `Your text response is delivered to the user automatically — do NOT use discord_send_message, just reply with text.\n\n`;
     const response = await ask(reminderContext + r.prompt, { trigger: "reminder" });
     logger.info({ id: r.id, result: response.text.slice(0, 200) }, "reminder result");
     if (r.channel_id && response.text) {

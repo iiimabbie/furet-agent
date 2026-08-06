@@ -35,7 +35,7 @@ export const reminderCreate: Tool = {
     properties: {
       name: { type: "string", description: "Short name for this reminder" },
       trigger_at: { type: "string", description: "ISO 8601 datetime when to trigger (e.g. '2026-04-15T14:30:00+08:00'). Calculate from current date if user says relative time like 'in 5 minutes'." },
-      prompt: { type: "string", description: "The prompt to execute when triggered" },
+      prompt: { type: "string", description: "Instruction for your future self when it fires, NOT the message the user sees (you write that then). Include the facts needed — absolute dates, amounts, names — and no relative time like 'in 3 days'." },
       channel_id: { type: "string", description: "Discord channel ID to send the result to. If omitted, result is only logged." },
     },
     required: ["name", "trigger_at", "prompt"],
