@@ -95,7 +95,7 @@ export const tasksComplete: Tool = {
 
 export const tasksDelete: Tool = {
   name: "google_tasks_delete",
-  description: "Delete a task.",
+  description: "Delete a task permanently. IRREVERSIBLE. To mark a task done instead, use google_tasks_complete — that is what is usually wanted.",
   parameters: {
     type: "object",
     properties: {

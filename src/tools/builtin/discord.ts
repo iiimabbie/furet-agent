@@ -240,7 +240,7 @@ export const discordCreateForumPost: Tool = {
 
 export const discordDeleteThread: Tool = {
   name: "discord_delete_thread",
-  description: "Delete a thread in a Discord channel.",
+  description: "Delete a thread in a Discord channel. IRREVERSIBLE — the whole thread and its history go with it. To just take it out of the active list, use discord_archive_thread instead.",
   parameters: {
     type: "object",
     properties: {
@@ -327,7 +327,7 @@ export const discordEditMessage: Tool = {
 
 export const discordDeleteMessage: Tool = {
   name: "discord_delete_message",
-  description: "Delete one of the bot's own messages.",
+  description: "Delete one of the bot's own messages. IRREVERSIBLE. To fix wording or redact content, prefer discord_edit_message — and after redacting, do not re-mention the removed content in your reply.",
   parameters: {
     type: "object",
     properties: {

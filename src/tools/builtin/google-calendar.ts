@@ -117,7 +117,7 @@ export const calendarUpdateEvent: Tool = {
 
 export const calendarDeleteEvent: Tool = {
   name: "google_calendar_delete_event",
-  description: "Delete a calendar event.",
+  description: "Delete a calendar event. IRREVERSIBLE — there is no undo and attendees are notified of the cancellation. Confirm the event_id belongs to the intended event (list it first) before calling.",
   parameters: {
     type: "object",
     properties: {

@@ -92,7 +92,7 @@ export const gmailRead: Tool = {
 
 export const gmailSend: Tool = {
   name: "google_gmail_send",
-  description: "Send an email.",
+  description: "Send an email immediately. IRREVERSIBLE — it reaches real recipients and cannot be recalled. Confirm recipient, subject, and body with the owner before calling; if there is any doubt, use google_gmail_create_draft instead and let the owner send it.",
   parameters: {
     type: "object",
     properties: {
@@ -115,7 +115,7 @@ export const gmailSend: Tool = {
 
 export const gmailCreateDraft: Tool = {
   name: "google_gmail_create_draft",
-  description: "Create an email draft.",
+  description: "Create an email draft in Gmail without sending it. Safe alternative to google_gmail_send when the owner should review the wording first.",
   parameters: {
     type: "object",
     properties: {
