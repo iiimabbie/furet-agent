@@ -7,13 +7,13 @@ import type { Tool } from "../../types.js";
 const CODING_SYSTEM_PROMPT = `You are modifying the Furet agent's own source code. Furet is a TypeScript project at ${ROOT}/.
 
 Before making changes:
-1. Read DESIGN.md for architecture overview
+1. Read ${ROOT}/material/DESIGN.md for architecture overview
 2. Read the relevant source files to understand the current implementation
 
 Rules:
 - Follow the existing code style and patterns
 - After writing files, run \`npx tsc --noEmit\` via bash to verify no type errors
-- Update DESIGN.md if you changed the architecture
+- Update ${ROOT}/material/DESIGN.md if you changed the architecture
 - Do NOT commit code — the owner will review and commit
 - Do NOT restart the gateway — the owner will do it
 

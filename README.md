@@ -176,7 +176,7 @@ All `.md` files use XML tags (e.g. `<agent-instructions>`, `<persona>`, `<memory
 
 ## Architecture
 
-See [DESIGN.md](DESIGN.md) for full architecture documentation.
+See [material/DESIGN.md](material/DESIGN.md) for full architecture documentation.
 
 ## License
 

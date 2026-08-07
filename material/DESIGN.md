@@ -1,0 +1,584 @@
+# Furet - 設計文件
+
+## 概述
+
+Furet（法語：雪貂）是一個個人 AI 助手，使用自建 agent loop 直接呼叫 Anthropic Messages API。
+介面：CLI + Discord bot，透過 Gateway 常駐程式統一管理。
+
+## 技術選型
+
+| 項目 | 選擇 | 原因 |
+|------|------|------|
+| 語言 | TypeScript | 強型別 |
+| AI 引擎 | 自建 agent loop + Anthropic Messages API | 完全掌控，不依賴任何 SDK |
+| API 路由 | router-for.me (localhost:8317) | base_url 指向 local router |
+| Server-side Tools | web_search / web_fetch / code_execution | Anthropic 提供，不用自己接 |
+| Discord | discord.js | 社群最大、文件最齊 |
+| 排程 | node-cron | 輕量，cron 語法 |
+| Google API | googleapis | 官方全家桶（Calendar / Gmail / Drive / Tasks） |
+| 向量搜尋 | Gemini embedding (gemini-embedding-001, 3072 維) | 語意記憶召回 |
+| 執行環境 | Node.js 直接執行（tsx） | agent 需要直接操作 workspace 檔案 |
+
+## 架構
+
+```
+使用者輸入（CLI / Discord）
+    │
+    ▼
+Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317) ──► 上游
+    │
+    ├── System Prompt = prompt.ts（AGENT.md + 日期時間 + SOUL.md + MEMORY.md + skills）
+    │
+    ├── Server-side Tools（Anthropic 提供，API 直接處理）
+    │   ├── web_search（web_search_20250305，max_uses: 5）
+    │   ├── web_fetch（web_fetch_20250910，max_uses: 5）
+    │   └── code_execution（code_execution_20250825）
+    │
+    ├── Custom Tools（本地執行，透過 tools/registry.ts 統一管理）
+    │   ├── bash / read_file / write_file / get_weather
+    │   ├── memory_*      # 記憶管理（save / search / list / add / replace / remove）
+    │   ├── cron_*        # 排程管理（create / list / delete / toggle / update）
+    │   ├── reminder_*    # 提醒管理（create / list / delete）
+    │   ├── discord_*     # Discord 操作（fetch / send / react / pin / thread / forum / edit / delete）
+    │   ├── google_*      # Google API（calendar / gmail / drive / tasks）
+    │   ├── soul_guardian_* # 核心檔案保護
+    │   └── skill_*       # 技能安裝/移除
+    │
+    ▼
+回應（CLI stdout / Discord 漸進式編輯訊息）
+```
+
+## Agent Loop
+
+`src/agent.ts` — 核心循環，直接用 fetch 呼叫 Anthropic Messages API。
+
+整個 `ask()` 跑在獨立的 request context（AsyncLocalStorage）裡，見「Request Context」一節。
+
+1. 組 system prompt（`prompt.ts` 的 `buildSystemPrompt()`）
+2. 自動記憶召回：用使用者訊息做語意搜尋（`searchVectors`），結果注入 system prompt。
+   `prompt` 為 null 時（Discord 路徑）改取 session 最後一則 user message，並剝掉
+   `[msg:id 時間] <@id>(暱稱):` 這類中繼資料前綴，避免稀釋語意訊號
+3. 從 session 載入歷史 messages（標準 multi-turn 格式），用 `trimToTokenBudget()` 控制 context 上限，
+   再經 `ensureUserFirst()` 確保第一則是 user role
+4. 送 API，收到回應 → 解析 content blocks（text / thinking / tool_use / server-side tool results）
+5. 有 tool_use → 本地執行 → tool_result 送回 → 回到 4
+6. 沒有 tool_use → 最後一輪，回傳文字
+
+### Session 與 API 的訊息流
+
+- Session 存：text + tool_use blocks（不存 thinking，見下；不存 tool_result，太大）
+- 送 API 時：從 session 展開成標準 multi-turn messages，過濾掉 tool_use blocks（因為沒有配對的 tool_result）
+
+- `trimToTokenBudget()`：從最新往回取，粗估 token（JSON 長度 / 4），確保 tool_use/tool_result 配對不被拆散。
+  單則訊息本身就超過預算時，至少保留最後一則（否則會送出空 messages）
+- `ensureUserFirst()`：Anthropic API 要求第一則必須是 user role。session 開頭可能是 assistant
+  （cron/reminder 主動推播、或 trim 從中間切開），此時在最前面補一則 user 說明，
+  而不是把那些 assistant 訊息丟掉——它們是真的推播過的紀錄，砍掉會失去上下文
+- Memory hook（JOURNAL.md 的 Memory Hook section）每 5 則 user message 才附加一次（定期 nudge）
+
+### 為什麼不存 thinking block
+
+thinking block 的 `signature` 不是 `thinking` 欄位的校驗碼 —— **它才是內容本身**：模型端的
+加密推理酬載（gpt-5.6-sol 走 router 時是 Fernet token，`gAAAAAB...`，約 1.3KB），只有模型端
+解得開；`thinking` 欄位本身只是一行標題（實測約 43 字元）。
+
+它唯一有作用的時機是「同一輪內接著回送 tool_result」，所以 `ask()` 的 live turn 迴圈裡照常
+帶著。但**跨輪重送沒有意義**：歷史裡配對的 tool_use 本來就會被濾掉，推理接續性早就斷了，
+等於每輪多背幾百個 token 換不到東西。因此 `stripThinking()` 在存進 session 前把它拿掉，
+展開歷史時再濾一次以相容舊 session。
+
+### 為什麼 tool_use 反而留著
+
+tool_use 跟 thinking 的成本結構不同：**它在每一條會送到 API 的路徑上都已經被濾掉**
+（歷史展開濾 `tool_use`、`compactSession()` 只取 `text` blocks、journal 走歷史展開那條），
+所以它的 token 成本是 0，只佔硬碟。留著是 agent 做過什麼的稽核紀錄，砍掉省不到錢。
+
+### tool_use 的跨輪 recap
+
+tool_use 被濾掉的副作用是模型跨輪完全不知道自己做過什麼——它只看得到最後那句回覆。
+`summarizeToolUse()` 把它折成一行 `工具名(參數摘要)` 補回去，成本幾十個 token。
+
+**這行字必須用 `[System]` 的 user message 送，不能塞進 assistant 訊息裡。** 實測過三種
+措辭（中文第一人稱、指涉當則、英文方括號），模型全都在下一輪主動否認自己呼叫過工具
+並道歉：從它的視角，掛在 assistant 訊息裡的是一段宣稱呼叫過工具、卻沒有對應 tool_use
+block 的散文，正好撞上 AGENT.md 的 "Never fabricate tool results"，於是判定成自己捏造的。
+改由 harness 用 user message 陳述後就正確了——說話的人變成系統，不是 agent 自己。
+
+參數摘要取 `TOOL_ARG_KEYS`（path / command / query…）裡第一個有值的字串欄位，截到 50 字元。
+recap 只存在於送 API 的 payload，不寫進 session，所以不影響 memory nudge 的計數。
+
+### 關鍵函式
+
+- `ask(prompt, options)` — 主入口。prompt 為 null 時從 session 尾部取（Discord 用）
+- `callAnthropic(system, messages)` — 封裝 API 呼叫
+- `sanitizeContent(blocks)` — 清除 API 回傳的多餘欄位，保留 text / thinking / tool_use / tool_result
+- `estimateTokens(msg)` — 粗估 token 數
+- `trimToTokenBudget(messages, maxTokens)` — token-based 歷史裁切
+- `ensureUserFirst(messages)` — 確保送 API 的第一則是 user role
+
+## Request Context
+
+`src/tools/context.ts` — 用 `AsyncLocalStorage` 做請求範圍隔離。
+
+cron / reminder / journal 跟使用者對話是並行跑的。這些狀態以前是模組級全域變數，
+會互相覆蓋：cron 觸發時把 trigger 蓋成 `"cron"`，正在執行 tool call 的非 owner 請求
+就繞過了 `registry.ts` 的 owner-only 檢查；附件也會串到別人的回覆去。
+
+- `runWithContext(trigger, fn)` — `ask()` 用它包住整個執行流程
+- `getTrigger()` / `setTrigger()` — 權限判定用的 trigger source
+- `queueAttachment()` / `drainAttachments()` — 工具排隊的檔案附件
+- ALS 範圍外呼叫時退回 `{ trigger: "unknown", pendingFiles: [] }`
+
+附件由 `ask()` 在結束時收集，透過 `AgentResponse.attachments` 回傳給呼叫端
+（bot.ts 不再自己去讀全域狀態）。
+
+## Prompt 架構
+
+`src/prompt.ts` — 組裝 system prompt。各 md 檔自帶 XML tag（如 `<agent-instructions>`、`<persona>`、`<memory>`），`buildSystemPrompt()` 只負責拼接，不硬塞任何 tag。
+
+順序（由前到後）：
+
+| 層 | 來源 | XML tag | 說明 |
+|----|------|---------|------|
+| 人格層 | `workspace/SOUL.md` | `<persona>` | 名字、個性、語氣 |
+| 系統層 | `workspace/AGENT.md` | `<agent-instructions>` | 行為規則、工具指南、workspace 邊界 |
+| 額外層 | `options.systemPrompt` | （無） | 動態注入（如 Discord channel ID、session ID、flush 指令） |
+| 時間層 | 自動生成 | （無） | 當前日期時間（時區由 `config.timezone` 決定） |
+| 記憶層 | `workspace/MEMORY.md` | `<memory>` | 長期記憶（有字數上限） |
+| 人物層 | `workspace/PEOPLE.md` | `<people>` / `<people-index>` | 使用者身分、稱謂、權限（大小門檻，見下） |
+| 技能層 | `workspace/skills/*/SKILL.md` | （無） | 已啟用技能的描述 |
+| 錨定層 | 自動生成 | `<persona-reminder>` | 結尾把語氣的最終依據指回 `<persona>` |
+| 召回層 | 自動（向量搜尋） | （無） | 根據 user message 語意召回相關記憶（append 在最後） |
+
+### 為什麼 persona 放最前面、結尾還要再錨定一次
+
+persona 通常只有一兩百字，而 AGENT.md 的操作規範動輒好幾千字（實測 177 vs 7376，比例 40:1）。
+persona 原本排在 AGENT.md 後面，等於被埋在大量「高效助理」指令中間，實際效果是語氣完全跟著
+AGENT.md 走——session 紀錄裡出現過 agent 讀了 SOUL.md 檔案才說「原來我的人設是這樣的」。
+
+三個對策：
+
+1. persona 移到最前面——先講「你是誰」，再講「怎麼做事」
+2. AGENT.md 開頭加一節 `## Voice`，明確劃分：persona 決定**怎麼說**，AGENT.md 決定**做什麼**，
+   衝突時語氣以 persona 為準
+3. 結尾加 `<persona-reminder>`，利用結尾的注意力高點把語氣依據指回去
+
+`PEOPLE.md` 也是這時候補上的：AGENT.md 一直有「Use titles from `workspace/PEOPLE.md`」這條指令，
+但那個檔案從來沒被載入 system prompt，等於指令沒有依據。
+
+### XML 標籤與附加內容
+
+workspace 的 md 檔用 XML tag 標出 system prompt 的區塊邊界（`<memory>`、`<people>`）。
+附加內容時**必須先剝掉包裝、接完再包回去**——直接往檔案尾端接會落到結束標籤外面，
+那段內容就跑出區塊了（`memory_add` 實際發生過這個 bug）。
+
+`src/utils/tagged-file.ts` 提供共用處理，`memory_*` 和 `people_*` 都走它：
+
+- `stripTag(content, tag)` — 去掉外層包裝
+- `wrapTag(body, tag)` — 包回去（已經有就不重複包）
+- `appendInsideTag(current, addition, tag)` — 在標籤內部尾端附加
+
+沒有標籤的舊檔案會在下次寫入時自動補上。
+
+### 檔案落點
+
+agent 寫檔只有兩個目的地，由 `src/paths.ts` 定義：
+
+| 常數 | 路徑 | 用途 |
+|---|---|---|
+| `ATTACHMENTS_DIR` | `workspace/attachments/` | agent 產出或下載的一切檔案 |
+| `TRASH_DIR` | `workspace/.trash/` | 全域唯一回收桶，刪除一律 `mv` 到這 |
+
+這兩個常數是後補的。原本 `paths.ts` 沒有定義它們，`bash` 的工具說明也只講
+「移到 `.trash`」而沒指定位置——agent 就依當下工作目錄各建一個，於是同時長出
+`workspace/.trash/` 和 `workspace/attachments/.trash/`，以及沒有任何程式碼或
+文件依據的 `pages/`、`tmp/`。
+
+約束寫在三個地方，缺一不可：
+
+- `paths.ts` — 程式碼唯一來源，`dashboard.ts` 等寫檔處一律引用常數，不再自己 `resolve`
+- `bash.ts` 的 tool description — agent 決定「刪除／存檔要放哪」的當下讀到的就是它
+- `AGENT.md` 的 File Locations — 涵蓋 `write_file`、`curl` 等其他寫檔路徑
+
+只改其中一處沒有用：路徑常數管不到 agent 的自由發揮，而工具說明只覆蓋該工具。
+
+### SKILL.md 的讀取
+
+`src/skills.ts` 是讀 `workspace/skills/` 的唯一入口，`prompt.ts`（組 system prompt）
+和 `tools/builtin/skill.ts`（skill_* 工具）共用：
+
+- `parseSkillFrontmatter(content)` — 解析開頭的 YAML frontmatter，`description` 只取第一行
+- `listSkillDirs()` — 列出 skill 目錄，目錄不存在回空陣列
+- `readSkillMeta(dir)` — 讀某個 skill 的 SKILL.md metadata，讀不到回 `null`
+
+這三個原本在上述兩個檔案各有一份逐字相同的實作，改一邊漏另一邊就會讓
+「system prompt 看到的描述」和「`skill_list` 回報的描述」不一致。
+
+注意 `loadSkills()` 只載入**已註冊在 `config.skills` 的目錄**——目錄存在不等於啟用，
+`skill_list` 的 `active` / `inactive` 就是在區分這件事。
+`memoryCharLimit` 只算標籤內的實質內容，包裝本身不吃額度。
+
+### 人物維護
+
+PEOPLE.md 的編輯走 `people_*` 工具，跟 `memory_*` 同構（substring 操作）。
+不用 `write_file` 的原因：整份覆寫會弄丟 `<people>` 包裝標籤（實際發生過），
+而且 agent 得先讀全文再重組，容易改壞既有條目。工具內部會確保標籤還在，並重建向量索引。
+
+權限上 `people_add` / `people_update` **刻意不設 owner-only**——
+agent 要能在非 owner 講話時記下對方是誰，鎖起來等於永遠記不了非 owner。
+真正的權限判定看 `config.discord.owner_id`，不是 PEOPLE.md，所以寫入不會造成提權。
+`people_remove` 是破壞性操作，維持 owner-only。
+
+觸發時機寫在 `JOURNAL.md` 的三個 hook 裡（Memory Hook / Session Summarize / Daily Journal Step 3），
+以及 AGENT.md 的 User Hierarchy 一節。三者都明確劃分：
+**PEOPLE.md 記「人是誰」，MEMORY.md 記規則與長期事實，日記記發生了什麼**。
+
+### PEOPLE.md 的大小門檻
+
+PEOPLE.md 會隨著認識的人變多而長大，不適合無條件塞進每一次請求
+（目前 145 字元 ≈ 42 token，但 20 人的規模就會到 ~858 token/次）。
+
+`config.prompt.peopleInlineLimit`（預設 1500 字元）控制行為：
+
+- **小於門檻** → 直接內嵌全文。成本幾十個 token，換到稱謂和權限一定正確
+- **超過門檻** → 只放一段 `<people-index>` 指標，說明檔案多大、
+  要用 `read_file` 讀，以及什麼時機該讀（稱呼陌生使用者、做權限敏感操作前）
+- **`0`** → 永不內嵌，一律走指標
+
+檔案不存在或是空的時候兩者都不產生，不會留下空區塊。
+
+## Session 管理
+
+`src/session.ts` — 每個對話一個 JSON 檔案。
+
+| 場景 | Session ID | 位置 |
+|------|-----------|------|
+| CLI | `cli` | `workspace/sessions/cli.json` |
+| Discord 頻道 | `discord-channel-{channelId}` | `workspace/sessions/discord-channel-*.json` |
+| Discord DM | `discord-dm-{userId}` | `workspace/sessions/discord-dm-*.json` |
+
+### Session 格式
+
+Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 不保存）。
+
+```json
+{ "role": "user", "content": "<@id>(name): 內容", "time": "04/29 14:19", "msgId": "149...", "replyTo": "149..." }
+{ "role": "assistant", "content": [{"type":"text","text":"回覆"}], "time": "04/29 14:19" }
+```
+
+### 歸檔流程
+
+`/new` 或每日 journal 觸發歸檔：
+1. Silent memory flush：注入 flush 指令到 systemPrompt，讓 agent 自由使用 memory tools 整理記憶
+2. 歸檔到 `workspace/sessions/archive/`
+3. 清空 session
+
+## Discord Bot
+
+`src/bot.ts` — Discord.js client，整合進 Gateway。
+
+### 觸發條件
+- 被 `@mention` 或收到 DM
+- DM 只回 owner（`config.yaml` 的 `owner_id`）
+- Guild / channel 白名單過濾
+
+### 訊息處理
+- **Session 隔離**：未被觸發且 session 不存在 → 不記錄。一旦 bot 被觸發，該頻道的所有訊息才會 append
+- Content 格式：`<@userId>(暱稱): 內容`
+- Mention 正規化：`<@userId>` → `<@userId>(暱稱)` 進 prompt，輸出時 strip 括號
+- Thread/論壇貼文首次進入時以 `[System]` user message 存入 starter message
+
+### 漸進式進度訊息
+Tool call 執行時即時顯示進度（`→` / `✓` / `✗`），完成後替換成最終回覆。防抖 1 秒避免 Discord rate limit。
+
+### Slash Commands
+- `/new` — silent memory flush + 歸檔 session + AI 重新打招呼
+- `/status` — 顯示 model / cost / tokens / sessions / crons / reminders / skills
+- `/restart` — 重啟 gateway（spawn detached child）
+- `/model` — 切換 AI 模型（autocomplete from modelList）
+- `/google-auth` — Google OAuth 授權流程
+- `/task` — 列出 Google Tasks
+
+## Gateway
+
+`src/gateway.ts` — 常駐程式，統一管理所有背景服務。
+
+| 服務 | 說明 |
+|------|------|
+| Cron 排程 | 每 1 小時重新載入 crons.json，執行到期任務 |
+| Reminder | 一次性提醒，每 15 秒輪詢 reminders.json 掃到期的，觸發後自動刪除 |
+| Journal | 每天固定時間：silent flush 所有 active session → 歸檔 → 重寫日記 → 更新 MEMORY.md |
+| Discord Bot | 有 token 且 enabled 時啟動 |
+| PID file | `furet.pid`，啟動時殺掉舊進程確保單實例 |
+
+### Reminder 用輪詢而不是 setTimeout
+
+`tickReminders()` 每 15 秒讀一次 `reminders.json`，把 `triggerAt <= now` 的撈出來執行。
+不用「每筆一個 `setTimeout`」是因為：
+
+- `setTimeout` 的 delay 是 32-bit signed，超過 `2^31-1`（約 24.8 天）會溢位變成**立即觸發**
+- 記憶體裡的 timer 會跟檔案不同步，手動編輯 `reminders.json` 改時間不會生效
+- 停機期間錯過的提醒會被靜默丟掉
+
+改成輪詢後，檔案是唯一真相，間隔多長都行，停機錯過的下次掃到就補發（不設時間門檻，
+log 會記 `lateBySec` 標示遲了多久）。精度 15 秒。
+
+兩個防重複機制：觸發前**先**從檔案移除再跑 `ask()`（中途崩潰不會重播），另外用
+`runningReminders` Set 擋住同一筆在上一輪還沒跑完時被下一輪重複撈到。
+
+### cron / reminder 的 prompt 是「給未來的自己的指令」
+
+存進 `crons.json` / `reminders.json` 的 `prompt` **不是**預先寫好、到時候原文送出的訊息，
+而是給未來的自己的指令；觸發時 gateway 把它包上 context 丟進 `ask()`，agent 當下產生的
+回覆才是使用者收到的內容。
+
+這樣才有 agent 的價值（觸發當下可以查行事曆、算天數、看當下 context），也才能配合補發 ——
+文字寫死「現在剩三天」的話，遲送就是錯的；寫成「算一下還剩幾天再告訴她」才會在送出當下算對。
+
+詳細寫法指引放在 `gateway.ts` 觸發時包的那層 context，**不放在 tool description**：
+tool description 每次請求都要送，觸發 context 只在觸發時付一次。schema 那邊只留一句話。
+
+## Tool 系統
+
+### Tool 介面
+
+每個 tool 實作統一的 `Tool` 介面（`src/types.ts`）：
+
+```typescript
+interface Tool {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  execute: (args: Record<string, unknown>) => Promise<string>;
+}
+```
+
+### Tool Registry
+
+`src/tools/registry.ts` — 統一管理所有 tool。新增 tool 只需：
+1. 在 `tools/builtin/` 建立檔案，導出 `Tool` 物件
+2. 在 `registry.ts` import 並加入陣列
+
+### Tool 列表
+
+能力概覽，方便一眼看完 agent 能做什麼。**實際註冊清單以 `src/tools/registry.ts` 為準**——
+新增 tool 時如果只改了 registry 沒回來補這張表，以 registry 為對。
+
+| Tool | 說明 |
+|------|------|
+| `bash` | 執行 shell 指令 |
+| `read_file` | 讀檔 |
+| `write_file` | 寫檔 |
+| `get_weather` | wttr.in 天氣查詢 |
+| `memory_save` | 追加到當日記憶檔 + SQLite 向量 |
+| `memory_search` | 語意搜尋 + 關鍵字搜尋 |
+| `memory_list` | 列出所有記憶檔 |
+| `memory_add` | 在 MEMORY.md 新增條目（有字數上限） |
+| `memory_replace` | 用 substring match 更新 MEMORY.md |
+| `memory_remove` | 用 substring match 刪除 MEMORY.md 條目 |
+| `people_add` | 在 PEOPLE.md 新增一個人 |
+| `people_update` | 用 substring match 更新 PEOPLE.md |
+| `people_remove` | 用 substring match 刪除 PEOPLE.md 條目（owner-only） |
+| `cron_create/list/delete/toggle/update` | 排程管理 |
+| `reminder_create/list/delete` | 提醒管理 |
+| `discord_fetch_message/channel_messages` | 抓 Discord 訊息 |
+| `discord_send_message/react/pin/unpin` | Discord 互動 |
+| `discord_create_thread/forum_post/delete_thread` | Discord 討論串 |
+| `discord_edit_message/delete_message` | 編輯/刪除 bot 訊息 |
+| `discord_attach_to_reply` | 附件到回覆 |
+| `web_search` | Anthropic server-side 網路搜尋 |
+| `web_fetch` | Anthropic server-side 讀取 URL |
+| `code_execution` | Anthropic server-side Python 執行 |
+| `google_calendar_*` | Google Calendar CRUD |
+| `google_gmail_*` | Gmail 搜尋/讀取/寄信/草稿 |
+| `google_drive_*` | Drive 搜尋/讀取/上傳 |
+| `google_tasks_*` | Tasks 列表/建立/完成/刪除 |
+| `soul_guardian_*` | 核心檔案保護（status/check/approve/restore/history） |
+| `session_search` | FTS5 全文搜尋歸檔的歷史對話 |
+| `skill_install/uninstall/list` | 技能管理 |
+| `usage_dashboard` | 用量／成本儀表板，輸出 PNG 到 attachments/ |
+| `discord_bot_mention_toggle` | 切換是否回應其他 bot |
+| `self_evolve` | 用強模型（codingModel）修改自身代碼，sub-ask 模式 |
+
+## 記憶系統
+
+### 三層設計
+
+| 層 | 檔案 | 用途 |
+|----|------|------|
+| 長期記憶 | `workspace/MEMORY.md` | 持久事實，自動載入 system prompt。有字數上限（config `memoryCharLimit`），滿了需整合 |
+| 每日記憶 | `workspace/memory/yyyy-MM-dd.md` | 當日事件、對話紀錄 |
+| 人物檔 | `workspace/PEOPLE.md` | 人物權威資料（名字、Discord ID、關係） |
+
+### 儲存層
+
+`workspace/config/furet.db`（SQLite，better-sqlite3 + sqlite-vec + FTS5）：
+
+| 表 | 用途 |
+|----|------|
+| `memory_vectors` | 記憶文字 + 來源檔案 |
+| `memory_vectors_vec_cos` | sqlite-vec 向量索引（Gemini embedding，3072 維，cosine 距離） |
+| `memory_vectors_vec` | 舊的 L2 向量表，開機時自動搬到 cosine 表後不再使用 |
+| `memory_fts` | FTS5 全文搜尋索引（存 CJK bigram token，非原文） |
+| `fts_meta` | FTS 索引的內容格式版本，版本不符就在開機時重建 |
+| `session_archive` | 歸檔的 session messages |
+| `session_fts` | FTS5 session 全文搜尋（存 CJK bigram token，非原文） |
+
+### 記憶工具
+
+- `memory_save`：追加到當日檔案 + 存 SQLite 向量
+- `memory_search`：語意搜尋（sqlite-vec KNN）+ 全文搜尋（FTS5）
+- `memory_replace/remove`：操作 MEMORY.md，同時重建 MEMORY.md 的向量
+- `session_search`：FTS5 搜尋歸檔的歷史對話
+- 自動召回：每次對話時用 user message 做語意搜尋，結果注入 system prompt
+
+### 向量維護
+
+- `write_file` 覆寫 PEOPLE.md 或日記檔時：刪除舊向量 → 拆段重建
+- `memory_replace` / `memory_remove`：刪除 MEMORY.md 所有舊向量 → 整份重建
+- Migration 腳本：`npx tsx scripts/migrate-vectors.ts` 把現有資料灌進向量庫
+
+### 向量表的一致性
+
+`memory_vectors`、向量表、`memory_fts` 三張表用同一個 rowid 對齊，所以：
+
+- 新增時必須**明寫 rowid**（`INSERT INTO ... (rowid, embedding)`），不能靠隱式遞增
+- 三個 insert 包在同一個 transaction 裡——任何一句失敗就整批回滾。
+  否則 `memory_vectors` 會留下沒有向量的孤兒列，rowid 從此永久錯位，
+  之後所有搜尋都會 JOIN 到錯誤的記憶內容
+- sqlite-vec 的 rowid 參數綁定只吃 `BigInt`，傳一般 number 會被拒
+
+### 時間與時區
+
+`src/utils/time.ts` — 所有時間格式化都走 `config.timezone`，沒有任何地區寫死。
+`timezone` 留空時用系統時區（`Intl.DateTimeFormat().resolvedOptions().timeZone`），
+所以別人裝起來預設就是對的。
+
+- `stamp()` — 對話用的 `MM/DD HH:mm`
+- `today()` — 當地日期 `YYYY-MM-DD`（記憶檔名、日記日期）
+- `clockTime()` — 當地 `HH:mm:ss`（記憶條目）
+- `nowWithZone()` — 完整時間 + 時區名，給 system prompt
+
+用 `sv-SE` locale 是因為它輸出 ISO 風格的 `YYYY-MM-DD HH:mm:ss`，切片位置固定不受 locale 影響。
+
+注意記憶檔名和日記日期**必須用 `today()` 而不是 `toISOString()`**——後者是 UTC 日期，
+在 UTC+8 會讓早上 8 點前寫的記憶跑到前一天的檔案去。
+
+### 中文全文搜尋（CJK bigram）
+
+`src/utils/cjk.ts` — FTS5 預設的 unicode61 tokenizer 不斷中文，整段中文會變成一個 token，
+所以查「主人」「記憶」永遠搜不到。內建的 trigram tokenizer 也不夠：它要求至少 3 個字元，
+而中文最常見的正是 2 字詞。
+
+解法是自己把中文展開成 bigram 再交給 unicode61：
+
+- `toSearchTokens(text)` — 「主人要求」→「主人 人要 要求」。非 CJK 片段原樣保留
+  （逐字拆會讓 `weather` 變成 `w e a t h e r`，索引膨脹又不精確）
+- `toSearchQuery(query)` — 查詢端套同一個展開，並移除 FTS5 語法字元（冒號會被當 column filter）
+- `highlightMatches(text, query)` — FTS 表存的是展開後的 token，`highlight()` 會回傳
+  展開結果（不能看），所以改成自己在原文上標記
+
+**FTS 表存 bigram token，不存原文**；顯示時 JOIN 回來源表（`memory_vectors` / `session_archive`）取原文。
+展開規則改變時把 `db.ts` 的 `FTS_CONTENT_VERSION` +1，開機就會用新規則重建索引（`fts_meta` 記錄版本）。
+
+實測改善（真實資料）：「記憶」0 → 4 筆、「日記」0 → 10 筆、「主人」3 → 20 筆。
+
+限制：bigram 只能匹配原文中連續出現的字。查「貓咪疫苗」不會命中「貓咪的疫苗」——
+要跨詞搜尋得用空白分開（FTS5 預設 AND 語意）。
+
+### 距離度量
+
+vec0 預設是 L2 距離，但搜尋是把 `1 - distance` 當 cosine 相似度在比，兩者對不上
+（`SCORE_THRESHOLD = 0.65` 實際等於要求 cosine > 0.94，語意召回幾乎永遠是空的）。
+向量表改用 `distance_metric=cosine`，此時 `distance = 1 - cos`，`1 - distance` 才真的是相似度。
+
+### Memory Hook（定期 nudge）
+
+不再每輪對話都附加記憶提示。改為每 5 則 user message 才 nudge 一次，提醒 agent 檢查是否需要用 memory_save / memory_replace / memory_remove 保存資訊。
+
+### Silent Memory Flush
+
+`/new` 歸檔和每日 journal 觸發前，執行 silent memory flush：
+- Flush 指令注入 systemPrompt（不污染 session 歷史）
+- Agent 自由使用所有 memory tools 整理記憶
+- 不限制格式，由 agent 自行判斷什麼值得保存
+
+## 專案結構
+
+列到目錄職責為止，不逐一列檔名——檔名清單複製到這裡就會開始腐爛，
+而 `ls` 永遠是對的。要知道有哪些 tool 看 `src/tools/registry.ts`。
+
+```
+furet/
+├── src/
+│   ├── agent.ts              # agent loop（API call + 執行循環），系統核心
+│   ├── gateway.ts            # 常駐程式（cron + reminder + journal + Discord + PID）
+│   ├── bot.ts / cli.ts       # 兩個入口：Discord 與終端機
+│   ├── prompt.ts             # system prompt 組裝（從 workspace 的 md 檔載入）
+│   ├── paths.ts              # 所有路徑常數的唯一來源
+│   ├── config.ts             # config.yaml 載入 + ${VAR} 解析 + mtime cache
+│   ├── db.ts / embedding.ts  # SQLite（sqlite-vec + FTS5）與向量化
+│   ├── session.ts            # session 持久化
+│   ├── skills.ts             # SKILL.md 讀取（frontmatter / 目錄掃描）
+│   ├── types.ts              # 共用型別（Tool、ContentBlock、Message）
+│   ├── google/               # Google OAuth（token 持久化 + auto refresh）
+│   ├── utils/                # 無狀態工具函式（時間、CJK 斷詞、計價、格式化…）
+│   └── tools/
+│       ├── registry.ts       # tool 註冊中心 ← tool 的權威清單
+│       ├── context.ts        # request context（AsyncLocalStorage）
+│       └── builtin/          # 每個 tool 一個檔
+├── workspace/                # agent 工作空間（不進 git，由 templates/ 初始化）
+│   ├── *.md                  # AGENT / SOUL / MEMORY / PEOPLE / JOURNAL
+│   ├── config/               # crons.json, reminders.json, google-token.json, furet.db
+│   ├── memory/               # 每日記憶
+│   ├── sessions/             # session 持久化 + archive/
+│   ├── skills/               # 技能（每個有 SKILL.md）
+│   ├── attachments/          # agent 產出／下載的檔案（唯一落點）
+│   └── .trash/               # 全域唯一回收桶（刪除一律 mv 到這）
+├── templates/                # workspace 初始模板（進 git）
+├── material/DESIGN.md        # 本文件
+├── scripts/ · bin/           # 輔助腳本與執行檔
+├── config.example.yaml       # 設定範本 ← 設定欄位的權威清單
+└── config.yaml · .env        # 實際設定與敏感資訊（都不進 git）
+```
+
+## 設定
+
+分兩層：`.env` 放敏感資訊（API key、token），`config.yaml` 放行為設定。
+`config.yaml` 的字串支援 `${VAR}` 展開，由 `config.ts` 的 `resolveEnvVars()` 在載入時解析——
+所以 key 只存在於 `.env`，`config.yaml` 只寫 `"${LLM_API_KEY}"`。
+
+**完整欄位與預設值以 `config.example.yaml` 為準**（每個欄位都有行內註解說明用途）。
+程式碼端的預設值在 `config.ts` 的 `DEFAULTS`，兩者要一起改。
+
+這裡不複製一份欄位清單——複製出來的那份只會過時，讀的人還得猜哪份是對的。
+
+## 待辦
+
+### Streaming 回覆
+目前 agent loop 是等整包回應才顯示。改成 SSE streaming 後 Discord 端可以邊生成邊更新訊息，CLI 端邊打邊顯示。需改 `callAnthropic` 為 stream mode，解析 SSE event，加 `onText` callback。
+
+### Intent Analysis（實驗中）
+在 agent loop 前做一輪意圖分析，顯示在 Discord 進度訊息，並注入 system prompt 讓主 agent 參考。目前在 `feat/intent-analysis` branch，效果不穩定（模型容易被 session 歷史汙染，回覆風格偏離）。
+
+### Tool 分權 × 模型分流
+### 工具權限
+
+`registry.ts` 的 `OWNER_ONLY_TOOLS` 列出只有 owner 能用的工具，
+非 owner（`trigger === "discord-other"`）呼叫會被擋下並回傳提示。
+
+`bash` 是特例：它是沒有沙箱的任意指令執行，開放給非 owner 等於把 shell 開給
+任何能 @ 到 bot 的人。預設鎖成 owner-only，要放寬得在 `config.tools.bash_owner_only`
+明示 false。`self_evolve` 這類會改動自身原始碼的工具則不提供放寬選項。
+
+按 trigger 類型分配不同模型和 tool 權限。例如 discord-owner 用全部 tools，discord-other 限制危險操作，coding 任務自動切強模型。目前只有 owner-only tool 擋法，模型分流只有 self_evolve。
+
+### Bash Sandbox
+非 owner 的 bash 指令跑在限制環境（timeout + 禁止寫入敏感路徑 + 禁止讀 .env）。目前 bash 完全開放給所有人。
+
+### Session Archive 語意搜尋
+目前 `session_archive`（歸檔的歷史對話）只有 FTS5 全文搜尋，無法做語意召回。
+
+方向：在 session 歸檔時，把 Session Summarize 輸出的 assistant 最後一則回應（摘要）embed 存向量，而不是 embed 全部 8000+ 則原始訊息（成本過高）。這樣可以用語意搜尋找「哪個 session 討論過 X 主題」。
+
+等架構穩定後實作。
