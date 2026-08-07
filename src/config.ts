@@ -34,6 +34,12 @@ export interface FuretConfig {
   tools: {
     /** bash 是沒有沙箱的任意指令執行，預設只有 owner 能用 */
     bash_owner_only: boolean;
+    /**
+     * `bash_owner_only: true` 時的例外人員：這些 Discord user ID 也能用 bash。
+     * 空陣列＝只有 owner。CLI / cron / reminder / journal 不受此限制。
+     * 只放寬 bash，不等於 owner——其他 owner-only 工具仍然擋。
+     */
+    bash_allowed_users: string[];
   };
   prompt: {
     /**
@@ -77,6 +83,7 @@ const DEFAULTS: FuretConfig = {
   },
   tools: {
     bash_owner_only: true,
+    bash_allowed_users: [],
   },
   prompt: {
     peopleInlineLimit: 1500,

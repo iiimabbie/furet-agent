@@ -64,4 +64,6 @@ export interface AgentOptions {
   onProgress?: (event: ProgressEvent) => void;
   images?: string[];
   trigger?: TriggerSource;
+  /** 發話的 Discord 使用者 ID，供 tools.bash_allowed_users 判定用 */
+  userId?: string;
 }

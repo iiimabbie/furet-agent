@@ -2,7 +2,7 @@ import type { Tool } from "../types.js";
 import { logger } from "../logger.js";
 import { loadConfig } from "../config.js";
 export { setTrigger, getTrigger } from "./context.js";
-import { getTrigger } from "./context.js";
+import { getTrigger, getUserId } from "./context.js";
 
 const OWNER_ONLY_TOOLS = new Set([
   "memory_replace", "memory_remove",
@@ -92,7 +92,13 @@ export const anthropicTools = [
  * 能 @ 到 bot 的人。預設鎖成 owner-only，要放寬得自己在 config 明示。
  */
 function isOwnerOnly(name: string): boolean {
-  if (name === "bash") return loadConfig().tools.bash_owner_only;
+  if (name === "bash") {
+    const { bash_owner_only, bash_allowed_users } = loadConfig().tools;
+    if (!bash_owner_only) return false;
+    // 例外人員：名單上的 user 也能用 bash（僅 bash，其他 owner-only 工具照擋）
+    const userId = getUserId();
+    return !(userId && bash_allowed_users.includes(userId));
+  }
   return OWNER_ONLY_TOOLS.has(name);
 }
 

@@ -282,7 +282,7 @@ export async function compactSession(session: import("./session.js").Session, mo
  * 不會被並行的 cron / reminder / 其他使用者請求互相污染。
  */
 export function ask(prompt: string | null, options: AgentOptions = {}): Promise<AgentResponse> {
-  return runWithContext(options.trigger ?? "unknown", () => askInContext(prompt, options));
+  return runWithContext(options.trigger ?? "unknown", options.userId, () => askInContext(prompt, options));
 }
 
 async function askInContext(prompt: string | null, options: AgentOptions = {}): Promise<AgentResponse> {

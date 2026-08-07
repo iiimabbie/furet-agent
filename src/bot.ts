@@ -188,7 +188,7 @@ export async function startBot(token: string): Promise<void> {
       session.archive();
       logger.info({ sessionId }, "session archived via /new");
 
-      const newSessionContent = `[System] <@${interaction.user.id}>(${interaction.user.username}) started a new session via /new. Follow the Startup Sequence (read MEMORY.md, PEOPLE.md, and recent daily memory), then greet them in character.`;
+      const newSessionContent = `[System] <@${interaction.user.id}>(${interaction.user.username}) started a new session via /new. Follow the Session Initialization steps in your instructions (MEMORY.md and PEOPLE.md are already in your prompt — read only the recent daily memory), then greet them in character.`;
       session.append({ role: "user", content: newSessionContent, time: ts });
 
       try {
@@ -398,12 +398,15 @@ export async function startBot(token: string): Promise<void> {
       logger.info({ userId: message.author.id }, "DM from non-owner rejected");
       return;
     }
-    // guild 白名單
-    if (message.guild && config.discord.allowed_guilds.length > 0
-        && !config.discord.allowed_guilds.includes(message.guild.id)) return;
-    // channel 白名單
-    if (!isDM && config.discord.allowed_channels.length > 0
-        && !config.discord.allowed_channels.includes(message.channelId)) return;
+    // owner 一律不受白名單限制——白名單是用來擋別人的，不是擋自己
+    if (message.author.id !== config.discord.owner_id) {
+      // guild 白名單
+      if (message.guild && config.discord.allowed_guilds.length > 0
+          && !config.discord.allowed_guilds.includes(message.guild.id)) return;
+      // channel 白名單
+      if (!isDM && config.discord.allowed_channels.length > 0
+          && !config.discord.allowed_channels.includes(message.channelId)) return;
+    }
 
     await handleTrigger(message, session, fmt.images);
   });
@@ -527,7 +530,7 @@ async function handleTrigger(message: Message, session: Session, images?: string
   try {
     const channelContext = buildChannelContext(message.channelId, session.id, getChannelTypeInfo(channel));
     const isOwner = message.author.id === loadConfig().discord.owner_id;
-    const response = await ask(null, { session, systemPrompt: channelContext, images, onProgress, trigger: isOwner ? "discord-owner" : "discord-other" });
+    const response = await ask(null, { session, systemPrompt: channelContext, images, onProgress, trigger: isOwner ? "discord-owner" : "discord-other", userId: message.author.id });
     await flushChain; // 確保進度訊息已發送完成
     logger.info({
       sessionId: session.id,

@@ -11,6 +11,8 @@ import type { TriggerSource } from "../types.js";
  */
 interface RequestContext {
   trigger: TriggerSource;
+  /** 這次請求由哪個 Discord 使用者發出（非 Discord 觸發時為 undefined），權限判定用 */
+  userId?: string;
   pendingFiles: string[];
 }
 
@@ -27,12 +29,13 @@ function ctx(): RequestContext {
 }
 
 /** 在獨立的 context 中執行一次 agent 請求 */
-export function runWithContext<T>(trigger: TriggerSource, fn: () => Promise<T>): Promise<T> {
-  return storage.run({ trigger, pendingFiles: [] }, fn);
+export function runWithContext<T>(trigger: TriggerSource, userId: string | undefined, fn: () => Promise<T>): Promise<T> {
+  return storage.run({ trigger, userId, pendingFiles: [] }, fn);
 }
 
 export function setTrigger(trigger: TriggerSource): void { ctx().trigger = trigger; }
 export function getTrigger(): TriggerSource { return ctx().trigger; }
+export function getUserId(): string | undefined { return ctx().userId; }
 
 // ── Pending attachments (queued by tools, consumed at the end of ask()) ──
 
