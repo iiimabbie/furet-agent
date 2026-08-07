@@ -15,3 +15,17 @@ export const CRONS_FILE = resolve(WORKSPACE_CONFIG_DIR, "crons.json");
 export const REMINDERS_FILE = resolve(WORKSPACE_CONFIG_DIR, "reminders.json");
 export const GOOGLE_TOKEN_PATH = resolve(WORKSPACE_CONFIG_DIR, "google-token.json");
 export const SKILLS_DIR = resolve(WORKSPACE_DIR, "skills");
+
+/**
+ * agent 產生或抓下來的檔案一律落在這裡：下載的圖片、Discord 附件、
+ * 產出的報表／HTML、暫存檔。不要再另開 `pages/`、`tmp/` 之類的同級目錄。
+ */
+export const ATTACHMENTS_DIR = resolve(WORKSPACE_DIR, "attachments");
+
+/**
+ * 全域唯一的回收桶。刪除一律 `mv` 到這裡，不用 `rm`。
+ *
+ * 刻意放在 workspace 頂層而非 attachments 底下——之前 bash 的工具說明只講
+ * 「移到 .trash」沒指定位置，agent 就依當下工作目錄各建一個，散成兩個回收桶。
+ */
+export const TRASH_DIR = resolve(WORKSPACE_DIR, ".trash");

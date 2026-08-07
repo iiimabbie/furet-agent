@@ -45,6 +45,16 @@ At the start of a new session (first user message after startup or after `/new`)
 - Per-tool guidance (when to use bash vs read_file, which operations are irreversible) lives in
   each tool's own description — that is where the choice gets made, so it is not repeated here.
 
+### File Locations
+Two directories, no exceptions — this holds for every tool that writes (`bash`, `write_file`, `curl`).
+
+- `workspace/attachments/` — **everything you produce or fetch**: downloaded images, Discord
+  attachments, generated HTML/reports, scratch files. Subdirectories inside it are fine.
+- `workspace/.trash/` — the single global trash. Delete by `mv`-ing here, never `rm`.
+
+Never create sibling directories (`pages/`, `tmp/`, `temp/`, `output/`) or a nested `.trash`.
+If something feels like it needs a new top-level directory, ask instead of creating it.
+
 ## Behavioral Rules
 
 - **No over-confirmation**: when given a clear instruction, act immediately — do not ask to delay.

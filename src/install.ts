@@ -47,6 +47,8 @@ ensureDir(resolve(WORKSPACE, "memory"));
 ensureDir(resolve(WORKSPACE, "sessions"));
 ensureDir(resolve(WORKSPACE, "sessions/archive"));
 ensureDir(resolve(WORKSPACE, "skills"));
+ensureDir(resolve(WORKSPACE, "attachments"));  // agent 產出／下載的檔案唯一落點
+ensureDir(resolve(WORKSPACE, ".trash"));       // 全域唯一回收桶
 ensureDir(resolve(WORKSPACE, "memory", "soul-guardian"));
 
 // workspace files from templates

@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { ARCHIVE_DIR, SESSIONS_DIR, ROOT } from "../../paths.js";
+import { ARCHIVE_DIR, SESSIONS_DIR, ATTACHMENTS_DIR } from "../../paths.js";
 import { getDb } from "../../db.js";
 import { loadConfig } from "../../config.js";
 import { estimateCost } from "../../utils/pricing.js";
@@ -374,9 +374,10 @@ export const usageDashboard: Tool = {
   },
   execute: async () => {
     try {
-      const { writeFileSync } = await import("node:fs");
+      const { writeFileSync, mkdirSync } = await import("node:fs");
       const imgBuf = await renderDashboardImage();
-      const outPath = resolve(ROOT, "workspace", "attachments", "dashboard.png");
+      mkdirSync(ATTACHMENTS_DIR, { recursive: true });
+      const outPath = resolve(ATTACHMENTS_DIR, "dashboard.png");
       writeFileSync(outPath, imgBuf);
       // Use the attachment context to attach to reply
       const { queueAttachment } = await import("../context.js");
