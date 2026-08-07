@@ -32,6 +32,41 @@ function stripThinking(blocks: ContentBlock[]): ContentBlock[] {
   return blocks.filter(b => b.type !== "thinking");
 }
 
+/** tool_use input 裡最能代表這次呼叫的欄位，依序找 */
+const TOOL_ARG_KEYS = ["path", "file", "file_path", "command", "query", "pattern", "name", "id", "city", "url", "prompt"];
+
+/** 從 tool_use 的 input 抓一個短標識，抓不到就回空字串 */
+function toolArgHint(input: Record<string, unknown>): string {
+  const key = TOOL_ARG_KEYS.find(k => typeof input[k] === "string" && input[k])
+    ?? Object.keys(input).find(k => typeof input[k] === "string" && input[k]);
+  if (!key) return "";
+  const v = String(input[key]).replace(/\s+/g, " ").trim();
+  return v.length > 50 ? v.slice(0, 50) + "…" : v;
+}
+
+/**
+ * 把 assistant message 裡的 tool_use blocks 折成一行紀錄，**以 `[System]` user message 送出**。
+ *
+ * tool_use 不能原樣送回 API（session 不存 tool_result，沒有配對就是無效結構），
+ * 但整個丟掉的話模型跨輪就完全不知道自己做過什麼——它只看得到最後那句回覆。
+ *
+ * 這行字**不能放進 assistant 訊息裡**。實測過三種措辭（中文第一人稱、指涉當則、
+ * 英文方括號），模型全都在下一輪主動否認自己呼叫過工具並道歉：從它的視角，那是一段
+ * 宣稱呼叫過工具、卻沒有對應 tool_use block 的散文，正好撞上 AGENT.md 的
+ * "Never fabricate tool results"，於是判定成自己捏造的。改由 harness 用 `[System]`
+ * 的 user message 陳述就沒有這個問題——說話的人變成系統，不是 agent 自己。
+ */
+function summarizeToolUse(blocks: ContentBlock[]): string {
+  const calls = blocks
+    .filter((b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use")
+    .map(b => {
+      const hint = toolArgHint(b.input ?? {});
+      return hint ? `${b.name}(${hint})` : b.name;
+    });
+  if (calls.length === 0) return "";
+  return `[System] Tools actually executed in the preceding assistant turn (recorded by the harness, tool results omitted): ${calls.join(", ")}`;
+}
+
 /** 粗估 message 的 token 數（JSON 長度 / 4） */
 function estimateTokens(msg: { role: string; content: string | ContentBlock[] }): number {
   const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
@@ -321,11 +356,14 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
       const isLast = i === sessionMessages.length - 1;
 
       if (m.role === "assistant" && Array.isArray(m.content)) {
-        // 只保留 text 送 API：tool_use 沒有配對的 tool_result；
+        // tool_use 不能原樣送（沒有配對的 tool_result），但整個丟掉會讓模型看不到
+        // 自己上一輪做過什麼，所以折成一行文字摘要保留行為紀錄。
         // thinking 不再保存（見 stripThinking），這裡再濾一次是為了相容舊 session
-        const apiBlocks = (m.content as ContentBlock[]).filter(b => b.type !== "tool_use" && b.type !== "thinking");
-        if (apiBlocks.length === 0) continue; // 整則都是 tool_use，跳過
-        messages.push({ role: m.role, content: apiBlocks });
+        const blocks = m.content as ContentBlock[];
+        const apiBlocks = blocks.filter(b => b.type !== "tool_use" && b.type !== "thinking");
+        if (apiBlocks.length > 0) messages.push({ role: m.role, content: apiBlocks });
+        const recap = summarizeToolUse(blocks);
+        if (recap) messages.push({ role: "user", content: recap });
       } else if (isLast && m.role === "user" && typeof m.content === "string") {
         messages.push({ role: m.role, content: await buildUserContent(m.content + hook, options.images) });
       } else {
