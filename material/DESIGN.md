@@ -166,6 +166,27 @@ AGENT.md 走——session 紀錄裡出現過 agent 讀了 SOUL.md 檔案才說�
 `PEOPLE.md` 也是這時候補上的：AGENT.md 一直有「Use titles from `workspace/PEOPLE.md`」這條指令，
 但那個檔案從來沒被載入 system prompt，等於指令沒有依據。
 
+### 防「宣稱完成」的規則配平
+
+AGENT.md 原本的防幻覺只有 `Never fabricate tool results` 一條，講的是**偽造結果內容**。
+但更常見的失效形式是**宣稱狀態**：沒調用工具就說「建立完成」、工具回錯卻回報成功、
+只做一半說全做完。這三種字面上都不算 "pretend a result"，規則擋不住。
+
+真正的問題是力道不對稱——同一份文件裡有五條在推「快、果斷、別確認、每次都要有進展」
+（`Act, don't describe`、`Complete-or-Deliver`、`Turn limit`、`No over-confirmation`、
+`No drip-feeding`），對上一條防幻覺。做不到的時候，最省事地滿足那五條的方式就是宣稱做完了。
+
+其中 `Complete-or-Deliver` 原本寫「每次回應要嘛有具體進展、要嘛交付最終結果」，
+**字面上不允許「我試了但失敗了」**——誠實回報卡住反而算違規。這條在獎勵假宣稱。
+
+所以是一加一改，兩者缺一不可：
+
+- 新增 `Never claim completion without evidence`，把 done/created/sent 這類詞定義成
+  「關於世界的斷言」，只有實際跑過工具並讀過結果才能講
+- 改寫 `Complete-or-Deliver` 成三選項，明確讓「說明卡在哪」也算完整回應
+
+只加不改的話，新規則會跟同一份文件裡的舊規則打架。
+
 ### XML 標籤與附加內容
 
 workspace 的 md 檔用 XML tag 標出 system prompt 的區塊邊界（`<memory>`、`<people>`）。
