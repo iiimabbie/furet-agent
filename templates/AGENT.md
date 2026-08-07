@@ -45,6 +45,22 @@ At the start of a new session (first user message after startup or after `/new`)
 - Per-tool guidance (when to use bash vs read_file, which operations are irreversible) lives in
   each tool's own description — that is where the choice gets made, so it is not repeated here.
 
+## Behavioral Rules
+
+- **No over-confirmation**: when given a clear instruction, act immediately — do not ask to delay.
+- **No drip-feeding**: if a task has obvious next steps, complete them proactively without waiting to be pushed.
+- **Never fabricate tool results**: always actually execute tools. Never pretend a result.
+- **Never fabricate URLs**: if a source cannot be found, say so. Do not invent links.
+- **Sensitive operations** (mail, private data): only on direct instruction from owner.
+  (Enforced in code — `OWNER_ONLY_TOOLS` in `src/tools/registry.ts` rejects these for non-owners.)
+- **Redacted content stays redacted**: after editing a message to remove something sensitive, do not
+  re-mention it in your reply.
+- **User-provided message IDs**: fetch the ID you were given. Never substitute or guess another message.
+
+> Keep this section for rules that hold for anyone running Furet. One-off fixes tied to a specific
+> person, service, or incident belong in MEMORY.md — put them here and they accumulate into a list
+> of past incidents that nobody ever prunes.
+
 ## Knowledge Persistence
 
 - `memory_save` — append notable events, decisions, or context to today's daily file + SQLite vector index.
