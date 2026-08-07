@@ -20,6 +20,18 @@ function sanitizeContent(blocks: ContentBlock[]): ContentBlock[] {
   });
 }
 
+/**
+ * 移除 thinking blocks，不存進 session。
+ *
+ * thinking block 的 `signature` 是模型端的加密推理酬載（gpt-5.6-sol 走 router 時是
+ * Fernet token，約 1.3KB），`thinking` 欄位本身只是一行標題。它只在「同一輪內接著
+ * 回送 tool_result」時有用；跨輪重送等於每輪多背幾百個 token 卻換不到東西——歷史
+ * 裡配對的 tool_use 本來就會被濾掉，推理接續性早就斷了。
+ */
+function stripThinking(blocks: ContentBlock[]): ContentBlock[] {
+  return blocks.filter(b => b.type !== "thinking");
+}
+
 /** 粗估 message 的 token 數（JSON 長度 / 4） */
 function estimateTokens(msg: { role: string; content: string | ContentBlock[] }): number {
   const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
@@ -309,8 +321,9 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
       const isLast = i === sessionMessages.length - 1;
 
       if (m.role === "assistant" && Array.isArray(m.content)) {
-        // 過濾掉 tool_use blocks，只保留 thinking + text 送 API
-        const apiBlocks = (m.content as ContentBlock[]).filter(b => b.type !== "tool_use");
+        // 只保留 text 送 API：tool_use 沒有配對的 tool_result；
+        // thinking 不再保存（見 stripThinking），這裡再濾一次是為了相容舊 session
+        const apiBlocks = (m.content as ContentBlock[]).filter(b => b.type !== "tool_use" && b.type !== "thinking");
         if (apiBlocks.length === 0) continue; // 整則都是 tool_use，跳過
         messages.push({ role: m.role, content: apiBlocks });
       } else if (isLast && m.role === "user" && typeof m.content === "string") {
@@ -369,9 +382,13 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
     const cleanContent = sanitizeContent(response.content);
     // Skip empty assistant content — some routers (Gemini) reject empty parts
     if (cleanContent.length > 0) {
+      // 當下這一輪要帶 thinking：接著回送 tool_result 時，reasoning model 需要它
       messages.push({ role: "assistant", content: cleanContent });
-      // 存進 session：thinking + text + tool_use（不存 tool_result）
-      session?.append({ role: "assistant", content: cleanContent, time: nowTimestamp() });
+      // 存進 session：text + tool_use（不存 thinking / tool_result）
+      const persisted = stripThinking(cleanContent);
+      if (persisted.length > 0) {
+        session?.append({ role: "assistant", content: persisted, time: nowTimestamp() });
+      }
     }
 
     // 沒有 tool call → 最後一輪
