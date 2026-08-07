@@ -1,21 +1,11 @@
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, readdirSync, statSync, cpSync } from "node:fs";
+import { existsSync, rmSync, statSync, cpSync } from "node:fs";
 import { resolve, basename } from "node:path";
-import { parse } from "yaml";
 import { addSkill, removeSkill, loadConfig } from "../../config.js";
 import { logger } from "../../logger.js";
 import { SKILLS_DIR } from "../../paths.js";
+import { listSkillDirs, readSkillMeta } from "../../skills.js";
 import type { Tool } from "../../types.js";
-
-function parseSkillFrontmatter(content: string): { name?: string; description?: string } {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return {};
-  try {
-    const meta = parse(match[1]) as Record<string, unknown>;
-    const desc = typeof meta.description === "string" ? meta.description.trim().split("\n")[0] : undefined;
-    return { name: meta.name as string | undefined, description: desc };
-  } catch { return {}; }
-}
 
 export const skillInstall: Tool = {
   name: "skill_install",
@@ -48,13 +38,8 @@ export const skillInstall: Tool = {
     }
 
     // Read SKILL.md for confirmation
-    const skillMd = resolve(dest, "SKILL.md");
-    let desc = "(no SKILL.md found)";
-    if (existsSync(skillMd)) {
-      const content = readFileSync(skillMd, "utf-8");
-      const meta = parseSkillFrontmatter(content);
-      desc = meta.description ?? "(no description)";
-    }
+    const meta = readSkillMeta(dirName);
+    const desc = meta ? (meta.description ?? "(no description)") : "(no SKILL.md found)";
 
     addSkill(dirName);
     return `Installed ${dirName}: ${desc}`;
@@ -93,28 +78,15 @@ export const skillList: Tool = {
     const config = loadConfig();
     const enabled = new Set(config.skills);
 
-    try {
-      const dirs = readdirSync(SKILLS_DIR).filter(d => {
-        try { return statSync(resolve(SKILLS_DIR, d)).isDirectory(); } catch { return false; }
-      });
+    const dirs = listSkillDirs();
+    if (!dirs.length) return "No skills installed.";
 
-      if (!dirs.length) return "No skills installed.";
-
-      const lines: string[] = [];
-      for (const dir of dirs) {
-        const active = enabled.has(dir) ? "active" : "inactive";
-        const skillMd = resolve(SKILLS_DIR, dir, "SKILL.md");
-        let desc = "(no SKILL.md)";
-        if (existsSync(skillMd)) {
-          const content = readFileSync(skillMd, "utf-8");
-          const meta = parseSkillFrontmatter(content);
-          desc = meta.description ?? "(no description)";
-        }
-        lines.push(`${dir} [${active}]: ${desc}`);
-      }
-      return lines.join("\n");
-    } catch {
-      return "No skills directory found.";
-    }
+    const lines = dirs.map(dir => {
+      const active = enabled.has(dir) ? "active" : "inactive";
+      const meta = readSkillMeta(dir);
+      const desc = meta ? (meta.description ?? "(no description)") : "(no SKILL.md)";
+      return `${dir} [${active}]: ${desc}`;
+    });
+    return lines.join("\n");
   },
 };

@@ -1,8 +1,8 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { parse } from "yaml";
-import { ROOT, WORKSPACE_DIR, SKILLS_DIR } from "./paths.js";
+import { ROOT, WORKSPACE_DIR } from "./paths.js";
 import { loadConfig } from "./config.js";
+import { listSkillDirs, readSkillMeta } from "./skills.js";
 import { nowWithZone } from "./utils/time.js";
 
 // --- External prompt loading ---
@@ -45,41 +45,22 @@ interface SkillSummary {
   path: string;
 }
 
-function parseSkillFrontmatter(content: string): { name?: string; description?: string } {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return {};
-  try {
-    const meta = parse(match[1]) as Record<string, unknown>;
-    const desc = typeof meta.description === "string" ? meta.description.trim().split("\n")[0] : undefined;
-    return { name: meta.name as string | undefined, description: desc };
-  } catch { return {}; }
-}
-
 function loadSkills(): SkillSummary[] {
   const config = loadConfig();
   const enabled = new Set(config.skills);
   if (enabled.size === 0) return [];
 
   const skills: SkillSummary[] = [];
-  try {
-    const dirs = readdirSync(SKILLS_DIR).filter(d => {
-      try { return statSync(resolve(SKILLS_DIR, d)).isDirectory(); } catch { return false; }
+  for (const dir of listSkillDirs()) {
+    if (!enabled.has(dir)) continue;
+    const meta = readSkillMeta(dir);
+    if (!meta) continue;  // SKILL.md 讀不到就跳過
+    skills.push({
+      name: meta.name ?? dir,
+      description: meta.description ?? "(no description)",
+      path: `workspace/skills/${dir}/SKILL.md`,
     });
-
-    for (const dir of dirs) {
-      if (!enabled.has(dir)) continue;
-      const skillMd = resolve(SKILLS_DIR, dir, "SKILL.md");
-      try {
-        const content = readFileSync(skillMd, "utf-8");
-        const { name, description } = parseSkillFrontmatter(content);
-        skills.push({
-          name: name ?? dir,
-          description: description ?? "(no description)",
-          path: `workspace/skills/${dir}/SKILL.md`,
-        });
-      } catch { /* SKILL.md not found, skip */ }
-    }
-  } catch { /* skills dir doesn't exist */ }
+  }
 
   return skills;
 }
