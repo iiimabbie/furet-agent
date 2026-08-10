@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { logger } from "../../logger.js";
+import { checkFileAccess } from "../guard.js";
 import type { Tool } from "../../types.js";
 
 export const readFileTool: Tool = {
@@ -15,6 +16,11 @@ export const readFileTool: Tool = {
   execute: async (args) => {
     const { path } = args as { path: string };
     logger.info({ path }, "read_file");
+    const denied = checkFileAccess(path);
+    if (denied) {
+      logger.warn({ path }, "read_file denied by guard");
+      return denied;
+    }
     try {
       return await readFile(path, "utf-8");
     } catch (err) {

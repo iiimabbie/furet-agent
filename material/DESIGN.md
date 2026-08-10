@@ -329,6 +329,8 @@ Tool call 執行時即時顯示進度（`→` / `✓` / `✗`），完成後替�
 | Cron 排程 | 每 1 小時重新載入 crons.json，執行到期任務 |
 | Reminder | 一次性提醒，每 15 秒輪詢 reminders.json 掃到期的，觸發後自動刪除 |
 | Journal | 每天固定時間：silent flush 所有 active session → 歸檔 → 重寫日記 → 更新 MEMORY.md |
+
+日記重寫（Daily Journal Step 1）讀的是 `sessions_by_date` 撈出的**當天 raw session**，不是每日記憶檔的 memory_save 筆記。原本只讀每日檔會漏掉未被 memory_save 的對話（例如純聊天的社群互動），因為 flush 那步是用「長期記憶」的門檻在篩，而日記要的是連續性。每日檔改當輔助筆記；門檻拆開：MEMORY.md 留 30 天長期濾網，每日檔／日記照收社群互動。
 | Discord Bot | 有 token 且 enabled 時啟動 |
 | PID file | `furet.pid`，啟動時殺掉舊進程確保單實例 |
 
@@ -416,6 +418,7 @@ interface Tool {
 | `google_tasks_*` | Tasks 列表/建立/完成/刪除 |
 | `soul_guardian_*` | 核心檔案保護（status/check/approve/restore/history） |
 | `session_search` | FTS5 全文搜尋歸檔的歷史對話 |
+| `sessions_by_date` | 依日期（YYYY-MM-DD）撈當天所有歸檔 session 的原始對話，供日記重建 |
 | `skill_install/uninstall/list` | 技能管理 |
 | `usage_dashboard` | 用量／成本儀表板，輸出 PNG 到 attachments/ |
 | `discord_bot_mention_toggle` | 切換是否回應其他 bot |
@@ -547,6 +550,7 @@ furet/
 │   └── tools/
 │       ├── registry.ts       # tool 註冊中心 ← tool 的權威清單
 │       ├── context.ts        # request context（AsyncLocalStorage）
+│       ├── guard.ts          # 非 owner 的檔案讀取路徑邊界
 │       └── builtin/          # 每個 tool 一個檔
 ├── workspace/                # agent 工作空間（不進 git，由 templates/ 初始化）
 │   ├── *.md                  # AGENT / SOUL / MEMORY / PEOPLE / JOURNAL
@@ -591,6 +595,34 @@ furet/
 `bash` 是特例：它是沒有沙箱的任意指令執行，開放給非 owner 等於把 shell 開給
 任何能 @ 到 bot 的人。預設鎖成 owner-only，要放寬得在 `config.tools.bash_owner_only`
 明示 false。`self_evolve` 這類會改動自身原始碼的工具則不提供放寬選項。
+
+`write_file` 同樣列入 owner-only：它沒有路徑邊界，寫得進 `src/` 就等於繞過
+`bash` 的限制。非 owner 也沒有寫任意檔案的需求——記人記事走 `people_*` /
+`memory_*`，那些工具的落點寫死在 `paths.ts`。
+
+#### 檔案讀取邊界（`tools/guard.ts`）
+
+`read_file` **不能**用同一招整個擋掉：AGENT.md 的開場流程每次都要讀當天的
+daily memory，skill 也只給路徑不給內容（`prompt.ts` 的 `loadSkills`），
+全鎖等於陌生人一互動就失去上下文、skill 全失效。
+
+改成擋路徑而非擋工具。`checkFileAccess()` 只在 `trigger === "discord-other"`
+時生效，拒絕：
+
+- `WORKSPACE_DIR` 以外的一切 → 擋掉 `config.yaml`（含 Discord token）與整個 `src/`
+- `workspace/config/` → `google-token.json`、`furet.db`
+- `workspace/sessions/` → 其他人的對話紀錄
+
+比對前先 `resolve()` 正規化 `..`，再 `realpathSync()` 解 symlink——只比字面
+路徑的話，一條指向外部的 symlink 就能繞過整道邊界。
+
+已知不足：這擋得住直接讀檔，擋不住 `memory_search` 之類的語意搜尋撈出日記
+內容。目前刻意不擋（記錄的都是公開頻道對話）。真正的隱私邊界要另外決定
+`memory_search` / `session_search` 對非 owner 的行為。
+
+另一個結構性缺口：非 owner 的訊息會進 session（`bot.ts` 的 messageCreate），
+owner 稍後在同頻道觸發時 trigger 是 `discord-owner`、權限全開，而那段內容
+還在上下文裡。prompt injection 可以借 owner 的手執行，本層擋不住。
 
 按 trigger 類型分配不同模型和 tool 權限。例如 discord-owner 用全部 tools，discord-other 限制危險操作，coding 任務自動切強模型。目前只有 owner-only tool 擋法，模型分流只有 self_evolve。
 

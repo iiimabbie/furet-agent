@@ -5,6 +5,11 @@ export { setTrigger, getTrigger } from "./context.js";
 import { getTrigger, getUserId } from "./context.js";
 
 const OWNER_ONLY_TOOLS = new Set([
+  // write_file 沒有路徑邊界，寫得進 src/ 就等於繞過 bash 的 owner-only。
+  // 非 owner 也沒有寫任意檔案的正當理由——記人記事走 people_* / memory_*，
+  // 那些工具的落點寫死在 paths.ts。read_file 刻意不列在這裡：整個擋掉會讓
+  // 陌生人一互動就讀不到當天 daily memory 與 skill，改由 guard.ts 擋路徑。
+  "write_file",
   "memory_replace", "memory_remove",
   // people_add / people_update 刻意不列 owner-only：agent 要能在非 owner 講話時
   // 記下對方是誰，鎖起來等於永遠記不了非 owner。真正的權限判定看 config.discord.owner_id，
