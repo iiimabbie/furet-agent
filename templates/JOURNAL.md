@@ -11,10 +11,13 @@ Check if anything from this turn is worth saving. If yes, save it — do not ski
 PEOPLE.md is for **who someone is**. Never record people in MEMORY.md or the daily file —
 those are for events and rules. Use `people_*` tools, not `write_file`.
 
-**memory_save** (append to daily file) — save if:
+**memory_save** (append to daily file = diary source) — this feeds the daily journal, so the
+bar is low: save any real exchange, not just long-term-worthy facts. Save if:
 - User mentioned a new preference, rule, or schedule
 - User corrected your behavior or gave feedback
 - A notable event, decision, or conversation happened
+- Community / social interaction or chatter happened (games, news, banter) — record it even
+  though it has no long-term value; the diary needs it for continuity
 
 **memory_replace / memory_remove** (update MEMORY.md) — use if:
 - A new long-term fact → expand the relevant section
@@ -30,7 +33,7 @@ Atomic fact constraint: every saved fact must be self-contained.
 
 **Do NOT save to MEMORY.md**: issue/PR numbers, news events, one-time links, anything that won't matter in 30 days.
 
-Skip greetings, trivial exchanges, and things already recorded today. Proceed without acknowledging this check in your reply.
+Skip bare greetings and things already recorded today. But do not skip community interaction or conversation just because it lacks long-term value — that belongs in the daily file. Proceed without acknowledging this check in your reply.
 
 ## Session Summarize
 
@@ -49,11 +52,18 @@ Use the appropriate tools:
 
 Check the participants of this session against PEOPLE.md before finishing.
 
+Two different bars — do not use the long-term bar to judge the daily file:
+- `memory_save` (today's daily file = diary source): record **any community/social interaction,
+  conversation, or notable event of the day**, even if it has no long-term value. This is the
+  raw material tomorrow's diary is built from — when in doubt, save it.
+- `memory_replace` / `memory_remove` (MEMORY.md = long-term): only facts still relevant in 30+ days.
+
 Atomic fact constraint: no pronouns, absolute dates, self-contained sentences.
 
 Do NOT write to MEMORY.md: issue/PR numbers, version-specific notes, one-time links, news events. Only what's still relevant in 30+ days.
 
-If the session contained only greetings or trivial exchanges, skip entirely.
+Skip only if the session was purely greetings with no real exchange. A chat about games,
+news, or anything the participants engaged in is worth a `memory_save`, even if not memorable.
 
 ## Daily Journal
 
@@ -61,12 +71,20 @@ Write the daily journal for {{DATE}}. This task has two steps — both are requi
 
 ### Step 1 — Rewrite diary
 
-1. Read `workspace/memory/{{DATE}}.md` with `read_file`.
-2. Rewrite the entire file as a clean personal diary:
+The daily file `workspace/memory/{{DATE}}.md` is only a set of assistant notes — it is
+lossy and may be missing whole conversations. The **archived sessions are the ground truth**.
+
+1. Get the day's raw conversations with `sessions_by_date` for `{{DATE}}`.
+   Then read the notes in `workspace/memory/{{DATE}}.md` with `read_file` as a supplement.
+2. Rewrite the entire daily file as a clean personal diary, reconstructed from the raw
+   sessions (not just the notes):
    - Organize by category/milestone (e.g., development, community, personal)
    - Bullet points with clear headings
    - Focus on what the user did, talked about, cared about, how they felt
-   - Include interesting conversations and community events
+   - **Always include community / social interaction and interesting conversations** — even
+     pure chatter with no long-term value belongs here; the diary is about continuity, so
+     tomorrow's session can pick up what happened. Do not drop a conversation just because
+     it wasn't worth saving to long-term memory.
    - Remove: raw timestamps (`[HH:MM:SS]`), duplicate summaries, repeated recaps, operational logs
 3. Overwrite `workspace/memory/{{DATE}}.md` with `write_file`.
 

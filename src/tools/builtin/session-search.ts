@@ -54,3 +54,63 @@ export const sessionSearch: Tool = {
     }
   },
 };
+
+export const sessionsByDate: Tool = {
+  name: "sessions_by_date",
+  description: "Return the full raw conversation of all archived sessions for a given date (YYYY-MM-DD), in chronological order and grouped by session. Use this to reconstruct what happened on a day from first-hand messages — e.g. when writing the daily journal — instead of relying on summarized notes.",
+  parameters: {
+    type: "object",
+    properties: {
+      date: { type: "string", description: "Date to fetch, in YYYY-MM-DD format" },
+    },
+    required: ["date"],
+  },
+  execute: async (args) => {
+    const { date } = args as { date: string };
+    logger.info({ date }, "sessions by date");
+
+    // session_archive.time 存的是 "MM/DD HH:mm"（無年份），用 MM/DD 前綴撈當天
+    const m = /^\d{4}-(\d{2})-(\d{2})$/.exec(date);
+    if (!m) return `Error: date must be YYYY-MM-DD, got "${date}".`;
+    const timePrefix = `${m[1]}/${m[2]}`; // MM/DD
+
+    try {
+      const db = getDb();
+      const rows = db.prepare(`
+        SELECT session_id, role, content, time
+        FROM session_archive
+        WHERE time LIKE ?
+        ORDER BY session_id, id
+      `).all(`${timePrefix}%`) as Array<{
+        session_id: string;
+        role: string;
+        content: string;
+        time: string | null;
+      }>;
+
+      if (rows.length === 0) return `No archived sessions found for ${date}.`;
+
+      // 依 session 分組，組內維持時序
+      const bySession = new Map<string, typeof rows>();
+      for (const r of rows) {
+        const list = bySession.get(r.session_id) ?? [];
+        list.push(r);
+        bySession.set(r.session_id, list);
+      }
+
+      const blocks: string[] = [];
+      for (const [sid, list] of bySession) {
+        const lines = list.map(r => {
+          const time = r.time ? `[${r.time}] ` : "";
+          return `${time}${r.role}: ${r.content}`;
+        });
+        blocks.push(`=== session: ${sid} (${list.length} msgs) ===\n${lines.join("\n")}`);
+      }
+
+      return `${rows.length} messages across ${bySession.size} session(s) on ${date}:\n\n${blocks.join("\n\n")}`;
+    } catch (err) {
+      logger.error({ err: (err as Error).message }, "sessions by date failed");
+      return `Error: ${(err as Error).message}`;
+    }
+  },
+};
