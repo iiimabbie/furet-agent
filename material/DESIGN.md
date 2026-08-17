@@ -87,7 +87,7 @@ thinking block 的 `signature` 不是 `thinking` 欄位的校驗碼 —— **它
 等於每輪多背幾百個 token 換不到東西。因此 `stripThinking()` 在存進 session 前把它拿掉，
 展開歷史時再濾一次以相容舊 session。
 
-### 為什麼 tool_use 反而留著
+### tool_use 為什麼留著
 
 tool_use 跟 thinking 的成本結構不同：**它在每一條會送到 API 的路徑上都已經被濾掉**
 （歷史展開濾 `tool_use`、`compactSession()` 只取 `text` blocks、journal 走歷史展開那條），
@@ -98,11 +98,10 @@ tool_use 跟 thinking 的成本結構不同：**它在每一條會送到 API 的
 tool_use 被濾掉的副作用是模型跨輪完全不知道自己做過什麼——它只看得到最後那句回覆。
 `summarizeToolUse()` 把它折成一行 `工具名(參數摘要)` 補回去，成本幾十個 token。
 
-**這行字必須用 `[System]` 的 user message 送，不能塞進 assistant 訊息裡。** 實測過三種
-措辭（中文第一人稱、指涉當則、英文方括號），模型全都在下一輪主動否認自己呼叫過工具
-並道歉：從它的視角，掛在 assistant 訊息裡的是一段宣稱呼叫過工具、卻沒有對應 tool_use
-block 的散文，正好撞上 AGENT.md 的 "Never fabricate tool results"，於是判定成自己捏造的。
-改由 harness 用 user message 陳述後就正確了——說話的人變成系統，不是 agent 自己。
+**這行字用 `[System]` 的 user message 送，不掛在 assistant 訊息裡。** 掛在 assistant
+訊息裡的話，模型看到的是一段宣稱呼叫過工具、卻沒有對應 tool_use block 的散文，正好撞上
+AGENT.md 的 "Never fabricate tool results"，會判定成自己捏造的並在下一輪否認、道歉。
+由 harness 以 user message 陳述時說話的人是系統，不是 agent 自己，就沒有這個問題。
 
 參數摘要取 `TOOL_ARG_KEYS`（path / command / query…）裡第一個有值的字串欄位，截到 50 字元。
 recap 只存在於送 API 的 payload，不寫進 session，所以不影響 memory nudge 的計數。
@@ -120,17 +119,16 @@ recap 只存在於送 API 的 payload，不寫進 session，所以不影響 memo
 
 `src/tools/context.ts` — 用 `AsyncLocalStorage` 做請求範圍隔離。
 
-cron / reminder / journal 跟使用者對話是並行跑的。這些狀態以前是模組級全域變數，
-會互相覆蓋：cron 觸發時把 trigger 蓋成 `"cron"`，正在執行 tool call 的非 owner 請求
-就繞過了 `registry.ts` 的 owner-only 檢查；附件也會串到別人的回覆去。
+cron / reminder / journal 跟使用者對話是並行跑的，trigger 與待送附件因此必須綁在請求上。
+放在模組級全域變數會互相覆蓋：cron 觸發時把 trigger 蓋成 `"cron"`，正在執行 tool call 的
+非 owner 請求就繞過了 `registry.ts` 的 owner-only 檢查；附件也會串到別人的回覆去。
 
 - `runWithContext(trigger, fn)` — `ask()` 用它包住整個執行流程
 - `getTrigger()` / `setTrigger()` — 權限判定用的 trigger source
 - `queueAttachment()` / `drainAttachments()` — 工具排隊的檔案附件
 - ALS 範圍外呼叫時退回 `{ trigger: "unknown", pendingFiles: [] }`
 
-附件由 `ask()` 在結束時收集，透過 `AgentResponse.attachments` 回傳給呼叫端
-（bot.ts 不再自己去讀全域狀態）。
+附件由 `ask()` 在結束時收集，透過 `AgentResponse.attachments` 回傳給呼叫端。
 
 ## Prompt 架構
 
@@ -150,48 +148,40 @@ cron / reminder / journal 跟使用者對話是並行跑的。這些狀態以前
 | 錨定層 | 自動生成 | `<persona-reminder>` | 結尾把語氣的最終依據指回 `<persona>` |
 | 召回層 | 自動（向量搜尋） | （無） | 根據 user message 語意召回相關記憶（append 在最後） |
 
-### 為什麼 persona 放最前面、結尾還要再錨定一次
+### persona 的位置與錨定
 
-persona 通常只有一兩百字，而 AGENT.md 的操作規範動輒好幾千字（實測 177 vs 7376，比例 40:1）。
-persona 原本排在 AGENT.md 後面，等於被埋在大量「高效助理」指令中間，實際效果是語氣完全跟著
-AGENT.md 走——session 紀錄裡出現過 agent 讀了 SOUL.md 檔案才說「原來我的人設是這樣的」。
+persona 通常只有一兩百字，AGENT.md 的操作規範動輒好幾千字（實測 177 vs 7376，比例 40:1）。
+夾在大量「高效助理」指令中間的 persona 會被蓋過去，語氣完全跟著 AGENT.md 走。三個機制頂住：
 
-三個對策：
-
-1. persona 移到最前面——先講「你是誰」，再講「怎麼做事」
-2. AGENT.md 開頭加一節 `## Voice`，明確劃分：persona 決定**怎麼說**，AGENT.md 決定**做什麼**，
+1. persona 放最前面——先講「你是誰」，再講「怎麼做事」
+2. AGENT.md 開頭的 `## Voice` 明確劃分：persona 決定**怎麼說**，AGENT.md 決定**做什麼**，
    衝突時語氣以 persona 為準
-3. 結尾加 `<persona-reminder>`，利用結尾的注意力高點把語氣依據指回去
+3. 結尾的 `<persona-reminder>` 利用結尾的注意力高點把語氣依據指回去
 
-`PEOPLE.md` 也是這時候補上的：AGENT.md 一直有「Use titles from `workspace/PEOPLE.md`」這條指令，
-但那個檔案從來沒被載入 system prompt，等於指令沒有依據。
+`PEOPLE.md` 一併載入 system prompt——AGENT.md 的「Use titles from `workspace/PEOPLE.md`」
+要那個檔案在場才有依據。
 
 ### 防「宣稱完成」的規則配平
 
-AGENT.md 原本的防幻覺只有 `Never fabricate tool results` 一條，講的是**偽造結果內容**。
-但更常見的失效形式是**宣稱狀態**：沒調用工具就說「建立完成」、工具回錯卻回報成功、
-只做一半說全做完。這三種字面上都不算 "pretend a result"，規則擋不住。
+`Never fabricate tool results` 擋的是**偽造結果內容**，但更常見的失效形式是**宣稱狀態**：
+沒調用工具就說「建立完成」、工具回錯卻回報成功、只做一半說全做完——這三種字面上都不算
+"pretend a result"。
 
-真正的問題是力道不對稱——同一份文件裡有五條在推「快、果斷、別確認、每次都要有進展」
+力道也要對稱：同一份文件裡有五條在推「快、果斷、別確認、每次都要有進展」
 （`Act, don't describe`、`Complete-or-Deliver`、`Turn limit`、`No over-confirmation`、
-`No drip-feeding`），對上一條防幻覺。做不到的時候，最省事地滿足那五條的方式就是宣稱做完了。
+`No drip-feeding`），只有一條防幻覺對上它們的話，做不到時最省事的滿足方式就是宣稱做完了。
+兩條規則一起配平：
 
-其中 `Complete-or-Deliver` 原本寫「每次回應要嘛有具體進展、要嘛交付最終結果」，
-**字面上不允許「我試了但失敗了」**——誠實回報卡住反而算違規。這條在獎勵假宣稱。
-
-所以是一加一改，兩者缺一不可：
-
-- 新增 `Never claim completion without evidence`，把 done/created/sent 這類詞定義成
-  「關於世界的斷言」，只有實際跑過工具並讀過結果才能講
-- 改寫 `Complete-or-Deliver` 成三選項，明確讓「說明卡在哪」也算完整回應
-
-只加不改的話，新規則會跟同一份文件裡的舊規則打架。
+- `Never claim completion without evidence` 把 done/created/sent 這類詞定義成「關於世界的
+  斷言」，只有實際跑過工具並讀過結果才能講
+- `Complete-or-Deliver` 寫成三選項，「說明卡在哪」也算完整回應——否則誠實回報卡住反而違規，
+  等於在獎勵假宣稱
 
 ### XML 標籤與附加內容
 
 workspace 的 md 檔用 XML tag 標出 system prompt 的區塊邊界（`<memory>`、`<people>`）。
 附加內容時**必須先剝掉包裝、接完再包回去**——直接往檔案尾端接會落到結束標籤外面，
-那段內容就跑出區塊了（`memory_add` 實際發生過這個 bug）。
+那段內容就會跑出區塊。
 
 `src/utils/tagged-file.ts` 提供共用處理，`memory_*` 和 `people_*` 都走它：
 
@@ -199,7 +189,7 @@ workspace 的 md 檔用 XML tag 標出 system prompt 的區塊邊界（`<memory>
 - `wrapTag(body, tag)` — 包回去（已經有就不重複包）
 - `appendInsideTag(current, addition, tag)` — 在標籤內部尾端附加
 
-沒有標籤的舊檔案會在下次寫入時自動補上。
+缺少標籤的檔案會在下次寫入時自動補上。
 
 ### 檔案落點
 
@@ -210,14 +200,12 @@ agent 寫檔只有兩個目的地，由 `src/paths.ts` 定義：
 | `ATTACHMENTS_DIR` | `workspace/attachments/` | agent 產出或下載的一切檔案 |
 | `TRASH_DIR` | `workspace/.trash/` | 全域唯一回收桶，刪除一律 `mv` 到這 |
 
-這兩個常數是後補的。原本 `paths.ts` 沒有定義它們，`bash` 的工具說明也只講
-「移到 `.trash`」而沒指定位置——agent 就依當下工作目錄各建一個，於是同時長出
-`workspace/.trash/` 和 `workspace/attachments/.trash/`，以及沒有任何程式碼或
-文件依據的 `pages/`、`tmp/`。
+路徑不指定到絕對位置的話，agent 會依當下工作目錄各建一個，長出巢狀的
+`workspace/attachments/.trash/`，以及沒有任何程式碼或文件依據的 `pages/`、`tmp/`。
 
 約束寫在三個地方，缺一不可：
 
-- `paths.ts` — 程式碼唯一來源，`dashboard.ts` 等寫檔處一律引用常數，不再自己 `resolve`
+- `paths.ts` — 程式碼唯一來源，`dashboard.ts` 等寫檔處一律引用常數，不自己 `resolve`
 - `bash.ts` 的 tool description — agent 決定「刪除／存檔要放哪」的當下讀到的就是它
 - `AGENT.md` 的 File Locations — 涵蓋 `write_file`、`curl` 等其他寫檔路徑
 
@@ -232,8 +220,8 @@ agent 寫檔只有兩個目的地，由 `src/paths.ts` 定義：
 - `listSkillDirs()` — 列出 skill 目錄，目錄不存在回空陣列
 - `readSkillMeta(dir)` — 讀某個 skill 的 SKILL.md metadata，讀不到回 `null`
 
-這三個原本在上述兩個檔案各有一份逐字相同的實作，改一邊漏另一邊就會讓
-「system prompt 看到的描述」和「`skill_list` 回報的描述」不一致。
+集中在一處是因為這兩個呼叫端必須看到同一份解析結果——各自實作一份的話，
+「system prompt 看到的描述」和「`skill_list` 回報的描述」會不一致。
 
 注意 `loadSkills()` 只載入**已註冊在 `config.skills` 的目錄**——目錄存在不等於啟用，
 `skill_list` 的 `active` / `inactive` 就是在區分這件事。
@@ -242,7 +230,7 @@ agent 寫檔只有兩個目的地，由 `src/paths.ts` 定義：
 ### 人物維護
 
 PEOPLE.md 的編輯走 `people_*` 工具，跟 `memory_*` 同構（substring 操作）。
-不用 `write_file` 的原因：整份覆寫會弄丟 `<people>` 包裝標籤（實際發生過），
+不用 `write_file` 的原因：整份覆寫會弄丟 `<people>` 包裝標籤，
 而且 agent 得先讀全文再重組，容易改壞既有條目。工具內部會確保標籤還在，並重建向量索引。
 
 權限上 `people_add` / `people_update` **刻意不設 owner-only**——
@@ -346,7 +334,8 @@ Agent 在 tool call 之間產生的文字以 `> 引用` 併進同一則進度訊
 | Reminder | 一次性提醒，每 15 秒輪詢 reminders.json 掃到期的，觸發後自動刪除 |
 | Journal | 每天固定時間：silent flush 所有 active session → 歸檔 → 重寫日記 → 更新 MEMORY.md |
 
-日記重寫（Daily Journal Step 1）讀的是 `sessions_by_date` 撈出的**當天 raw session**，不是每日記憶檔的 memory_save 筆記。原本只讀每日檔會漏掉未被 memory_save 的對話（例如純聊天的社群互動），因為 flush 那步是用「長期記憶」的門檻在篩，而日記要的是連續性。每日檔改當輔助筆記；門檻拆開：MEMORY.md 留 30 天長期濾網，每日檔／日記照收社群互動。
+日記重寫（Daily Journal Step 1）讀的是 `sessions_by_date` 撈出的**當天 raw session**，每日記憶檔的 memory_save 筆記只當輔助。只讀每日檔會漏掉未被 memory_save 的對話（例如純聊天的社群互動）——flush 那步用的是「長期記憶」的門檻，而日記要的是連續性。兩道門檻因此分開：MEMORY.md 留 30 天長期濾網，每日檔／日記照收社群互動。
+
 | Discord Bot | 有 token 且 enabled 時啟動 |
 | PID file | `furet.pid`，啟動時殺掉舊進程確保單實例 |
 
@@ -359,7 +348,7 @@ Agent 在 tool call 之間產生的文字以 `> 引用` 併進同一則進度訊
 - 記憶體裡的 timer 會跟檔案不同步，手動編輯 `reminders.json` 改時間不會生效
 - 停機期間錯過的提醒會被靜默丟掉
 
-改成輪詢後，檔案是唯一真相，間隔多長都行，停機錯過的下次掃到就補發（不設時間門檻，
+輪詢下檔案是唯一真相，間隔多長都行，停機錯過的下次掃到就補發（不設時間門檻，
 log 會記 `lateBySec` 標示遲了多久）。精度 15 秒。
 
 兩個防重複機制：觸發前**先**從檔案移除再跑 `ask()`（中途崩潰不會重播），另外用
@@ -458,7 +447,7 @@ interface Tool {
 |----|------|
 | `memory_vectors` | 記憶文字 + 來源檔案 |
 | `memory_vectors_vec_cos` | sqlite-vec 向量索引（Gemini embedding，3072 維，cosine 距離） |
-| `memory_vectors_vec` | 舊的 L2 向量表，開機時自動搬到 cosine 表後不再使用 |
+| `memory_vectors_vec` | L2 向量表，開機時內容自動搬到 cosine 表，不參與搜尋 |
 | `memory_fts` | FTS5 全文搜尋索引（存 CJK bigram token，非原文） |
 | `fts_meta` | FTS 索引的內容格式版本，版本不符就在開機時重建 |
 | `session_archive` | 歸檔的 session messages |
@@ -516,7 +505,7 @@ interface Tool {
   （逐字拆會讓 `weather` 變成 `w e a t h e r`，索引膨脹又不精確）
 - `toSearchQuery(query)` — 查詢端套同一個展開，並移除 FTS5 語法字元（冒號會被當 column filter）
 - `highlightMatches(text, query)` — FTS 表存的是展開後的 token，`highlight()` 會回傳
-  展開結果（不能看），所以改成自己在原文上標記
+  展開結果（不能看），因此改為自己在原文上標記
 
 **FTS 表存 bigram token，不存原文**；顯示時 JOIN 回來源表（`memory_vectors` / `session_archive`）取原文。
 展開規則改變時把 `db.ts` 的 `FTS_CONTENT_VERSION` +1，開機就會用新規則重建索引（`fts_meta` 記錄版本）。
@@ -528,13 +517,14 @@ interface Tool {
 
 ### 距離度量
 
-vec0 預設是 L2 距離，但搜尋是把 `1 - distance` 當 cosine 相似度在比，兩者對不上
-（`SCORE_THRESHOLD = 0.65` 實際等於要求 cosine > 0.94，語意召回幾乎永遠是空的）。
-向量表改用 `distance_metric=cosine`，此時 `distance = 1 - cos`，`1 - distance` 才真的是相似度。
+向量表指定 `distance_metric=cosine`：搜尋是把 `1 - distance` 當 cosine 相似度在比，
+而 vec0 預設的 L2 距離與它對不上（`SCORE_THRESHOLD = 0.65` 會變成要求 cosine > 0.94，
+語意召回幾乎永遠是空的）。指定 cosine 後 `distance = 1 - cos`，`1 - distance` 才是相似度。
 
 ### Memory Hook（定期 nudge）
 
-不再每輪對話都附加記憶提示。改為每 5 則 user message 才 nudge 一次，提醒 agent 檢查是否需要用 memory_save / memory_replace / memory_remove 保存資訊。
+每 5 則 user message 附加一次記憶提示（不是每輪），提醒 agent 檢查是否需要用
+memory_save / memory_replace / memory_remove 保存資訊。內容是 `JOURNAL.md` 的 Memory Hook section。
 
 ### Silent Memory Flush
 
@@ -622,7 +612,7 @@ furet/
 daily memory，skill 也只給路徑不給內容（`prompt.ts` 的 `loadSkills`），
 全鎖等於陌生人一互動就失去上下文、skill 全失效。
 
-改成擋路徑而非擋工具。`checkFileAccess()` 只在 `trigger === "discord-other"`
+擋的是路徑而不是工具。`checkFileAccess()` 只在 `trigger === "discord-other"`
 時生效，拒絕：
 
 - `WORKSPACE_DIR` 以外的一切 → 擋掉 `config.yaml`（含 Discord token）與整個 `src/`
