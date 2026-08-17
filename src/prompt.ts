@@ -16,13 +16,25 @@ function loadAgentInstructions(): string {
   }
 }
 
-/** Parse JOURNAL.md sections by ## heading name */
+/**
+ * 取出 JOURNAL.md 裡某個 `## 標題` 到下一個 `## ` 之間的內容。
+ *
+ * 逐行掃描而不是用一條 regex：原本的
+ * `^## ${section}\s*\n([\s\S]*?)(?=^## |$)` 帶 `m` flag，`$` 因此匹配**每一行**的結尾，
+ * 非貪婪的 `*?` 在第一行結束就停住——三個 hook 都只送出了標題後的第一句，
+ * 其餘幾千字從未進到 prompt。這種錯誤不會拋例外，只會安靜地少送內容。
+ */
 function loadJournalSection(section: string): string {
   try {
     const content = readFileSync(resolve(WORKSPACE_DIR, "JOURNAL.md"), "utf-8");
-    const pattern = new RegExp(`^## ${section}\\s*\\n([\\s\\S]*?)(?=^## |$)`, "m");
-    const match = content.match(pattern);
-    return match?.[1]?.trim() ?? "";
+    const lines = content.split("\n");
+    const start = lines.findIndex(l => l.trim() === `## ${section}`);
+    if (start === -1) return "";
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i++) {
+      if (lines[i].startsWith("## ")) { end = i; break; }
+    }
+    return lines.slice(start + 1, end).join("\n").trim();
   } catch {
     return "";
   }
