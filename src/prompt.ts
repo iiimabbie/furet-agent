@@ -4,6 +4,7 @@ import { ROOT, WORKSPACE_DIR } from "./paths.js";
 import { loadConfig } from "./config.js";
 import { listSkillDirs, readSkillMeta } from "./skills.js";
 import { nowWithZone } from "./utils/time.js";
+import { wrapTag } from "./utils/tagged-file.js";
 
 // --- External prompt loading ---
 
@@ -86,6 +87,15 @@ function loadWorkspaceFile(name: string): string {
 }
 
 /**
+ * 套上區塊標籤。標籤一律由這裡決定，不倚賴檔案內容自帶——
+ * `wrapTag` 是冪等的，檔案已經有就不重複包，掉了就補上，
+ * 不會發生「檔案裡的標籤被改掉，prompt 就靜默少一層區塊邊界」。
+ */
+function section(body: string, tag: string): string {
+  return body.trim() ? wrapTag(body, tag) : "";
+}
+
+/**
  * 結尾的人格提醒。
  *
  * persona 只有一兩百字，而 AGENT.md 的操作規範動輒好幾千字——光靠開頭那一段，
@@ -108,7 +118,7 @@ function buildPeopleSection(): string {
   if (!people) return "";
 
   const limit = loadConfig().prompt.peopleInlineLimit;
-  if (limit > 0 && people.length <= limit) return people;
+  if (limit > 0 && people.length <= limit) return section(people, "people");
 
   return `<people-index>
 PEOPLE.md (${people.length} chars) is not inlined in this prompt.
@@ -116,27 +126,34 @@ Read \`workspace/PEOPLE.md\` with read_file when you need someone's identity, ti
 </people-index>`;
 }
 
-export function buildSystemPrompt(extra?: string): string {
-  const date = `Current datetime: ${nowWithZone()}`;
+/**
+ * 組 system prompt。順序照語意分組：
+ * 你是誰 → 怎麼做事 → 知道什麼 → 會什麼 → 現在在哪 → （接著就是對話）。
+ *
+ * 三塊記憶（長期、人物、召回）相鄰，runtime context（時間、頻道）緊貼 messages，
+ * persona 的錨定留在最後一段。
+ */
+export function buildSystemPrompt(extra?: string, recalled?: string): string {
   const persona = loadWorkspaceFile("SOUL.md");
-  const memory = loadWorkspaceFile("MEMORY.md");
-  const people = buildPeopleSection();
 
   const skills = loadSkills();
-  const skillsSection = skills.length > 0
-    ? skills.map(s => `- **${s.name}**: ${s.description} → \`${s.path}\``).join("\n")
-    : "";
+  const skillsSection = section(
+    skills.map(s => `- **${s.name}**: ${s.description} → \`${s.path}\``).join("\n"),
+    "skills",
+  );
 
   const parts = [
-    persona,        // 先講「你是誰」，再講「怎麼做事」——放在操作規範後面會被淹沒
-    loadAgentInstructions(),
-    extra,          // channel context / session-specific runtime info — injected early for visibility
-    date,
-    memory,
-    people,         // AGENT.md 明確引用 PEOPLE.md（稱謂、權限）；太大時退化成指標
-    skillsSection,
-    persona ? PERSONA_ANCHOR : "",
+    section(persona, "persona"),                       // 你是誰——放在操作規範後面會被淹沒
+    section(loadAgentInstructions(), "agent-instructions"),  // 你怎麼做事
+    section(loadWorkspaceFile("MEMORY.md"), "memory"), // ┐
+    buildPeopleSection(),                              // ├ 你知道什麼（太大時 people 退化成指標）
+    section(recalled ?? "", "recalled-memories"),      // ┘
+    skillsSection,                                     // 你會什麼
+    `Current datetime: ${nowWithZone()}`,              // ┐ 你現在在哪、什麼時候
+    extra,                                             // ┘ channel / session 的 runtime context
+    persona ? PERSONA_ANCHOR : "",                     // 錨定，最後一段
   ];
 
-  return parts.filter(Boolean).join("\n\n");
+  // 先 trim 再濾：workspace 的 md 檔尾端自帶換行，不修掉的話區塊之間會出現三連換行
+  return parts.map(p => p?.trim()).filter(Boolean).join("\n\n");
 }

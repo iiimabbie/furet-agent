@@ -134,19 +134,24 @@ cron / reminder / journal 跟使用者對話是並行跑的，trigger 與待送�
 
 `src/prompt.ts` — 組裝 system prompt。各 md 檔自帶 XML tag（如 `<agent-instructions>`、`<persona>`、`<memory>`），`buildSystemPrompt()` 只負責拼接，不硬塞任何 tag。
 
-順序（由前到後）：
+順序按語意分組：**你是誰 → 怎麼做事 → 知道什麼 → 會什麼 → 現在在哪**，接著就是對話。
+三塊記憶相鄰，runtime context 緊貼 messages，錨定留在最後一段。
 
 | 層 | 來源 | XML tag | 說明 |
 |----|------|---------|------|
 | 人格層 | `workspace/SOUL.md` | `<persona>` | 名字、個性、語氣 |
 | 系統層 | `workspace/AGENT.md` | `<agent-instructions>` | 行為規則、工具指南、workspace 邊界 |
-| 額外層 | `options.systemPrompt` | （無） | 動態注入（如 Discord channel ID、session ID、flush 指令） |
-| 時間層 | 自動生成 | （無） | 當前日期時間（時區由 `config.timezone` 決定） |
 | 記憶層 | `workspace/MEMORY.md` | `<memory>` | 長期記憶（有字數上限） |
 | 人物層 | `workspace/PEOPLE.md` | `<people>` / `<people-index>` | 使用者身分、稱謂、權限（大小門檻，見下） |
-| 技能層 | `workspace/skills/*/SKILL.md` | （無） | 已啟用技能的描述 |
+| 召回層 | 自動（向量搜尋） | `<recalled-memories>` | 根據 user message 語意召回的相關記憶 |
+| 技能層 | `workspace/skills/*/SKILL.md` | `<skills>` | 已啟用技能的描述 |
+| 時間層 | 自動生成 | （無） | 當前日期時間（時區由 `config.timezone` 決定） |
+| 額外層 | `options.systemPrompt` | （無） | 動態注入（如 Discord channel ID、session ID、flush 指令） |
 | 錨定層 | 自動生成 | `<persona-reminder>` | 結尾把語氣的最終依據指回 `<persona>` |
-| 召回層 | 自動（向量搜尋） | （無） | 根據 user message 語意召回相關記憶（append 在最後） |
+
+召回記憶由 `ask()` 搜出來後傳進 `buildSystemPrompt()`，跟另外兩塊記憶排在一起——
+掛在字串尾端會排到錨定層後面，讓「結尾指回 persona」失效。
+各區塊組裝前先 trim：workspace 的 md 檔尾端自帶換行，不修掉會出現三連換行。
 
 ### persona 的位置與錨定
 
@@ -179,7 +184,11 @@ persona 通常只有一兩百字，AGENT.md 的操作規範動輒好幾千字（
 
 ### XML 標籤與附加內容
 
-workspace 的 md 檔用 XML tag 標出 system prompt 的區塊邊界（`<memory>`、`<people>`）。
+**標籤一律由 `prompt.ts` 的 `section()` 套上，不倚賴檔案內容自帶。** `wrapTag()` 是冪等的：
+檔案已經有就不重複包，檔案裡的標籤掉了就補上。兩者分工是——檔案內的標籤是**檔案格式**
+（讓 `memory_add` / `people_add` 知道內容該塞在哪），prompt 裡的標籤是**組裝時的區塊邊界**，
+由 code 保證。少了這層保證，檔案被改壞時 prompt 會靜默少一層邊界，而程式無從得知。
+
 附加內容時**必須先剝掉包裝、接完再包回去**——直接往檔案尾端接會落到結束標籤外面，
 那段內容就會跑出區塊。
 

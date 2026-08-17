@@ -298,12 +298,10 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
     session?.append({ role: "user", content: prompt, time: nowTimestamp() });
   }
 
-  let systemPrompt = buildSystemPrompt(options.systemPrompt);
-  logger.info({ systemPromptLength: systemPrompt.length, hasPersona: systemPrompt.includes("<persona>"), hasMemory: systemPrompt.includes("<memory>"), first500: systemPrompt.slice(0, 500) }, "system prompt check");
-
-  // 自動記憶召回：用使用者訊息搜尋相關記憶，注入 system prompt。
+  // 自動記憶召回：用使用者訊息搜尋相關記憶，跟其他兩塊記憶排在一起送進 system prompt。
   // Discord 路徑一律用 ask(null)（訊息已經 append 進 session），
   // 所以 prompt 為 null 時改拿 session 最後一則 user message 當 query。
+  let recalledSection = "";
   const recallQuery = prompt ?? lastUserText(session?.getMessages() ?? []);
   if (recallQuery) {
     try {
@@ -313,13 +311,16 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
       });
       if (recalled.length > 0) {
         const recallBlock = recalled.map(r => `- [${r.file}] ${r.text}`).join("\n");
-        systemPrompt += `\n\n## Recalled Memories\nThe following memories are automatically recalled based on the current message. Use them naturally if relevant — do not mention this mechanism to the user.\n${recallBlock}`;
+        recalledSection = `Automatically recalled based on the current message. Use them naturally if relevant — do not mention this mechanism to the user.\n${recallBlock}`;
         logger.debug({ count: recalled.length, topScore: recalled[0].score.toFixed(2) }, "auto memory recall");
       }
     } catch (err) {
       logger.warn({ err: (err as Error).message }, "auto memory recall failed, continuing without");
     }
   }
+
+  const systemPrompt = buildSystemPrompt(options.systemPrompt, recalledSection);
+  logger.info({ systemPromptLength: systemPrompt.length, hasPersona: systemPrompt.includes("<persona>"), hasMemory: systemPrompt.includes("<memory>") }, "system prompt check");
 
   type ApiMessage = { role: "user" | "assistant"; content: string | ContentBlock[] };
 
