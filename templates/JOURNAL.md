@@ -67,7 +67,7 @@ news, or anything the participants engaged in is worth a `memory_save`, even if 
 
 ## Daily Journal
 
-Write the daily journal for {{DATE}}. This task has two steps — both are required.
+Write the daily journal for {{DATE}}. This task has three steps — all are required.
 
 ### Step 1 — Rewrite diary
 
@@ -85,7 +85,10 @@ lossy and may be missing whole conversations. The **archived sessions are the gr
      pure chatter with no long-term value belongs here; the diary is about continuity, so
      tomorrow's session can pick up what happened. Do not drop a conversation just because
      it wasn't worth saving to long-term memory.
-   - Remove: raw timestamps (`[HH:MM:SS]`), duplicate summaries, repeated recaps, operational logs
+   - Remove: raw timestamps (`[HH:MM:SS]`), duplicate summaries, repeated recaps, operational
+     logs, and routine weather forecasts (keep genuine weather *events* like typhoons).
+   - Redact secrets: never write API keys / tokens / passwords into the diary — replace the
+     value with a placeholder noting where the real value lives.
 3. Overwrite `workspace/memory/{{DATE}}.md` with `write_file`.
 
 Proceed directly to Step 2. Do not stop here.
