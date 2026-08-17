@@ -464,20 +464,25 @@ async function formatIncomingMessage(message: Message): Promise<FormattedMessage
 
 const PROGRESS_DEBOUNCE_MS = 1000;
 
-interface ProgressLine {
-  id: string;
-  label: string;
-  status: "running" | "ok" | "err";
-}
+/** 進度訊息的單行：工具狀態，或 tool call 之間的文字 */
+export type ProgressLine =
+  | { kind: "tool"; id: string; label: string; status: "running" | "ok" | "err" }
+  | { kind: "text"; text: string };
 
-function renderProgress(lines: ProgressLine[]): string {
+/** 單段中途文字的顯示上限，避免佔滿 Discord 的 2000 字 */
+const INTERIM_TEXT_LIMIT = 300;
+
+export function renderProgress(lines: ProgressLine[]): string {
   if (lines.length === 0) return "...";
-  return lines
+  const body = lines
     .map(l => {
+      if (l.kind === "text") return `> ${l.text.replace(/\n+/g, "\n> ")}`;
       const icon = l.status === "running" ? "→" : l.status === "ok" ? "✓" : "✗";
       return `${icon} ${l.label}`;
     })
     .join("\n");
+  // 過場訊息，超長時保留尾端即可
+  return body.length > 1900 ? `${body.slice(-1900)}` : body;
 }
 
 async function handleTrigger(message: Message, session: Session, images?: string[]): Promise<void> {
@@ -505,9 +510,9 @@ async function handleTrigger(message: Message, session: Session, images?: string
   let lastEditAt = 0;
   let flushChain: Promise<void> = Promise.resolve();
 
-  const flushProgress = async () => {
+  const flushProgress = async (force = false) => {
     const now = Date.now();
-    if (now - lastEditAt < PROGRESS_DEBOUNCE_MS) return;
+    if (!force && now - lastEditAt < PROGRESS_DEBOUNCE_MS) return;
     lastEditAt = now;
     const body = renderProgress(progressLines);
     try {
@@ -523,12 +528,18 @@ async function handleTrigger(message: Message, session: Session, images?: string
 
   const onProgress = (event: ProgressEvent) => {
     if (event.type === "tool_start") {
-      progressLines.push({ id: event.toolCallId, label: event.toolName, status: "running" });
+      progressLines.push({ kind: "tool", id: event.toolCallId, label: event.toolName, status: "running" });
+    } else if (event.type === "text") {
+      const text = event.text.length > INTERIM_TEXT_LIMIT
+        ? `${event.text.slice(0, INTERIM_TEXT_LIMIT)}…`
+        : event.text;
+      progressLines.push({ kind: "text", text });
     } else {
-      const line = progressLines.find(l => l.id === event.toolCallId);
-      if (line) line.status = event.isError ? "err" : "ok";
+      const line = progressLines.find(l => l.kind === "tool" && l.id === event.toolCallId);
+      if (line?.kind === "tool") line.status = event.isError ? "err" : "ok";
     }
-    flushChain = flushChain.then(() => flushProgress());
+    // 不套用 debounce：被延後的話這段文字可能到最後都沒顯示過
+    flushChain = flushChain.then(() => flushProgress(event.type === "text"));
   };
 
   try {

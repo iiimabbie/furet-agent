@@ -114,7 +114,7 @@ function trimToTokenBudget(messages: Message[], maxTokens: number): Message[] {
 
 /**
  * 取最後一則純文字 user message 的內容（用於自動記憶召回的 query）。
- * 剝掉 formatIncomingMessage 加的 `[msg:id 時間] <@id>(暱稱):` 前綴——
+ * 剝掉 formatIncomingMessage 加的 `[msg:id 時間] <@id>(username｜暱稱):` 前綴——
  * 那些是路由用的中繼資料，留著只會稀釋語意搜尋的訊號。
  */
 function lastUserText(messages: Message[]): string | null {
@@ -444,6 +444,11 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
       logger.info({ durationMs, toolsUsed: toolsUsed.map(t => t.tool), textLength: finalText.length, usage: totalUsage }, "query done");
       return { text: finalText, toolsUsed, durationMs, usage: totalUsage, attachments: drainAttachments() };
     }
+
+    // 在執行工具前送出，順序才與 agent 的實際動作一致。
+    // 這一輪有 tool call，這段文字不會進入 ask() 的回傳值。
+    const interimText = extractText(cleanContent).trim();
+    if (interimText) options.onProgress?.({ type: "text", text: interimText });
 
     // 有 tool call → 執行，結果只進 messages（不存 session）
     // 用 try-catch 包住每個工具，失敗時把錯誤訊息當成 tool_result 回給 AI，

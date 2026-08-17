@@ -51,7 +51,12 @@ export interface AgentResponse {
 
 export type ProgressEvent =
   | { type: "tool_start"; toolCallId: string; toolName: string }
-  | { type: "tool_end"; toolCallId: string; isError: boolean };
+  | { type: "tool_end"; toolCallId: string; isError: boolean }
+  /**
+   * Agent 在 tool call 之間產生的文字。只進 session，不在 ask() 的回傳值裡，
+   * 需要靠這個事件才看得到。純過場，最終回覆會覆蓋掉。
+   */
+  | { type: "text"; text: string };
 
 export type TriggerSource = "cli" | "discord-owner" | "discord-other" | "cron" | "reminder" | "journal" | "unknown";
 

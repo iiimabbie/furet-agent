@@ -321,6 +321,12 @@ Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 
 ### 漸進式進度訊息
 Tool call 執行時即時顯示進度（`→` / `✓` / `✗`），完成後替換成最終回覆。防抖 1 秒避免 Discord rate limit。
 
+Agent 在 tool call 之間產生的文字也會以 `> 引用` 插進同一則進度訊息（`ProgressEvent` 的 `text`）。
+這些文字只存在於 session，不在 `ask()` 的回傳值裡（回傳的是最後一輪、沒有 tool call 的文字），
+沒有這個事件就完全看不到，工具鏈一長就像沒回應。純過場：最終回覆會覆蓋掉整則訊息，
+不另發訊息。emit 點在執行工具之前，順序才與 agent 的實際動作一致；單段上限 300 字，
+整則超過 1900 字截尾；這種事件不套用防抖，否則唯一的顯示機會會被吃掉。
+
 ### Slash Commands
 - `/new` — silent memory flush + 歸檔 session + AI 重新打招呼
 - `/status` — 顯示 model / cost / tokens / sessions / crons / reminders / skills
