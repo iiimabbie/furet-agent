@@ -49,7 +49,7 @@ export const memorySave: Tool = {
 
 export const memorySearch: Tool = {
   name: "memory_search",
-  description: "Search across all memory files using semantic search. Use this when the user asks about something that might have been mentioned before, or when you need context from past conversations.",
+  description: "Semantic search over your own memory notes — what you concluded and wrote down. Use it when the user refers to something from before and you need the substance rather than the wording. To find the actual conversation it came from, use session_search; it searches transcripts, this one does not.",
   parameters: {
     type: "object",
     properties: {

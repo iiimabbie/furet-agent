@@ -5,7 +5,7 @@ import type { Tool } from "../../types.js";
 
 export const sessionSearch: Tool = {
   name: "session_search",
-  description: "Search across archived session history using full-text search. Use this to find past conversations, decisions, or events from previous sessions.",
+  description: "Full-text search over archived conversations — the literal words people said. Only archived sessions are indexed: the current session and anything said today are not in here yet, so finding nothing means it is not in the archive — never that it did not happen. Use it to find when something was discussed or decided. For what you concluded and wrote down about a topic use memory_search instead (that one is semantic and searches your notes, not the transcript); to read a whole day end to end use sessions_by_date.",
   parameters: {
     type: "object",
     properties: {
@@ -57,7 +57,7 @@ export const sessionSearch: Tool = {
 
 export const sessionsByDate: Tool = {
   name: "sessions_by_date",
-  description: "Return the full raw conversation of all archived sessions for a given date (YYYY-MM-DD), in chronological order and grouped by session. Use this to reconstruct what happened on a day from first-hand messages — e.g. when writing the daily journal — instead of relying on summarized notes.",
+  description: "Return the full raw conversation of all archived sessions for a given date (YYYY-MM-DD), in chronological order and grouped by session. Today's session is usually not archived yet, so today returns little or nothing. Use this to reconstruct what happened on a day from first-hand messages — e.g. when writing the daily journal — instead of relying on summarized notes.",
   parameters: {
     type: "object",
     properties: {

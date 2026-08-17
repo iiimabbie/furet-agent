@@ -33,7 +33,7 @@ function saveCrons(crons: CronJob[]): void {
 
 export const cronCreate: Tool = {
   name: "cron_create",
-  description: "Create a scheduled task. The prompt will be executed by the agent on the given cron schedule.",
+  description: "Create a recurring scheduled task — the prompt runs on every cron tick. For something that should fire once at a specific time, use reminder_create instead; a cron job that only makes sense once will keep firing.",
   parameters: {
     type: "object",
     properties: {

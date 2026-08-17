@@ -5,7 +5,7 @@ import type { Tool } from "../../types.js";
 
 export const readFileTool: Tool = {
   name: "read_file",
-  description: "Read the contents of a file at the given path.",
+  description: "Read the contents of a file at the given path. Prefer this over bash cat/head/tail — it returns cleaner output. MEMORY.md and OWNER.md are already in your prompt; re-reading them wastes a turn.",
   parameters: {
     type: "object",
     properties: {
