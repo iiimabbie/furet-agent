@@ -13,7 +13,7 @@ let db: Database.Database | null = null;
 export const VEC_TABLE = "memory_vectors_vec_cos";
 
 /**
- * 把舊的 L2 向量表搬到 cosine 表。
+ * 把 L2 向量表的內容搬到 cosine 表。
  * 向量值本身不變（只是距離算法不同），所以直接複製 blob，不用重打 embedding API。
  */
 function migrateVecTable(database: Database.Database): void {
@@ -60,7 +60,7 @@ export function getDb(): Database.Database {
   `);
   // vec0 預設用 L2 距離，但 searchVectors 把 (1 - distance) 當成 cosine 相似度在比。
   // 兩者對不上（L2 ∈ [0,2] 但意義不同），閾值形同永遠不成立。
-  // 改用 distance_metric=cosine，此時 distance = 1 - cos，(1 - distance) 才真的是相似度。
+  // 指定 distance_metric=cosine，此時 distance = 1 - cos，(1 - distance) 才真的是相似度。
   // CREATE TABLE IF NOT EXISTS 不會改既有表的 schema，所以開一張新表並搬遷。
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors_vec_cos USING vec0(

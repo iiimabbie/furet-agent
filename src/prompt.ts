@@ -19,10 +19,8 @@ function loadAgentInstructions(): string {
 /**
  * 取出 JOURNAL.md 裡某個 `## 標題` 到下一個 `## ` 之間的內容。
  *
- * 逐行掃描而不是用一條 regex：原本的
- * `^## ${section}\s*\n([\s\S]*?)(?=^## |$)` 帶 `m` flag，`$` 因此匹配**每一行**的結尾，
- * 非貪婪的 `*?` 在第一行結束就停住——三個 hook 都只送出了標題後的第一句，
- * 其餘幾千字從未進到 prompt。這種錯誤不會拋例外，只會安靜地少送內容。
+ * 逐行掃描而非 regex：`m` flag 下的 `$` 會匹配每一行的結尾，
+ * `(?=^## |$)` 這類邊界配上非貪婪量詞會在第一行就停住。
  */
 function loadJournalSection(section: string): string {
   try {

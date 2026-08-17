@@ -72,7 +72,7 @@ export function toSearchQuery(query: string): string {
  * 在原文上標記命中的片段。
  *
  * FTS 表存的是 bigram 展開後的文字，highlight() 會回傳展開結果（不能看），
- * 所以改成自己在原文上標。用查詢裡的連續片段去比對，長的優先，避免巢狀標記。
+ * 因此自己在原文上標。用查詢裡的連續片段去比對，長的優先，避免巢狀標記。
  */
 export function highlightMatches(text: string, query: string): string {
   const terms = query

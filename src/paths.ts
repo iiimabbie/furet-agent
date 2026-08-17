@@ -25,7 +25,7 @@ export const ATTACHMENTS_DIR = resolve(WORKSPACE_DIR, "attachments");
 /**
  * 全域唯一的回收桶。刪除一律 `mv` 到這裡，不用 `rm`。
  *
- * 刻意放在 workspace 頂層而非 attachments 底下——之前 bash 的工具說明只講
- * 「移到 .trash」沒指定位置，agent 就依當下工作目錄各建一個，散成兩個回收桶。
+ * 刻意放在 workspace 頂層而非 attachments 底下，並且指定到絕對位置：
+ * 只說「移到 .trash」的話，agent 會依當下工作目錄各建一個，散成多個回收桶。
  */
 export const TRASH_DIR = resolve(WORKSPACE_DIR, ".trash");

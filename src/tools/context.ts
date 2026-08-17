@@ -4,10 +4,10 @@ import type { TriggerSource } from "../types.js";
 /**
  * 每次 ask() 的請求範圍狀態。
  *
- * 以前 trigger 和 pendingFiles 是模組級的全域變數，但 cron / reminder / journal
- * 跟使用者對話是並行跑的：cron 觸發時把 trigger 覆蓋成 "cron"，
- * 正在跑 tool call 的非 owner 請求就繞過了 registry.ts 的 owner-only 檢查。
- * 附件也一樣會串到別人的回覆去。改用 AsyncLocalStorage 做請求隔離。
+ * cron / reminder / journal 跟使用者對話是並行跑的，所以 trigger 和 pendingFiles
+ * 必須綁在請求上。放在模組級全域變數會互相覆蓋：cron 觸發時把 trigger 蓋成 "cron"，
+ * 正在跑 tool call 的非 owner 請求就繞過了 registry.ts 的 owner-only 檢查；
+ * 附件也會串到別人的回覆去。用 AsyncLocalStorage 做請求隔離。
  */
 interface RequestContext {
   trigger: TriggerSource;
@@ -20,7 +20,7 @@ const storage = new AsyncLocalStorage<RequestContext>();
 
 /**
  * 在 ALS 範圍外呼叫時的退路（例如 CLI 直接叫工具）。
- * 權限預設保守：unknown 不等於 discord-other，維持原本的放行行為。
+ * 權限預設保守：unknown 不等於 discord-other，維持放行。
  */
 const fallback: RequestContext = { trigger: "unknown", pendingFiles: [] };
 

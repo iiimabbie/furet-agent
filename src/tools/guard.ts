@@ -10,7 +10,7 @@ import { getTrigger } from "./context.js";
  * AGENT.md 的開場流程每次都要讀當天的 daily memory，skill 也只給路徑不給內容
  * （見 prompt.ts 的 skill 載入），全鎖等於陌生人一來就失去上下文、skill 全失效。
  *
- * 所以這裡改成擋路徑而不是擋工具——workspace 內照讀，workspace 外一律拒絕。
+ * 所以這裡擋的是路徑而不是工具——workspace 內照讀，workspace 外一律拒絕。
  * 這道線擋掉的是 config.yaml（含 Discord token）跟整個 src/。
  *
  * 注意：這擋得住直接讀檔，擋不住 memory_search 之類的語意搜尋撈出日記內容。

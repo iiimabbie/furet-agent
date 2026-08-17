@@ -8,9 +8,9 @@ import type { Tool } from "../../types.js";
 /**
  * PEOPLE.md 的編輯工具，與 memory_* 同構。
  *
- * 存在的理由：用 write_file 整份覆寫 PEOPLE.md 很容易弄丟 `<people>` 包裝標籤
- * （實際發生過），而且 agent 得先讀全文再重組，成本高又容易改壞既有條目。
- * 這裡改成 substring 操作，只動要改的段落。
+ * 存在的理由：用 write_file 整份覆寫 PEOPLE.md 很容易弄丟 `<people>` 包裝標籤，
+ * 而且 agent 得先讀全文再重組，成本高又容易改壞既有條目。
+ * 這裡用 substring 操作，只動要改的段落。
  */
 
 const PEOPLE_TAG = "people";
