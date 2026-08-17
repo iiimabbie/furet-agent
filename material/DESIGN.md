@@ -302,18 +302,20 @@ Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 
 - 被 `@mention` 或收到 DM
 - **Ambient 頻道**：`discord.ambient_channels` 列到的 channel ID，不用 `@` bot 直接講話就會回。
   只精確比對 `message.channelId`，底下開的 thread **不繼承**（thread 有自己的 ID，要就自己列進去）。
-  是否回其他 bot 仍走既有的 `respond_to_bots` 開關，沒有另開特例。
+  是否回其他 bot 依 `respond_to_bots`。
 - DM 只回 owner（`config.yaml` 的 `owner_id`）
 - Guild / channel 白名單過濾；ambient 頻道視同已通過 channel 白名單
-  （否則 `allowed_channels` 非空時兩份清單會互相打架）
+  （兩份清單同時存在時，以 ambient 為準）
+
+觸發判定只做在 `bot.ts`，AGENT.md 不提。同一個判斷寫在程式和 prompt 兩個地方會分岔，
+所以 AGENT.md 只保留 `[context]` 前綴的旁聽訊息不要回這一條。
 
 ### 訊息處理
 - **Session 隔離**：未被觸發且 session 不存在 → 不記錄。一旦 bot 被觸發，該頻道的所有訊息才會 append
 - Content 格式：`<@userId>(帳號名｜暱稱): 內容`
 - Mention 正規化：`<@userId>` → `<@userId>(帳號名｜暱稱)` 進 prompt，輸出時 strip 括號。
-  兩個名字各有用途，缺一不可：**`username` 認人**（暱稱隨時可改、跨伺服器還可能不同，
-  只存暱稱會把同一個人認成好幾個），**暱稱給人看**（人習慣被叫的是這個，不是帳號名）。
-  暱稱是寫入當下的快照，事後改暱稱不影響已存訊息；兩者相同時只留一個。DM 無 guild 時只有 username。
+  `username` 是身分依據（全域唯一且穩定），暱稱只用於稱呼。暱稱為寫入當下的快照；
+  兩者相同時只留一個，DM 無 guild 時只有 username。
 - 稱呼的優先序（寫在 AGENT.md）：persona／PEOPLE.md 指定的稱呼 > 暱稱 > username。
   暱稱只是預設值，PEOPLE.md 指定了就以它為準。
 - Thread/論壇貼文首次進入時以 `[System]` user message 存入 starter message
@@ -321,11 +323,10 @@ Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 
 ### 漸進式進度訊息
 Tool call 執行時即時顯示進度（`→` / `✓` / `✗`），完成後替換成最終回覆。防抖 1 秒避免 Discord rate limit。
 
-Agent 在 tool call 之間產生的文字也會以 `> 引用` 插進同一則進度訊息（`ProgressEvent` 的 `text`）。
-這些文字只存在於 session，不在 `ask()` 的回傳值裡（回傳的是最後一輪、沒有 tool call 的文字），
-沒有這個事件就完全看不到，工具鏈一長就像沒回應。純過場：最終回覆會覆蓋掉整則訊息，
-不另發訊息。emit 點在執行工具之前，順序才與 agent 的實際動作一致；單段上限 300 字，
-整則超過 1900 字截尾；這種事件不套用防抖，否則唯一的顯示機會會被吃掉。
+Agent 在 tool call 之間產生的文字以 `> 引用` 併進同一則進度訊息（`ProgressEvent` 的 `text`）。
+這些文字只存在於 session，不在 `ask()` 的回傳值裡——回傳的是最後一輪、沒有 tool call 的文字。
+純過場，最終回覆會覆蓋整則訊息，不另發訊息。emit 點在執行工具之前，順序才與實際動作一致。
+單段上限 300 字，整則超過 1900 字截尾；`text` 事件不套用防抖。
 
 ### Slash Commands
 - `/new` — silent memory flush + 歸檔 session + AI 重新打招呼

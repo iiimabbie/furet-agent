@@ -3,7 +3,7 @@ import type { Tool } from "../../types.js";
 
 export const discordBotMentionToggle: Tool = {
   name: "discord_bot_mention_toggle",
-  description: "Enable or disable responding to other bots. When enabled, messages from other bots that mention Furet or are in DM will trigger the agent.",
+  description: "Enable or disable responding to other bots. When disabled, messages from other bots never trigger the agent, regardless of how they would otherwise reach it.",
   parameters: {
     type: "object",
     properties: {
