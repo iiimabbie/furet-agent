@@ -300,8 +300,12 @@ Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 
 
 ### 觸發條件
 - 被 `@mention` 或收到 DM
+- **Ambient 頻道**：`discord.ambient_channels` 列到的 channel ID，不用 `@` bot 直接講話就會回。
+  只精確比對 `message.channelId`，底下開的 thread **不繼承**（thread 有自己的 ID，要就自己列進去）。
+  是否回其他 bot 仍走既有的 `respond_to_bots` 開關，沒有另開特例。
 - DM 只回 owner（`config.yaml` 的 `owner_id`）
-- Guild / channel 白名單過濾
+- Guild / channel 白名單過濾；ambient 頻道視同已通過 channel 白名單
+  （否則 `allowed_channels` 非空時兩份清單會互相打架）
 
 ### 訊息處理
 - **Session 隔離**：未被觸發且 session 不存在 → 不記錄。一旦 bot 被觸發，該頻道的所有訊息才會 append

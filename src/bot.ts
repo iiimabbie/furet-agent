@@ -360,7 +360,9 @@ export async function startBot(token: string): Promise<void> {
     const isMentioned = client.user ? message.mentions.has(client.user) : false;
     const isDM = !message.guild;
     const isBot = message.author.bot;
-    const isTrigger = (isMentioned || isDM) && (!isBot || config.discord.respond_to_bots);
+    // ambient 頻道：不用 @ 就會回。只認 channel ID 本身，thread 不繼承 parent
+    const isAmbient = !isDM && config.discord.ambient_channels.includes(message.channelId);
+    const isTrigger = (isMentioned || isDM || isAmbient) && (!isBot || config.discord.respond_to_bots);
 
     // Session 隔離：未被觸發且尚未有 session → 不偷看、不記錄
     // （只有 bot 被 @mention / reply / DM 後才會開啟這個 channel 的 session；
@@ -403,8 +405,8 @@ export async function startBot(token: string): Promise<void> {
       // guild 白名單
       if (message.guild && config.discord.allowed_guilds.length > 0
           && !config.discord.allowed_guilds.includes(message.guild.id)) return;
-      // channel 白名單
-      if (!isDM && config.discord.allowed_channels.length > 0
+      // channel 白名單（ambient 頻道視同已放行，否則兩份清單會互相打架）
+      if (!isDM && !isAmbient && config.discord.allowed_channels.length > 0
           && !config.discord.allowed_channels.includes(message.channelId)) return;
     }
 

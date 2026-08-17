@@ -17,6 +17,12 @@ export interface FuretConfig {
     enabled: boolean;
     token: string;
     allowed_channels: string[];
+    /**
+     * 這些頻道不用 @ bot，直接講話就會回。
+     * 只精確比對 channel ID，底下開的 thread 不繼承。
+     * 是否回其他 bot 仍看 `respond_to_bots`。
+     */
+    ambient_channels: string[];
     allowed_guilds: string[];
     owner_id: string;
     status: string;
@@ -67,6 +73,7 @@ const DEFAULTS: FuretConfig = {
     enabled: false,
     token: "",
     allowed_channels: [],
+    ambient_channels: [],
     allowed_guilds: [],
     owner_id: "",
     status: "online",

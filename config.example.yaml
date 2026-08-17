@@ -19,6 +19,7 @@ discord:
   enabled: false                        # set true to run discord bot
   token: "${DISCORD_TOKEN}"             # bot token from Discord Developer Portal
   allowed_channels: []                  # empty = all channels; specify channel IDs to restrict
+  ambient_channels: []                  # channel IDs where the bot replies without being @mentioned (threads do not inherit)
   allowed_guilds: []                    # empty = all servers; specify guild IDs to restrict
   owner_id: ""                          # your Discord user ID (only owner can DM the bot)
   respond_to_bots: false                # whether to process messages from other bots
