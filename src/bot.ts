@@ -11,7 +11,7 @@ import { logger } from "./logger.js";
 import { loadConfig, setCurrentModel } from "./config.js";
 import { setDiscordClient } from "./tools/builtin/discord.js";
 import { fixMarkdownLinks } from "./utils/format.js";
-import { normalizeMentions } from "./utils/discord-mentions.js";
+import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
 import { estimateCost } from "./utils/pricing.js";
 import { stamp } from "./utils/time.js";
 
@@ -83,6 +83,8 @@ const SLASH_COMMANDS = [
     .setDescription("壓縮當前 session（摘要舊對話，保留最近訊息）")
     .toJSON(),
 ];
+
+const OWNER_ONLY_MSG = "只有 owner 能用這個指令！";
 
 /** Spawn 一個獨立的子進程跑同樣的 cmdline，自己退出。靠 detached + stdio:ignore 脫離父進程。 */
 function selfRestart(): void {
@@ -240,7 +242,7 @@ export async function startBot(token: string): Promise<void> {
     if (interaction.commandName === "restart") {
       const config = loadConfig();
       if (config.discord.owner_id && interaction.user.id !== config.discord.owner_id) {
-        await interaction.reply({ content: "只有主人能用這個指令！", flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral });
         return;
       }
       logger.info({ user: interaction.user.id }, "/restart triggered");
@@ -251,7 +253,7 @@ export async function startBot(token: string): Promise<void> {
     if (interaction.commandName === "model") {
       const config = loadConfig();
       if (config.discord.owner_id && interaction.user.id !== config.discord.owner_id) {
-        await interaction.reply({ content: "只有主人能用這個指令！", flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral });
         return;
       }
       const name = interaction.options.getString("name", true);
@@ -268,7 +270,7 @@ export async function startBot(token: string): Promise<void> {
     if (interaction.commandName === "google-auth") {
       const config = loadConfig();
       if (config.discord.owner_id && interaction.user.id !== config.discord.owner_id) {
-        await interaction.reply({ content: "只有主人能用這個指令！", flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral });
         return;
       }
       const callback = interaction.options.getString("callback");
@@ -360,7 +362,7 @@ export async function startBot(token: string): Promise<void> {
     const isMentioned = client.user ? message.mentions.has(client.user) : false;
     const isDM = !message.guild;
     const isBot = message.author.bot;
-    // ambient 頻道：不用 @ 就會回。只認 channel ID 本身，thread 不繼承 parent
+    // ambient 頻道：不需 @ 即觸發。只比對 channel ID 本身，thread 不繼承 parent
     const isAmbient = !isDM && config.discord.ambient_channels.includes(message.channelId);
     const isTrigger = (isMentioned || isDM || isAmbient) && (!isBot || config.discord.respond_to_bots);
 
@@ -377,7 +379,7 @@ export async function startBot(token: string): Promise<void> {
         const starter = await message.channel.fetchStarterMessage();
         if (starter) {
           const ts = stamp(new Date(starter.createdTimestamp));
-          const authorName = starter.member?.displayName ?? starter.author.username;
+          const authorName = formatName(starter.author.username, starter.member?.displayName);
           const threadName = message.channel.name;
           session.append({
             role: "user",
@@ -395,7 +397,7 @@ export async function startBot(token: string): Promise<void> {
 
     if (!isTrigger) return;
 
-    // DM 只回主人
+    // DM 只回 owner
     if (isDM && config.discord.owner_id && message.author.id !== config.discord.owner_id) {
       logger.info({ userId: message.author.id }, "DM from non-owner rejected");
       return;
@@ -405,7 +407,7 @@ export async function startBot(token: string): Promise<void> {
       // guild 白名單
       if (message.guild && config.discord.allowed_guilds.length > 0
           && !config.discord.allowed_guilds.includes(message.guild.id)) return;
-      // channel 白名單（ambient 頻道視同已放行，否則兩份清單會互相打架）
+      // channel 白名單（ambient 頻道視同已放行，否則兩份清單的判定會互相矛盾）
       if (!isDM && !isAmbient && config.discord.allowed_channels.length > 0
           && !config.discord.allowed_channels.includes(message.channelId)) return;
     }
@@ -425,7 +427,7 @@ interface FormattedMessage {
 }
 
 async function formatIncomingMessage(message: Message): Promise<FormattedMessage> {
-  const authorName = message.member?.displayName ?? message.author.username;
+  const authorName = formatName(message.author.username, message.member?.displayName);
   const authorId = message.author.id;
 
   const ts = stamp(new Date(message.createdTimestamp));
@@ -548,7 +550,7 @@ async function handleTrigger(message: Message, session: Session, images?: string
       return;
     }
 
-    // 若 AI 輸出 <@id>(暱稱) 格式，清掉括號讓 Discord 正常渲染 mention
+    // 若 AI 輸出 <@id>(帳號名｜暱稱) 格式，清掉括號讓 Discord 正常渲染 mention
     const stripped = response.text.replace(/(<@!?\d+>)[\(（][^\)）]*[\)）]/g, "$1");
     const formatted = fixMarkdownLinks(stripped);
     const chunks = chunkMessage(formatted, 2000);

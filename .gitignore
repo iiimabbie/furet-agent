@@ -12,3 +12,6 @@ material/*
 # DESIGN.md 必須進 git：templates/AGENT.md 指示 agent 讀它，
 # README 也連向它——不進 git 的話，新 clone 的人兩邊都會撲空。
 !material/DESIGN.md
+
+# 一次性 migration 的資料備份，不進版控
+.backup-*/

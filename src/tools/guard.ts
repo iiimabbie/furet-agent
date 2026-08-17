@@ -8,7 +8,7 @@ import { getTrigger } from "./context.js";
  *
  * registry.ts 的 OWNER_ONLY_TOOLS 是「整個工具擋掉」，但 read_file 不能整個擋：
  * AGENT.md 的開場流程每次都要讀當天的 daily memory，skill 也只給路徑不給內容
- * （prompt.ts:61），全鎖等於陌生人一來就失去上下文、skill 全失效。
+ * （見 prompt.ts 的 skill 載入），全鎖等於陌生人一來就失去上下文、skill 全失效。
  *
  * 所以這裡改成擋路徑而不是擋工具——workspace 內照讀，workspace 外一律拒絕。
  * 這道線擋掉的是 config.yaml（含 Discord token）跟整個 src/。

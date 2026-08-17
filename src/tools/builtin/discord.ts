@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import type { Client } from "discord.js";
 import { logger } from "../../logger.js";
 import type { Tool } from "../../types.js";
-import { normalizeMentions } from "../../utils/discord-mentions.js";
+import { normalizeMentions, formatName } from "../../utils/discord-mentions.js";
 import { queueAttachment } from "../context.js";
 
 let discordClient: Client | null = null;
@@ -44,7 +44,7 @@ export const discordFetchMessage: Tool = {
     try {
       const channel = await getTextChannel(channel_id);
       const msg = await channel.messages.fetch(message_id);
-      const authorName = msg.member?.displayName ?? msg.author.username;
+      const authorName = formatName(msg.author.username, msg.member?.displayName);
       const content = await normalizeMentions(msg.content, getClient(), msg.guild);
       return JSON.stringify({
         messageId: msg.id,
@@ -384,7 +384,7 @@ export const discordFetchChannelMessages: Tool = {
       // 統一 newest-first：after 模式 Discord API 回傳是舊到新，在這裡強制排序
       const sorted = Array.from(messages.values()).sort((a, b) => b.createdTimestamp - a.createdTimestamp);
       const result = await Promise.all(sorted.map(async msg => {
-        const authorName = msg.member?.displayName ?? msg.author.username;
+        const authorName = formatName(msg.author.username, msg.member?.displayName);
         const content = await normalizeMentions(msg.content, client, msg.guild);
         return {
           messageId: msg.id,

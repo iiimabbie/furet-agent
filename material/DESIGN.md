@@ -57,7 +57,7 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
 1. 組 system prompt（`prompt.ts` 的 `buildSystemPrompt()`）
 2. 自動記憶召回：用使用者訊息做語意搜尋（`searchVectors`），結果注入 system prompt。
    `prompt` 為 null 時（Discord 路徑）改取 session 最後一則 user message，並剝掉
-   `[msg:id 時間] <@id>(暱稱):` 這類中繼資料前綴，避免稀釋語意訊號
+   `[msg:id 時間] <@id>(帳號名｜暱稱):` 這類中繼資料前綴，避免稀釋語意訊號
 3. 從 session 載入歷史 messages（標準 multi-turn 格式），用 `trimToTokenBudget()` 控制 context 上限，
    再經 `ensureUserFirst()` 確保第一則是 user role
 4. 送 API，收到回應 → 解析 content blocks（text / thinking / tool_use / server-side tool results）
@@ -309,8 +309,13 @@ Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 
 
 ### 訊息處理
 - **Session 隔離**：未被觸發且 session 不存在 → 不記錄。一旦 bot 被觸發，該頻道的所有訊息才會 append
-- Content 格式：`<@userId>(暱稱): 內容`
-- Mention 正規化：`<@userId>` → `<@userId>(暱稱)` 進 prompt，輸出時 strip 括號
+- Content 格式：`<@userId>(帳號名｜暱稱): 內容`
+- Mention 正規化：`<@userId>` → `<@userId>(帳號名｜暱稱)` 進 prompt，輸出時 strip 括號。
+  兩個名字各有用途，缺一不可：**`username` 認人**（暱稱隨時可改、跨伺服器還可能不同，
+  只存暱稱會把同一個人認成好幾個），**暱稱給人看**（人習慣被叫的是這個，不是帳號名）。
+  暱稱是寫入當下的快照，事後改暱稱不影響已存訊息；兩者相同時只留一個。DM 無 guild 時只有 username。
+- 稱呼的優先序（寫在 AGENT.md）：persona／PEOPLE.md 指定的稱呼 > 暱稱 > username。
+  暱稱只是預設值，PEOPLE.md 指定了就以它為準。
 - Thread/論壇貼文首次進入時以 `[System]` user message 存入 starter message
 
 ### 漸進式進度訊息

@@ -18,9 +18,8 @@ export interface FuretConfig {
     token: string;
     allowed_channels: string[];
     /**
-     * 這些頻道不用 @ bot，直接講話就會回。
-     * 只精確比對 channel ID，底下開的 thread 不繼承。
-     * 是否回其他 bot 仍看 `respond_to_bots`。
+     * 這些頻道不需 @ bot 即會回應。只精確比對 channel ID，thread 不繼承。
+     * 是否回應其他 bot 仍依 `respond_to_bots`。
      */
     ambient_channels: string[];
     allowed_guilds: string[];
