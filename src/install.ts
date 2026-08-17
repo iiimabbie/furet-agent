@@ -56,6 +56,7 @@ copyIfMissing(resolve(TEMPLATES, "AGENT.md"), resolve(WORKSPACE, "AGENT.md"));
 copyIfMissing(resolve(TEMPLATES, "SOUL.md"), resolve(WORKSPACE, "SOUL.md"));
 copyIfMissing(resolve(TEMPLATES, "MEMORY.md"), resolve(WORKSPACE, "MEMORY.md"));
 copyIfMissing(resolve(TEMPLATES, "PEOPLE.md"), resolve(WORKSPACE, "PEOPLE.md"));
+copyIfMissing(resolve(TEMPLATES, "OWNER.md"), resolve(WORKSPACE, "OWNER.md"));
 copyIfMissing(resolve(TEMPLATES, "JOURNAL.md"), resolve(WORKSPACE, "JOURNAL.md"));
 
 // empty json files

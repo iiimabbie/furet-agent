@@ -3,6 +3,15 @@ import { ask } from "./agent.js";
 import { Session } from "./session.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 
+/**
+ * CLI 只能在主機的 shell 上執行，打字的人必然是 owner——`trigger: "cli"` 也因此享有完整權限。
+ * 身分由這裡告知，不讓 agent 從「沒有身分資訊」去猜：猜的結果是它退回中性稱呼。
+ */
+const CLI_CONTEXT = `<cli-context>
+This is a local CLI session on the host machine. The person typing is the owner.
+Address them as <owner> specifies.
+</cli-context>`;
+
 let session = new Session("cli");
 
 const rl = readline.createInterface({
@@ -30,6 +39,7 @@ function prompt(): void {
     try {
       const response = await ask(trimmed, {
         session,
+        systemPrompt: CLI_CONTEXT,
         trigger: "cli",
         onToolUse: (tool, toolInput) => {
           const displayName = prettifyToolName(tool);

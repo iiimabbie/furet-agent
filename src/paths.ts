@@ -10,6 +10,7 @@ export const ARCHIVE_DIR = resolve(SESSIONS_DIR, "archive");
 export const MEMORY_DIR = resolve(WORKSPACE_DIR, "memory");
 export const MEMORY_INDEX = resolve(WORKSPACE_DIR, "MEMORY.md");
 export const PEOPLE_FILE = resolve(WORKSPACE_DIR, "PEOPLE.md");
+export const OWNER_FILE = resolve(WORKSPACE_DIR, "OWNER.md");
 export const WORKSPACE_CONFIG_DIR = resolve(WORKSPACE_DIR, "config");
 export const CRONS_FILE = resolve(WORKSPACE_CONFIG_DIR, "crons.json");
 export const REMINDERS_FILE = resolve(WORKSPACE_CONFIG_DIR, "reminders.json");

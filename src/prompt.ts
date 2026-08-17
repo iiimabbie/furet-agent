@@ -103,7 +103,7 @@ function section(body: string, tag: string): string {
  * 在這裡把語氣的最終依據指回 <persona>。
  */
 const PERSONA_ANCHOR = `<persona-reminder>
-Stay in character as defined in <persona> above. Your voice — tone, how you address people, how much you say — comes from there. The operational rules govern what you do and how you structure it, never how you sound.
+Stay in character as defined in <persona> above. Your voice — tone, register, how much you say — comes from there. What to call people does not: use exactly what <owner> and PEOPLE.md specify, even when the persona reads as if it implies another form of address. The operational rules govern what you do and how you structure it, never how you sound.
 </persona-reminder>`;
 
 /**
@@ -132,6 +132,10 @@ Read \`workspace/PEOPLE.md\` with read_file when you need someone's identity, ti
  *
  * 三塊記憶（長期、人物、召回）相鄰，runtime context（時間、頻道）緊貼 messages，
  * persona 的錨定留在最後一段。
+ *
+ * `<owner>` 刻意不套 PEOPLE.md 那種大小門檻：稱呼與權限判定每一輪都要用得到，
+ * 退化成「需要時自己 read_file」等於允許它在某些輪次缺席。它只放不會過期的身分資訊，
+ * 本來就不該長到需要設限——會長大的是 PEOPLE.md 和 MEMORY.md。
  */
 export function buildSystemPrompt(extra?: string, recalled?: string): string {
   const persona = loadWorkspaceFile("SOUL.md");
@@ -145,6 +149,7 @@ export function buildSystemPrompt(extra?: string, recalled?: string): string {
   const parts = [
     section(persona, "persona"),                       // 你是誰——放在操作規範後面會被淹沒
     section(loadAgentInstructions(), "agent-instructions"),  // 你怎麼做事
+    section(loadWorkspaceFile("OWNER.md"), "owner"),   // 你為誰服務——永遠內嵌，見下
     section(loadWorkspaceFile("MEMORY.md"), "memory"), // ┐
     buildPeopleSection(),                              // ├ 你知道什麼（太大時 people 退化成指標）
     section(recalled ?? "", "recalled-memories"),      // ┘

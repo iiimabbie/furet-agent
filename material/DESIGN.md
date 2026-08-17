@@ -141,6 +141,7 @@ cron / reminder / journal 跟使用者對話是並行跑的，trigger 與待送�
 |----|------|---------|------|
 | 人格層 | `workspace/SOUL.md` | `<persona>` | 名字、個性、語氣 |
 | 系統層 | `workspace/AGENT.md` | `<agent-instructions>` | 行為規則、工具指南、workspace 邊界 |
+| 主人層 | `workspace/OWNER.md` | `<owner>` | owner 的身分、稱呼、權限（永遠內嵌，見下） |
 | 記憶層 | `workspace/MEMORY.md` | `<memory>` | 長期記憶（有字數上限） |
 | 人物層 | `workspace/PEOPLE.md` | `<people>` / `<people-index>` | 使用者身分、稱謂、權限（大小門檻，見下） |
 | 召回層 | 自動（向量搜尋） | `<recalled-memories>` | 根據 user message 語意召回的相關記憶 |
@@ -148,6 +149,24 @@ cron / reminder / journal 跟使用者對話是並行跑的，trigger 與待送�
 | 時間層 | 自動生成 | （無） | 當前日期時間（時區由 `config.timezone` 決定） |
 | 額外層 | `options.systemPrompt` | （無） | 動態注入（如 Discord channel ID、session ID、flush 指令） |
 | 錨定層 | 自動生成 | `<persona-reminder>` | 結尾把語氣的最終依據指回 `<persona>` |
+
+### OWNER.md 為什麼獨立成一層
+
+稱呼、身分、權限每一輪都要用得到，但這些資訊原本散在三個檔案：SOUL.md 的人格描述、
+PEOPLE.md 的 owner 條目、MEMORY.md 的 Owner 段。三處都不具權威，改一處另外兩處不會跟著動。
+
+更關鍵的是 PEOPLE.md 有大小門檻：超過 `peopleInlineLimit` 就退化成一行指標，
+owner 的稱呼規則會整個從 prompt 消失，而程式不會察覺。
+
+`OWNER.md` 因此**不套大小門檻**——它只放不會過期的身分資訊，本來就不該長到需要設限；
+會長大的是 PEOPLE.md 和 MEMORY.md。職責嚴格劃分：
+
+- `SOUL.md` 只管人格語氣，不寫稱呼
+- `OWNER.md` 是稱呼與身分的唯一權威
+- `PEOPLE.md` 只放 owner 以外的人
+- `MEMORY.md` 只放會變動的事（行程、近況、開發方向）
+
+`soul_guardian` 一併監控 OWNER.md。
 
 召回記憶由 `ask()` 搜出來後傳進 `buildSystemPrompt()`，跟另外兩塊記憶排在一起——
 掛在字串尾端會排到錨定層後面，讓「結尾指回 persona」失效。

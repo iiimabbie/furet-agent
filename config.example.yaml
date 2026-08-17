@@ -35,6 +35,8 @@ soul_guardian:                           # file integrity monitor
   targets:                              # files to monitor (paths relative to workspace/)
     - path: SOUL.md
       mode: alert                       # restore = auto-revert, alert = warn only, ignore = skip
+    - path: OWNER.md
+      mode: alert
     - path: MEMORY.md
       mode: alert
     - path: AGENT.md
