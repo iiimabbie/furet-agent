@@ -342,11 +342,10 @@ Agent 在 tool call 之間產生的文字以 `> 引用` 併進同一則進度訊
 | Cron 排程 | 每 1 小時重新載入 crons.json，執行到期任務 |
 | Reminder | 一次性提醒，每 15 秒輪詢 reminders.json 掃到期的，觸發後自動刪除 |
 | Journal | 每天固定時間：silent flush 所有 active session → 歸檔 → 重寫日記 → 更新 MEMORY.md |
-
-日記重寫（Daily Journal Step 1）讀的是 `sessions_by_date` 撈出的**當天 raw session**，每日記憶檔的 memory_save 筆記只當輔助。只讀每日檔會漏掉未被 memory_save 的對話（例如純聊天的社群互動）——flush 那步用的是「長期記憶」的門檻，而日記要的是連續性。兩道門檻因此分開：MEMORY.md 留 30 天長期濾網，每日檔／日記照收社群互動。
-
 | Discord Bot | 有 token 且 enabled 時啟動 |
 | PID file | `furet.pid`，啟動時殺掉舊進程確保單實例 |
+
+日記重寫（Daily Journal Step 1）讀的是 `sessions_by_date` 撈出的**當天 raw session**，每日記憶檔的 memory_save 筆記只當輔助。只讀每日檔會漏掉未被 memory_save 的對話（例如純聊天的社群互動）——flush 那步用的是「長期記憶」的門檻，而日記要的是連續性。兩道門檻因此分開：MEMORY.md 留 30 天長期濾網，每日檔／日記照收社群互動。
 
 ### Reminder 用輪詢而不是 setTimeout
 
