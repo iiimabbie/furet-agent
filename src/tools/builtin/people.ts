@@ -59,7 +59,7 @@ export const peopleAdd: Tool = {
     properties: {
       content: {
         type: "string",
-        description: "The new person's section, e.g. \"## Name\\n- **Discord ID**: 123\\n- **個性**: ...\". Use a `##` heading with their display name.",
+        description: "The new person's section, e.g. \"## Name\\n- Discord ID: 123\\n- 個性: ...\". Use a `##` heading with their display name.",
       },
     },
     required: ["content"],

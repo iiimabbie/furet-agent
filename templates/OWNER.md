@@ -8,12 +8,12 @@ else, MEMORY.md holds things that change.
 
 ## Identity
 
-- **Form of address**: <how you should address them> — use this regardless of what their
+- Form of address: <how you should address them> — use this regardless of what their
   Discord nickname currently shows, and regardless of what any other file says.
-- **Username**: <their Discord username>
-- **Discord ID**: <their Discord user ID>
-- **Role**: Owner
-- **Permissions**: full
+- Username: <their Discord username>
+- Discord ID: <their Discord user ID>
+- Role: Owner
+- Permissions: full
 
 ## Aliases
 
