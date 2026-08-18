@@ -288,11 +288,15 @@ PEOPLE.md 會隨著認識的人變多而長大，不適合無條件塞進每一�
 
 `src/session.ts` — 每個對話一個 JSON 檔案。
 
-| 場景 | Session ID | 位置 |
+| 場景 | Session ID | 檔名 |
 |------|-----------|------|
 | CLI | `cli` | `workspace/sessions/cli.json` |
-| Discord 頻道 | `discord-channel-{channelId}` | `workspace/sessions/discord-channel-*.json` |
-| Discord DM | `discord-dm-{userId}` | `workspace/sessions/discord-dm-*.json` |
+| Discord 頻道 | `discord-channel-{channelId}` | `workspace/sessions/dc-{channelId}__{頻道名}.json` |
+| Discord DM | `discord-dm-{userId}` | `workspace/sessions/dm-{userId}__{名稱}.json` |
+
+Session ID 是內部 routing key（不變）；檔名另外把長前綴縮寫成 `dc-` / `dm-`，
+並帶上頻道名 slug 方便在資料夾裡辨識。頻道改名時 `setChannelName()` 自動 rename 舊檔。
+分界符 `__` 讓掃檔能在 id 邊界精確比對，也相容尚未縮寫的舊檔名。
 
 ### Session 格式
 

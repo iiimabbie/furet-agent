@@ -1,10 +1,46 @@
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
 import { logger } from "./logger.js";
 import { getDb } from "./db.js";
 import { SESSIONS_DIR, ARCHIVE_DIR } from "./paths.js";
 import { toSearchTokens } from "./utils/cjk.js";
 import type { Message, TokenUsage } from "./types.js";
+
+// 檔名格式：`{stem}.json` 或 `{stem}__{slug}.json`。
+// stem 是把 routing id 的長前綴縮寫的結果（discord-channel- → dc-、discord-dm- → dm-），
+// 讓資料夾裡的檔名短又可辨識；內部 id 本身不變。
+// id 與縮寫都不含底線，所以用 `__` 當 stem 與頻道名 slug 的分界，掃檔時能在邊界精確比對，
+// 避免 `...123` 誤match `...1234`。
+function idToStem(id: string): string {
+  return id.replace(/^discord-channel-/, "dc-").replace(/^discord-dm-/, "dm-");
+}
+
+function stemToId(stem: string): string {
+  const base = stem.split("__")[0];
+  // 相容舊檔名（未縮寫的完整 id）：沒有縮寫前綴時原樣回傳。
+  return base.replace(/^dc-/, "discord-channel-").replace(/^dm-/, "discord-dm-");
+}
+
+/** 把頻道名轉成可放進檔名的 slug；保留中文，去掉路徑分隔與控制字元。 */
+function slugify(name: string): string {
+  return name
+    .replace(/[/\\\x00-\x1f]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/^\.+/, "")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60);
+}
+
+/** 找出磁碟上屬於這個 id 的 session 檔名（含 slug 後綴），沒有則回 null。 */
+function findSessionFile(id: string): string | null {
+  try {
+    const files = readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
+    return files.find(f => stemToId(f.slice(0, -5)) === id) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 export class Session {
   readonly id: string;
@@ -14,8 +50,24 @@ export class Session {
 
   constructor(id: string) {
     this.id = id;
-    this.filePath = resolve(SESSIONS_DIR, `${id}.json`);
+    const existing = findSessionFile(id);
+    this.filePath = existing ? resolve(SESSIONS_DIR, existing) : resolve(SESSIONS_DIR, `${idToStem(id)}.json`);
     this.load();
+  }
+
+  /** 設定頻道名：把檔名同步成 `{id}__{slug}.json`，頻道改名時自動 rename 舊檔。 */
+  setChannelName(name: string): void {
+    const slug = slugify(name);
+    if (!slug) return;
+    const target = resolve(SESSIONS_DIR, `${idToStem(this.id)}__${slug}.json`);
+    if (target === this.filePath) return;
+    try {
+      mkdirSync(SESSIONS_DIR, { recursive: true });
+      if (existsSync(this.filePath)) renameSync(this.filePath, target);
+      this.filePath = target;
+    } catch (err) {
+      logger.error({ err: (err as Error).message, sessionId: this.id }, "session rename failed");
+    }
   }
 
   getMessages(): Message[] {
@@ -132,14 +184,14 @@ export class Session {
 
   /** 檢查 session 檔是否已存在（用於區分「從未觸發過」跟「已有對話歷史」） */
   static exists(id: string): boolean {
-    return existsSync(resolve(SESSIONS_DIR, `${id}.json`));
+    return findSessionFile(id) !== null;
   }
 
   /** 列出所有 active session ID */
   static listActive(): string[] {
     try {
       const files = readdirSync(SESSIONS_DIR).filter(f => f.endsWith(".json"));
-      return files.map(f => f.replace(".json", ""));
+      return files.map(f => stemToId(f.slice(0, -5)));
     } catch {
       return [];
     }

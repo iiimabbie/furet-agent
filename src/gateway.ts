@@ -69,6 +69,11 @@ async function sendAndPersist(channelId: string, text: string, label: string): P
   const sessionId = await resolveSessionIdForChannel(channelId);
   if (!sessionId) return;
   const session = new Session(sessionId);
+  try {
+    const channel = await getDiscordClient()?.channels.fetch(channelId);
+    const channelName = (channel as { name?: string } | null)?.name;
+    if (channelName) session.setChannelName(channelName);
+  } catch { /* 取名失敗不影響推播 */ }
   const ts = stamp();
   // session 是空的時候不能直接 append assistant——Anthropic API 要求第一則是 user，
   // 否則這個頻道下次對話會直接 400。先補一則說明這是排程主動推播。

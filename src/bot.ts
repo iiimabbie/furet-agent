@@ -372,6 +372,9 @@ export async function startBot(token: string): Promise<void> {
     if (!isTrigger && !Session.exists(sessionId)) return;
 
     const session = new Session(sessionId);
+    // 檔名帶上頻道名，方便在 sessions/ 裡辨識；頻道改名會自動 rename
+    const channelName = (message.channel as { name?: string }).name;
+    if (channelName) session.setChannelName(channelName);
 
     // Thread/論壇貼文的第一次進入：抓初始訊息作為 context
     if (session.length === 0 && message.channel.isThread()) {
