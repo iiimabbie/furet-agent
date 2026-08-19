@@ -238,11 +238,13 @@ function scheduleJournal(): void {
   schedule(expr, async () => {
     logger.info({ time: `${config.journal.hour}:${config.journal.minute}` }, "journal triggered");
 
-    // 先總結+歸檔所有 active session
+    // 先鎖定今天的日期，避免 summarize 耗時跨日導致日期錯誤
+    const date = today();
+
+    // 總結+歸檔所有 active session
     await summarizeAndArchiveAll();
 
     // 再整理日記 + 更新 MEMORY.md
-    const date = today();
     const prompt = buildJournalPrompt(date);
     ask(prompt, { trigger: "journal" })
       .then(response => logger.info({ date, result: response.text.slice(0, 200) }, "journal done"))
