@@ -13,6 +13,9 @@ import { fixMarkdownLinks } from "./utils/format.js";
 import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
 import { estimateCost } from "./utils/pricing.js";
 import { stamp } from "./utils/time.js";
+import { readFile, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { loadCrons } from "./tools/builtin/cron.js";
 import { getAuthClient, getAuthUrl, exchangeCode } from "./google/auth.js";
@@ -85,6 +88,54 @@ const SLASH_COMMANDS = [
 
 const OWNER_ONLY_MSG = "只有 owner 能用這個指令！";
 
+interface PendingRestart {
+  applicationId: string;
+  token: string;
+  createdAt: number;
+}
+
+const RESTART_STATE_FILE = join(tmpdir(), `furet-restart-${process.getuid?.() ?? "unknown"}.json`);
+const RESTART_TOKEN_TTL_MS = 14 * 60 * 1000;
+
+async function savePendingRestart(applicationId: string, token: string): Promise<void> {
+  const state: PendingRestart = { applicationId, token, createdAt: Date.now() };
+  await writeFile(RESTART_STATE_FILE, JSON.stringify(state), { mode: 0o600 });
+}
+
+async function completePendingRestart(): Promise<void> {
+  let state: PendingRestart;
+  try {
+    state = JSON.parse(await readFile(RESTART_STATE_FILE, "utf8")) as PendingRestart;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.error({ err: (err as Error).message }, "failed to read pending restart state");
+    }
+    return;
+  }
+
+  const isValid = typeof state.applicationId === "string"
+    && typeof state.token === "string"
+    && typeof state.createdAt === "number";
+  if (!isValid || Date.now() - state.createdAt > RESTART_TOKEN_TTL_MS) {
+    await unlink(RESTART_STATE_FILE).catch(() => {});
+    logger.warn("discarded invalid or expired pending restart state");
+    return;
+  }
+
+  const url = `https://discord.com/api/v10/webhooks/${encodeURIComponent(state.applicationId)}/${encodeURIComponent(state.token)}/messages/@original`;
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: "重啟成功，已經回來了。" }),
+  });
+  if (!response.ok) {
+    throw new Error(`Discord interaction edit failed: ${response.status} ${await response.text()}`);
+  }
+
+  await unlink(RESTART_STATE_FILE).catch(() => {});
+  logger.info("pending restart message updated successfully");
+}
+
 /** 讓 process 退出，由 systemd (Restart=always) 負責重啟。 */
 function selfRestart(): void {
   logger.info("self-restart: exiting, systemd will restart");
@@ -131,6 +182,10 @@ export async function startBot(token: string): Promise<void> {
       status: (config.discord.status || "online") as PresenceStatusData,
       activities: [{ name: config.discord.activity || "Burrowing around", type: ActivityType.Custom }],
     });
+
+    await completePendingRestart().catch(err =>
+      logger.error({ err: (err as Error).message }, "failed to update restart completion message")
+    );
 
     const guildIds = c.guilds.cache.map(g => g.id);
     await registerSlashCommands(token, c.user.id, guildIds);
@@ -229,6 +284,13 @@ export async function startBot(token: string): Promise<void> {
       }
       logger.info({ user: interaction.user.id }, "/restart triggered");
       await interaction.reply({ content: "重啟中... 等個幾秒就回來。", flags: MessageFlags.Ephemeral });
+      try {
+        await savePendingRestart(interaction.applicationId, interaction.token);
+      } catch (err) {
+        logger.error({ err: (err as Error).message }, "failed to save pending restart state");
+        await interaction.editReply("重啟取消：無法保存重啟狀態。");
+        return;
+      }
       selfRestart();
     }
 
