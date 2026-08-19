@@ -3,7 +3,6 @@ import {
   SlashCommandBuilder, MessageFlags, EmbedBuilder, ActivityType, PresenceStatusData,
   type Message, type Interaction, type TextBasedChannel,
 } from "discord.js";
-import { spawn } from "node:child_process";
 import { ask, compactSession } from "./agent.js";
 import { Session } from "./session.js";
 import { SESSION_SUMMARIZE_PROMPT } from "./prompt.js";
@@ -86,27 +85,10 @@ const SLASH_COMMANDS = [
 
 const OWNER_ONLY_MSG = "只有 owner 能用這個指令！";
 
-/** Spawn 一個獨立的子進程跑同樣的 cmdline，自己退出。靠 detached + stdio:ignore 脫離父進程。 */
+/** 讓 process 退出，由 systemd (Restart=always) 負責重啟。 */
 function selfRestart(): void {
-  // process.execArgv 帶上原本 node 啟動時的 flags（例如 tsx 的 --require / --import）；
-  // 少了它們，新 node 不認識 .ts 檔就會直接死。
-  const args = [...process.execArgv, ...process.argv.slice(1)];
-  logger.info({ node: process.argv[0], execArgv: process.execArgv, argv: process.argv }, "self-restart spawning detached child");
-  const child = spawn(process.argv[0], args, {
-    detached: true,
-    stdio: "ignore",
-    cwd: process.cwd(),
-    env: process.env,
-  });
-  child.on("error", (err) => {
-    logger.error({ err: err.message }, "self-restart spawn error");
-  });
-  child.unref();
-  // 給子進程一點時間建立起來，再讓父進程退出
-  setTimeout(() => {
-    logger.info("self-restart parent exiting");
-    process.exit(0);
-  }, 500);
+  logger.info("self-restart: exiting, systemd will restart");
+  process.exit(0);
 }
 
 async function registerSlashCommands(token: string, clientId: string, guildIds: string[]): Promise<void> {
