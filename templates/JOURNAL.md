@@ -80,7 +80,12 @@ lossy and may be missing whole conversations. The **archived sessions are the gr
    sessions (not just the notes):
    - Organize by category/milestone (e.g., development, community, personal)
    - Bullet points with clear headings
-   - Focus on what the user did, talked about, cared about, how they felt
+   - This is **your own diary, written first-person from your perspective** — record not
+     only what the user did, talked about, cared about, and felt, but also what you did,
+     noticed, thought, and reacted to. It is a diary, not a neutral incident report. The
+     voice is whatever your persona is — do not flatten it here.
+   - Ground every reaction and feeling in what actually happened that day. Do not invent
+     moods, opinions, or events to make the entry feel more personal.
    - **Always include community / social interaction and interesting conversations** — even
      pure chatter with no long-term value belongs here; the diary is about continuity, so
      tomorrow's session can pick up what happened. Do not drop a conversation just because
