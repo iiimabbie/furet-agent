@@ -2,8 +2,8 @@
  * Onboarding detection & one-time context injection.
  *
  * Determines whether the workspace is still in its fresh-install template state
- * by checking for placeholder tokens in OWNER.md. After the Discord gateway has
- * securely established an owner, a synthetic system context is injected into any
+ * by checking for placeholder tokens in OWNER.md. After the local CLI has
+ * configured the Discord owner ID, a synthetic system context is injected into any
  * session that does not already have active onboarding instructions.
  *
  * The onboarding message is marked with `isOnboarding: true`. It remains available
@@ -90,7 +90,7 @@ export function buildOnboardingContext(userId: string, username: string, display
     ? `Discord username: ${username}, display name: ${displayName}`
     : `Discord username: ${username}`;
 
-  return `${ONBOARDING_MARKER} — This is a brand-new workspace with template placeholders still in OWNER.md. The Discord gateway has already authenticated this user as the workspace owner. Their Discord identity is: ID ${userId}, ${nameInfo}.
+  return `${ONBOARDING_MARKER} — This is a brand-new workspace with template placeholders still in OWNER.md. The local onboarding command configured this Discord user ID as the workspace owner. Their Discord identity is: ID ${userId}, ${nameInfo}.
 
 Follow the Onboarding Protocol in your instructions:
 1. Introduce yourself briefly and naturally (in the user's language).

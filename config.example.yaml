@@ -18,10 +18,10 @@ llm:
 discord:
   enabled: false                        # set true to run discord bot
   token: "${DISCORD_TOKEN}"             # bot token from Discord Developer Portal
-  allowed_channels: []                  # /onboarding sets this to its channel on a fresh install
+  allowed_channels: []                  # `furet onboarding` can set the first allowed channel
   ambient_channels: []                  # channel IDs where the bot replies without being @mentioned (threads do not inherit)
-  allowed_guilds: []                    # /onboarding sets this to its server on a fresh install
-  owner_id: ""                          # set securely by /onboarding using the gateway setup code
+  allowed_guilds: []                    # Empty means all guilds; set IDs manually if needed
+  owner_id: ""                          # set locally by `furet onboarding`
   respond_to_bots: false                # whether to process messages from other bots
   status: "online"                      # online | idle | dnd | invisible
   activity: "Burrowing around…🦦✨"    # custom activity text

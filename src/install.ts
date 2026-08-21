@@ -155,4 +155,4 @@ WantedBy=multi-user.target
 }
 
 console.log("\n=== Done ===");
-console.log("Edit .env and config.yaml, then run: furet gateway");
+console.log("Edit .env and config.yaml, then run: furet onboarding, followed by furet gateway");

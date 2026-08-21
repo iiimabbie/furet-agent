@@ -3,12 +3,11 @@ import {
   SlashCommandBuilder, MessageFlags, EmbedBuilder, ActivityType, PresenceStatusData,
   type Message, type Interaction, type TextBasedChannel,
 } from "discord.js";
-import { randomBytes, timingSafeEqual } from "node:crypto";
 import { ask, compactSession } from "./agent.js";
 import { Session } from "./session.js";
 import { SESSION_SUMMARIZE_PROMPT } from "./prompt.js";
 import { logger } from "./logger.js";
-import { loadConfig, setCurrentModel, configureInitialDiscordOwner } from "./config.js";
+import { loadConfig, setCurrentModel } from "./config.js";
 import { setDiscordClient } from "./tools/builtin/discord.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
@@ -52,13 +51,6 @@ function getChannelTypeInfo(channel: TextBasedChannel | null | undefined): strin
 }
 
 const SLASH_COMMANDS = [
-  new SlashCommandBuilder()
-    .setName("onboarding")
-    .setDescription("完成首次安裝設定（首次使用需 gateway 顯示的 setup code）")
-    .addStringOption(opt =>
-      opt.setName("setup-code").setDescription("gateway console 顯示的一次性 setup code").setRequired(false)
-    )
-    .toJSON(),
   new SlashCommandBuilder()
     .setName("new")
     .setDescription("開始新對話（歸檔當前頻道的 session）")
@@ -171,17 +163,6 @@ function sessionIdForMessage(msg: Message): string {
 }
 
 export async function startBot(token: string): Promise<void> {
-  // The code exists only for this gateway process and is printed to its local
-  // console. It prevents the first Discord member who sees the bot from
-  // claiming a fresh workspace as owner.
-  const bootstrapCode = randomBytes(18).toString("base64url");
-  const matchesBootstrapCode = (provided: string | null): boolean => {
-    if (!provided) return false;
-    const expected = Buffer.from(bootstrapCode);
-    const received = Buffer.from(provided);
-    return received.length === expected.length && timingSafeEqual(received, expected);
-  };
-
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
@@ -211,8 +192,8 @@ export async function startBot(token: string): Promise<void> {
     await registerSlashCommands(token, c.user.id, guildIds);
 
     if (!config.discord.owner_id) {
-      console.log(`Fresh-install setup required. In Discord, run /onboarding setup-code:${bootstrapCode}`);
-      logger.warn("fresh install awaiting /onboarding with gateway setup code");
+      console.log("Discord owner is not configured. Run `furet onboarding` locally, then use the bot in Discord.");
+      logger.warn("fresh install awaiting local onboarding command");
     }
   });
 
@@ -230,57 +211,10 @@ export async function startBot(token: string): Promise<void> {
 
     if (!interaction.isChatInputCommand()) return;
 
-    // Before a fresh workspace has an authenticated owner, `/onboarding` is
-    // the only accepted interaction. This also prevents unconfigured owner-only
-    // commands from being used by an arbitrary first Discord user.
-    if (!loadConfig().discord.owner_id && interaction.commandName !== "onboarding") {
-      await interaction.reply({ content: "請先在 gateway console 取得 setup code，然後執行 /onboarding。", flags: MessageFlags.Ephemeral });
-      return;
-    }
-
-    if (interaction.commandName === "onboarding") {
-      const config = loadConfig();
-      const isConfiguredOwner = Boolean(config.discord.owner_id);
-      if (isConfiguredOwner && interaction.user.id !== config.discord.owner_id) {
-        await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (isConfiguredOwner && !isWorkspaceUnconfigured()) {
-        await interaction.reply({ content: "首次設定已完成。", flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (!isConfiguredOwner && !matchesBootstrapCode(interaction.options.getString("setup-code"))) {
-        await interaction.reply({ content: "首次設定需要 gateway console 顯示的一次性 setup code。", flags: MessageFlags.Ephemeral });
-        return;
-      }
-
-      if (!isConfiguredOwner) {
-        configureInitialDiscordOwner(interaction.user.id, interaction.channelId, interaction.guildId ?? undefined);
-        logger.info({ userId: interaction.user.id, channelId: interaction.channelId, guildId: interaction.guildId }, "fresh-install owner configured via /onboarding");
-      }
-
-      const sessionId = interaction.guild
-        ? `discord-channel-${interaction.channelId}`
-        : `discord-dm-${interaction.user.id}`;
-      const session = new Session(sessionId);
-      if (shouldOnboard(session.getMessages())) {
-        session.append({
-          role: "user",
-          content: buildOnboardingContext(interaction.user.id, interaction.user.username, interaction.member && "displayName" in interaction.member ? interaction.member.displayName ?? undefined : undefined),
-          time: stamp(),
-          isOnboarding: true,
-        });
-      }
-
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      try {
-        const channelContext = buildChannelContext(interaction.channelId, sessionId, getChannelTypeInfo(interaction.channel));
-        const response = await ask(null, { session, systemPrompt: channelContext, trigger: "discord-owner", userId: interaction.user.id });
-        await interaction.editReply(fixMarkdownLinks(response.text || "已開始首次設定。"));
-      } catch (err) {
-        logger.error({ err: (err as Error).message }, "/onboarding failed");
-        await interaction.editReply("首次設定啟動失敗，請查看 gateway log。");
-      }
+    // Before the local installer records owner_id, reject every Discord command.
+    // This is intentionally before any session write or owner-only command check.
+    if (!loadConfig().discord.owner_id) {
+      await interaction.reply({ content: "請在主機本機執行 `furet onboarding` 完成 Discord owner 設定。", flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -502,9 +436,9 @@ export async function startBot(token: string): Promise<void> {
     const isAmbient = !isDM && config.discord.ambient_channels.includes(message.channelId);
     const isTrigger = (isMentioned || isDM || isAmbient) && (!isBot || config.discord.respond_to_bots);
 
-    // A fresh gateway accepts no ordinary Discord traffic before `/onboarding`
-    // has authenticated an owner. Crucially, this happens before creating or
-    // writing a session, so strangers cannot poison a future owner session.
+    // A fresh gateway accepts no ordinary Discord traffic until the installer
+    // has configured owner_id locally. This happens before session creation, so
+    // strangers cannot poison a future owner session.
     if (!config.discord.owner_id) {
       if (isTrigger) logger.info({ userId: message.author.id, sessionId }, "message ignored while fresh-install setup is pending");
       return;

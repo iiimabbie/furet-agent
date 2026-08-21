@@ -39,11 +39,14 @@ npx tsx bin/furet.ts install
 $EDITOR .env
 $EDITOR config.yaml
 
+# Set your Discord user ID and optionally your first allowed channel.
+furet onboarding
+
 # Start the gateway in the foreground.
 furet gateway
 ```
 
-`furet install` runs `npm install`, creates missing `.env`, `config.yaml`, and workspace template files, registers the `furet` command with `npm link`, and installs/enables `furet.service` when systemd is available. Existing configuration and workspace files are not overwritten.
+`furet install` runs `npm install`, creates missing `.env`, `config.yaml`, and workspace template files, registers the `furet` command with `npm link`, and installs/enables `furet.service` when systemd is available. Existing configuration and workspace files are not overwritten. Run `furet onboarding` locally before the first Discord use to save the owner Discord ID and, optionally, the first allowed channel ID.
 
 ## Configuration
 
@@ -105,6 +108,14 @@ tools:
 `timezone` affects timestamps, memory filenames, and journal dates. Leaving it empty uses the host system timezone.
 
 ## Running Furet
+
+### First-run Discord onboarding
+
+```bash
+furet onboarding
+```
+
+This local interactive command asks for the owner Discord user ID and optionally a first channel ID, then writes `discord.owner_id` and `discord.allowed_channels` in `config.yaml`. It does not ask the gateway to trust the first Discord user it sees. The owner’s preferred form of address and assistant persona are collected privately in the first Discord conversation.
 
 ### Foreground gateway
 
