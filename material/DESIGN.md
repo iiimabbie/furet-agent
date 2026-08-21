@@ -368,7 +368,7 @@ Agent 在 tool call 之間產生的文字以 `> 引用` 併進同一則進度訊
 | Discord Bot | 有 token 且 enabled 時啟動 |
 | PID file | `furet.pid`，啟動時殺掉舊進程確保單實例 |
 
-日記重寫（Daily Journal Step 1）讀的是 `sessions_by_date` 撈出的**當天 raw session**，每日記憶檔的 memory_save 筆記只當輔助。只讀每日檔會漏掉未被 memory_save 的對話（例如純聊天的社群互動）——flush 那步用的是「長期記憶」的門檻，而日記要的是連續性。兩道門檻因此分開：MEMORY.md 留 30 天長期濾網，每日檔／日記照收社群互動。
+日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日記憶檔的 memory_save 筆記只當輔助。只讀每日檔會漏掉未被 memory_save 的對話（例如純聊天的社群互動）——flush 那步用的是「長期記憶」的門檻，而日記要的是連續性。兩道門檻因此分開：MEMORY.md 留 30 天長期濾網，每日檔／日記照收社群互動。
 
 ### Reminder 用輪詢而不是 setTimeout
 
@@ -454,7 +454,8 @@ interface Tool {
 | `google_tasks_*` | Tasks 列表/建立/完成/刪除 |
 | `soul_guardian_*` | 核心檔案保護（status/check/approve/restore/history） |
 | `session_search` | FTS5 全文搜尋歸檔的歷史對話 |
-| `sessions_by_date` | 依日期（YYYY-MM-DD）撈當天所有歸檔 session 的原始對話，供日記重建 |
+| `sessions_by_date` | 依日期（YYYY-MM-DD）撈當天所有歸檔 session 的原始內容，供除錯／稽核 |
+| `journal_transcript_by_date` | 依日期產生移除工具與 harness 雜訊的對話投影，供日記重建 |
 | `skill_install/uninstall/list` | 技能管理 |
 | `usage_dashboard` | 用量／成本儀表板，輸出 PNG 到 attachments/ |
 | `discord_bot_mention_toggle` | 切換是否回應其他 bot |
