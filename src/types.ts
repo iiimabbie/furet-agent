@@ -24,6 +24,8 @@ export type Message = {
   time?: string;       // MM/DD HH:mm
   msgId?: string;      // Discord message ID
   replyTo?: string;    // replied message ID
+  /** True only for the synthetic summary inserted by Session.compact(). */
+  isCompactSummary?: boolean;
 };
 
 // --- Token Usage ---

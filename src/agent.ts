@@ -242,34 +242,85 @@ async function callAnthropic(system: string, messages: Message[], model?: string
 const COMPACT_THRESHOLD = 0.8; // 80% of maxContextTokens triggers compaction
 const COMPACT_KEEP_RECENT = 10; // keep last 10 messages after compaction
 
-/** 壓縮 session：讓 AI 摘要舊對話，替換前半段 */
+/**
+ * Render only useful conversational text for the continuation summary. Tool blocks,
+ * harness bookkeeping, Discord transport prefixes, and prior synthetic summaries
+ * either add noise or are represented elsewhere in the active context.
+ */
+function compactTranscript(messages: Message[]): string {
+  return messages.flatMap(message => {
+    if ((message.isCompactSummary
+      || (typeof message.content === "string" && message.content.startsWith("[System] Previous conversation summary:\n")))
+      && typeof message.content === "string") {
+      return [`Prior continuation summary:
+${message.content.replace(/^\[System\] Previous conversation summary:\n/, "")}`];
+    }
+
+    if (typeof message.content !== "string") {
+      const text = (message.content as ContentBlock[])
+        .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
+        .map(block => block.text)
+        .join("\n")
+        .trim();
+      return text ? [`${message.role}: ${text}`] : [];
+    }
+
+    if (message.content.startsWith("[System] Tools actually executed in the preceding assistant turn")) return [];
+    if (message.content.startsWith("[System] Session is being archived")) return [];
+
+    const text = message.content
+      .replace(/^\[msg:\S+\s[^\]]*\]\s*/, "")
+      .replace(/^<@!?\d+>(?:\([^)]*\))?:\s*/, "")
+      .replace(/^\(reply to msg:\d+\)\s*/, "")
+      .trim();
+    return text ? [`${message.role}: ${text}`] : [];
+  }).join("\n\n");
+}
+
+const COMPACT_SYSTEM_PROMPT = `You create a compact continuation brief for an AI agent, not a human-facing journal.
+Write in the same language as the conversation, using concise Markdown bullets and short headings when helpful. Stay under 600 words.
+
+Preserve only information that will matter in later turns:
+- confirmed facts, decisions, constraints, preferences, names/titles, and permissions;
+- active tasks, their exact status, next steps, deadlines, and unresolved questions;
+- durable technical context such as files, branches, PRs, configuration, and verified results;
+- a clear distinction between completed work, pending work, and uncertainty.
+
+Do not include casual filler, repeated discussion, tool-call narration, shell commands, transport metadata, or long outputs. Never reproduce secrets, passwords, recovery codes, access tokens, or private one-time URLs. Do not invent conclusions: label anything uncertain as unconfirmed.`;
+
+/**
+ * Compact the active context without discarding its source messages. The replaced
+ * segment is first persisted as an immutable archive; if that write fails, leave
+ * the session untouched rather than risking irreversible history loss.
+ */
 export async function compactSession(session: import("./session.js").Session, model?: string): Promise<string | null> {
   const messages = session.getMessages();
   if (messages.length <= COMPACT_KEEP_RECENT) return null;
 
   const toSummarize = messages.slice(0, -COMPACT_KEEP_RECENT);
-  const textParts = toSummarize.map(m => {
-    if (typeof m.content === "string") return `${m.role}: ${m.content}`;
-    const blocks = m.content as ContentBlock[];
-    const text = blocks.filter(b => b.type === "text").map(b => (b as { text: string }).text).join("");
-    return text ? `${m.role}: ${text}` : null;
-  }).filter(Boolean);
-
-  if (textParts.length === 0) return null;
-
-  const compactSystem = "Summarize this conversation concisely. Keep key facts, decisions, and context. Same language as the conversation. Max 500 words.";
-  const compactMessages = [{ role: "user" as const, content: textParts.join("\n") }];
+  const transcript = compactTranscript(toSummarize);
+  if (!transcript) return null;
 
   try {
-    const response = await callAnthropic(compactSystem, compactMessages as Message[], model, false);
-    const summary = extractText(response.content as ContentBlock[]);
-    if (summary) {
-      session.compact(summary, COMPACT_KEEP_RECENT);
-      logger.info({ sessionId: session.id, summarizedMessages: toSummarize.length, summaryLength: summary.length }, "compaction done");
-      return summary;
+    const response = await callAnthropic(
+      COMPACT_SYSTEM_PROMPT,
+      [{ role: "user", content: transcript }] as Message[],
+      model,
+      false,
+    );
+    const summary = extractText(response.content as ContentBlock[]).trim();
+    if (!summary) return null;
+
+    if (!session.archiveForCompaction(toSummarize)) {
+      logger.error({ sessionId: session.id, summarizedMessages: toSummarize.length }, "compaction aborted because archive write failed");
+      return null;
     }
+
+    session.compact(summary, COMPACT_KEEP_RECENT);
+    logger.info({ sessionId: session.id, summarizedMessages: toSummarize.length, summaryLength: summary.length }, "compaction done");
+    return summary;
   } catch (err) {
-    logger.error({ err: (err as Error).message }, "compaction failed");
+    logger.error({ err: (err as Error).message, sessionId: session.id }, "compaction failed");
   }
   return null;
 }
