@@ -53,7 +53,7 @@ import { soulGuardianStatus, soulGuardianCheck, soulGuardianApprove, soulGuardia
 import { skillInstall, skillUninstall, skillList } from "./builtin/skill.js";
 import { selfEvolve } from "./builtin/self-evolve.js";
 import { discordBotMentionToggle } from "./builtin/bot-config.js";
-import { sessionSearch, sessionsByDate } from "./builtin/session-search.js";
+import { sessionSearch, sessionsByDate, journalTranscriptByDate } from "./builtin/session-search.js";
 import { usageDashboard } from "./builtin/dashboard.js";
 
 const tools: Tool[] = [
@@ -75,6 +75,7 @@ const tools: Tool[] = [
   selfEvolve,
   sessionSearch,
   sessionsByDate,
+  journalTranscriptByDate,
   discordBotMentionToggle,
   usageDashboard,
 ];

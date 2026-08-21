@@ -45,7 +45,14 @@ export const SESSION_SUMMARIZE_PROMPT = loadJournalSection("Session Summarize");
 
 export function buildJournalPrompt(date: string): string {
   const template = loadJournalSection("Daily Journal");
-  return template.replace(/\{\{DATE\}\}/g, date);
+  // JOURNAL.md is user-owned and only seeded on install, so existing workspaces may
+  // still have the old raw-session instruction. This code-owned policy keeps the
+  // token-saving transcript projection active without overwriting user customizations.
+  const transcriptPolicy = `
+
+### Journal transcript policy (system requirement)
+For Step 1, call \`journal_transcript_by_date\` for ${date}, not \`sessions_by_date\`. It is a clean projection that removes tool calls, tool results, harness bookkeeping, and transport metadata. The raw tool is for debugging only.`;
+  return template.replace(/\{\{DATE\}\}/g, date) + transcriptPolicy;
 }
 
 // --- Skill loading ---
