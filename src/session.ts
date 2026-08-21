@@ -4,7 +4,7 @@ import { logger } from "./logger.js";
 import { getDb } from "./db.js";
 import { SESSIONS_DIR, ARCHIVE_DIR } from "./paths.js";
 import { toSearchTokens } from "./utils/cjk.js";
-import type { Message, TokenUsage } from "./types.js";
+import type { Message, TokenUsage, ToolHistoryEvent } from "./types.js";
 
 // 檔名格式：`{stem}.json` 或 `{stem}__{slug}.json`。
 // stem 是把 routing id 的長前綴縮寫的結果（discord-channel- → dc-、discord-dm- → dm-），
@@ -53,6 +53,7 @@ export class Session {
   private filePath: string;
   private messages: Message[] = [];
   private usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+  private toolHistory: ToolHistoryEvent[] = [];
 
   constructor(id: string) {
     this.id = id;
@@ -95,6 +96,17 @@ export class Session {
     return { ...this.usage };
   }
 
+  /** Append an immutable local-tool execution record without adding it to chat history. */
+  recordToolEvent(event: ToolHistoryEvent): void {
+    this.toolHistory.push(event);
+    this.save();
+  }
+
+  /** Return the newest tool events, with their full input and output intact. */
+  getRecentToolEvents(limit = 8): ToolHistoryEvent[] {
+    return this.toolHistory.slice(-limit);
+  }
+
   /** 在最後一則 assistant message 上設定 msgId */
   setLastAssistantMsgId(msgId: string): void {
     for (let i = this.messages.length - 1; i >= 0; i--) {
@@ -109,6 +121,7 @@ export class Session {
   clear(): void {
     this.messages = [];
     this.usage = { inputTokens: 0, outputTokens: 0 };
+    this.toolHistory = [];
     this.save();
     logger.info({ sessionId: this.id }, "session cleared");
   }
@@ -179,6 +192,7 @@ ${summary}`,
         kind,
         messages,
         usage: this.usage,
+        toolHistory: this.toolHistory,
       }, null, 2));
       logger.info({ sessionId: this.id, archivePath, kind, count: messages.length, usage: this.usage }, "session archive written");
     } catch (err) {
@@ -215,9 +229,11 @@ ${summary}`,
       const data = JSON.parse(readFileSync(this.filePath, "utf-8"));
       this.messages = data.messages ?? [];
       this.usage = data.usage ?? { inputTokens: 0, outputTokens: 0 };
+      this.toolHistory = data.toolHistory ?? [];
       logger.info({ sessionId: this.id, count: this.messages.length }, "session loaded");
     } catch {
       this.messages = [];
+      this.toolHistory = [];
     }
   }
 
@@ -240,7 +256,7 @@ ${summary}`,
   private save(): void {
     try {
       mkdirSync(SESSIONS_DIR, { recursive: true });
-      writeFileSync(this.filePath, JSON.stringify({ messages: this.messages, usage: this.usage }, null, 2));
+      writeFileSync(this.filePath, JSON.stringify({ messages: this.messages, usage: this.usage, toolHistory: this.toolHistory }, null, 2));
     } catch (err) {
       logger.error({ err, sessionId: this.id }, "session save failed");
     }

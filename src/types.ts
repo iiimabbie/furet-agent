@@ -35,6 +35,18 @@ export interface TokenUsage {
   outputTokens: number;
 }
 
+/** Immutable record of a locally executed tool call. Full input/output remain in the
+ * session file for audit and later inspection; only a concise projection is sent
+ * back to the model on subsequent turns. */
+export interface ToolHistoryEvent {
+  id: string;
+  time: string;
+  tool: string;
+  input: Record<string, unknown>;
+  result: string;
+  isError: boolean;
+}
+
 // --- Agent ---
 
 export interface ToolActivity {
