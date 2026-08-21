@@ -2,9 +2,9 @@
  * Onboarding detection & one-time context injection.
  *
  * Determines whether the workspace is still in its fresh-install template state
- * by checking for placeholder tokens in OWNER.md. When OWNER.md contains
- * placeholders and a session has no prior messages, a one-time system onboarding
- * context is injected before the user's first message so the agent can guide setup.
+ * by checking for placeholder tokens in OWNER.md. After the Discord gateway has
+ * securely established an owner, a synthetic system context is injected into any
+ * session that does not already have active onboarding instructions.
  *
  * The onboarding message is marked with `isOnboarding: true`. It remains available
  * while setup is unfinished, then is filtered once OWNER.md is configured so stale
@@ -23,7 +23,7 @@ const OWNER_PLACEHOLDERS = [
   "<their Discord user ID>",
 ] as const;
 
-/** Marker prefix used to identify onboarding context messages by content. */
+/** Prefix for the synthetic onboarding instruction stored in a session. */
 export const ONBOARDING_MARKER = "[System] ONBOARDING";
 
 /**
@@ -36,45 +36,30 @@ export function isOwnerUnconfigured(ownerContent: string): boolean {
 
 /**
  * Convenience wrapper that reads OWNER.md from disk.
- * Returns false (configured) if the file cannot be read.
+ * A missing file is treated as unconfigured so a partial fresh install cannot
+ * silently bypass setup.
  */
 export function isWorkspaceUnconfigured(): boolean {
   try {
     const content = readFileSync(OWNER_FILE, "utf-8");
     return isOwnerUnconfigured(content);
   } catch {
-    return false;
+    return true;
   }
 }
 
-/**
- * Whether to inject onboarding context for this session.
- *
- * Conditions — ALL must be true:
- * 1. Session is empty (length === 0) — first message ever in this channel
- * 2. OWNER.md still has template placeholders
- *
- * Once the owner fills in OWNER.md (via the agent during onboarding), subsequent
- * sessions / channels will never see this context again.
- */
-export function shouldOnboard(sessionLength: number): boolean {
-  if (sessionLength > 0) return false;
-  return isWorkspaceUnconfigured();
+/** Returns true only for the structured synthetic onboarding message. */
+export function isOnboardingMessage(msg: Message): boolean {
+  return msg.isOnboarding === true;
 }
 
 /**
- * Returns true if a message is the synthetic onboarding context injection.
- * Checks the `isOnboarding` flag first, then falls back to content-based
- * detection for backward compatibility with sessions created before the flag
- * was introduced.
+ * Inject onboarding whenever setup is incomplete and this session does not
+ * already contain the structured instruction. This deliberately does not use
+ * session length: `/new` and an interrupted first exchange must both resume.
  */
-export function isOnboardingMessage(msg: Message): boolean {
-  if (msg.isOnboarding) return true;
-  return (
-    msg.role === "user" &&
-    typeof msg.content === "string" &&
-    msg.content.startsWith(ONBOARDING_MARKER)
-  );
+export function shouldOnboard(messages: Message[]): boolean {
+  return isWorkspaceUnconfigured() && !messages.some(isOnboardingMessage);
 }
 
 /**
@@ -105,7 +90,7 @@ export function buildOnboardingContext(userId: string, username: string, display
     ? `Discord username: ${username}, display name: ${displayName}`
     : `Discord username: ${username}`;
 
-  return `${ONBOARDING_MARKER} — This is a brand-new workspace with template placeholders still in OWNER.md. This user (Discord ID: ${userId}, ${nameInfo}) is very likely the owner setting things up for the first time.
+  return `${ONBOARDING_MARKER} — This is a brand-new workspace with template placeholders still in OWNER.md. The Discord gateway has already authenticated this user as the workspace owner. Their Discord identity is: ID ${userId}, ${nameInfo}.
 
 Follow the Onboarding Protocol in your instructions:
 1. Introduce yourself briefly and naturally (in the user's language).

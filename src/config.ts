@@ -182,6 +182,24 @@ export function removeSkill(name: string): void {
   cached = null;
 }
 
+/**
+ * Complete the Discord trust boundary for a newly installed workspace.
+ * The caller must have already authenticated the installer with the one-time
+ * gateway bootstrap code. Restricting the initial channel/guild avoids leaving
+ * a new bot open to every server member after setup.
+ */
+export function configureInitialDiscordOwner(ownerId: string, channelId?: string, guildId?: string): void {
+  let raw: Record<string, unknown> = {};
+  try { raw = (parse(readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) ?? {}; } catch {}
+  const discord = (raw.discord as Record<string, unknown>) ?? {};
+  discord.owner_id = ownerId;
+  if (channelId) discord.allowed_channels = [channelId];
+  if (guildId) discord.allowed_guilds = [guildId];
+  raw.discord = discord;
+  writeFileSync(CONFIG_PATH, stringify(raw, { lineWidth: 0 }));
+  cached = null;
+}
+
 export function setCurrentModel(model: string): void {
   let raw: Record<string, unknown> = {};
   try {
