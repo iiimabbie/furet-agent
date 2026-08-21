@@ -42,6 +42,12 @@ function findSessionFile(id: string): string | null {
   }
 }
 
+/** Backward-compatible detection for summaries created before isCompactSummary existed. */
+function isCompactSummary(message: Message): boolean {
+  return message.isCompactSummary
+    || (typeof message.content === "string" && message.content.startsWith("[System] Previous conversation summary:\n"));
+}
+
 export class Session {
   readonly id: string;
   private filePath: string;
@@ -108,50 +114,33 @@ export class Session {
   }
 
   archive(): string | null {
-    if (this.messages.length === 0) {
+    // Compact summaries are context caches, not original conversation. Their source
+    // messages were saved at compaction time, so never archive the synthetic summary.
+    const messages = this.messages.filter(m => !isCompactSummary(m));
+    if (messages.length === 0) {
       logger.info({ sessionId: this.id }, "session archive skipped (empty)");
       this.clear();
       return null;
     }
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const archivePath = resolve(ARCHIVE_DIR, `${this.id}-${timestamp}.json`);
-    try {
-      mkdirSync(ARCHIVE_DIR, { recursive: true });
-      writeFileSync(archivePath, JSON.stringify({
-        sessionId: this.id,
-        archivedAt: new Date().toISOString(),
-        messages: this.messages,
-        usage: this.usage,
-      }, null, 2));
-      logger.info({ sessionId: this.id, archivePath, count: this.messages.length, usage: this.usage }, "session archived");
-    } catch (err) {
-      logger.error({ err, sessionId: this.id }, "session archive failed");
-    }
 
-    // 存進 SQLite（session_archive + session_fts）
-    try {
-      const db = getDb();
-      const insert = db.prepare("INSERT INTO session_archive (session_id, role, content, time, msg_id, reply_to) VALUES (?, ?, ?, ?, ?, ?)");
-      const insertFts = db.prepare("INSERT INTO session_fts (rowid, content, session_id) VALUES (?, ?, ?)");
-      const tx = db.transaction(() => {
-        for (const m of this.messages) {
-          const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-          const result = insert.run(this.id, m.role, content, m.time ?? null, m.msgId ?? null, m.replyTo ?? null);
-          // 只對有文字的 user/assistant message 建 FTS。
-          // 存 bigram 展開版本（unicode61 不斷中文），原文在 session_archive
-          if (typeof m.content === "string" && m.content.length > 0) {
-            insertFts.run(result.lastInsertRowid, toSearchTokens(m.content), this.id);
-          }
-        }
-      });
-      tx();
-      logger.info({ sessionId: this.id, count: this.messages.length }, "session archived to db");
-    } catch (err) {
-      logger.error({ err: (err as Error).message, sessionId: this.id }, "session db archive failed");
-    }
-
-    this.clear();
+    const archivePath = this.persistArchive(messages, "session");
+    // Do not erase the active session if its durable archive could not be written.
+    if (archivePath) this.clear();
+    else logger.error({ sessionId: this.id }, "session retained because archive write failed");
     return archivePath;
+  }
+
+  /**
+   * Persist the part about to be replaced by compaction without ending the active
+   * session. This makes compaction a cache optimisation rather than data loss.
+   *
+   * Returns false when the JSON archive could not be written; callers must then
+   * leave the active history untouched.
+   */
+  archiveForCompaction(messages: Message[]): boolean {
+    const originalMessages = messages.filter(m => !isCompactSummary(m));
+    if (originalMessages.length === 0) return true;
+    return this.persistArchive(originalMessages, "compaction") !== null;
   }
 
   /** 壓縮 session：用摘要替換前半段 messages，保留最近的 keepRecent 則 */
@@ -159,7 +148,12 @@ export class Session {
     if (this.messages.length <= keepRecent) return;
     const kept = this.messages.slice(-keepRecent);
     this.messages = [
-      { role: "user", content: `[System] Previous conversation summary:\n${summary}` },
+      {
+        role: "user",
+        content: `[System] Previous conversation summary:
+${summary}`,
+        isCompactSummary: true,
+      },
       ...kept,
     ];
     this.save();
@@ -168,6 +162,52 @@ export class Session {
 
   get length(): number {
     return this.messages.length;
+  }
+
+  /** Write an immutable archive segment and index it for session search. */
+  private persistArchive(messages: Message[], kind: "session" | "compaction"): string | null {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const suffix = kind === "compaction" ? "-compact" : "";
+    const archivePath = resolve(ARCHIVE_DIR, `${this.id}${suffix}-${timestamp}.json`);
+    const archivedAt = new Date().toISOString();
+
+    try {
+      mkdirSync(ARCHIVE_DIR, { recursive: true });
+      writeFileSync(archivePath, JSON.stringify({
+        sessionId: this.id,
+        archivedAt,
+        kind,
+        messages,
+        usage: this.usage,
+      }, null, 2));
+      logger.info({ sessionId: this.id, archivePath, kind, count: messages.length, usage: this.usage }, "session archive written");
+    } catch (err) {
+      logger.error({ err, sessionId: this.id, kind }, "session archive write failed");
+      return null;
+    }
+
+    // SQLite is an index/search copy. The JSON archive above is the durable source
+    // of truth, so a database failure must not make compaction lose history.
+    try {
+      const db = getDb();
+      const insert = db.prepare("INSERT INTO session_archive (session_id, role, content, time, msg_id, reply_to) VALUES (?, ?, ?, ?, ?, ?)");
+      const insertFts = db.prepare("INSERT INTO session_fts (rowid, content, session_id) VALUES (?, ?, ?)");
+      const tx = db.transaction(() => {
+        for (const m of messages) {
+          const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+          const result = insert.run(this.id, m.role, content, m.time ?? null, m.msgId ?? null, m.replyTo ?? null);
+          if (typeof m.content === "string" && m.content.length > 0) {
+            insertFts.run(result.lastInsertRowid, toSearchTokens(m.content), this.id);
+          }
+        }
+      });
+      tx();
+      logger.info({ sessionId: this.id, kind, count: messages.length }, "session archive indexed");
+    } catch (err) {
+      logger.error({ err: (err as Error).message, sessionId: this.id, kind }, "session archive db index failed");
+    }
+
+    return archivePath;
   }
 
   private load(): void {
