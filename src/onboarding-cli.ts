@@ -14,14 +14,18 @@ async function askForDiscordId(rl: ReturnType<typeof createInterface>, question:
 }
 
 const config = loadConfig();
-if (config.discord.owner_id) {
-  console.log(`Discord owner_id 已設定為 ${config.discord.owner_id}。如需變更，請直接編輯 config.yaml。`);
-  process.exit(0);
-}
-
 const rl = createInterface({ input, output });
 try {
-  console.log("Furet first-run onboarding\n");
+  if (config.discord.owner_id) {
+    const answer = (await rl.question(`目前已有 Discord 設定（owner_id: ${config.discord.owner_id}）。確定要重新設定嗎？Y/n `)).trim().toLowerCase();
+    if (answer !== "y" && answer !== "yes") {
+      console.log("保留現有設定，沒有變更。");
+      process.exit(0);
+    }
+    console.log("");
+  }
+
+  console.log("Furet Discord setup\n");
   console.log("這個步驟只設定 Discord 的基本存取範圍；助理的稱呼與人格會在 owner 第一次於 Discord 對話時再詢問。\n");
   const ownerId = await askForDiscordId(rl, "你的 Discord user ID：", true);
   const channelId = await askForDiscordId(rl, "第一個要允許使用的 Discord channel ID（可留白）：", false);

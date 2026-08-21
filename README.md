@@ -40,13 +40,13 @@ $EDITOR .env
 $EDITOR config.yaml
 
 # Set your Discord user ID and optionally your first allowed channel.
-furet onboarding
+furet onbord
 
 # Start the gateway in the foreground.
 furet gateway
 ```
 
-`furet install` runs `npm install`, creates missing `.env`, `config.yaml`, and workspace template files, registers the `furet` command with `npm link`, and installs/enables `furet.service` when systemd is available. Existing configuration and workspace files are not overwritten. Run `furet onboarding` locally before the first Discord use to save the owner Discord ID and, optionally, the first allowed channel ID.
+`furet install` runs `npm install`, creates missing `.env`, `config.yaml`, and workspace template files, registers the `furet` command with `npm link`, and installs/enables `furet.service` when systemd is available. Existing configuration and workspace files are not overwritten. Run `furet onbord` locally before the first Discord use to save the owner Discord ID and, optionally, the first allowed channel ID.
 
 ## Configuration
 
@@ -112,7 +112,7 @@ tools:
 ### First-run Discord onboarding
 
 ```bash
-furet onboarding
+furet onbord
 ```
 
 This local interactive command asks for the owner Discord user ID and optionally a first channel ID, then writes `discord.owner_id` and `discord.allowed_channels` in `config.yaml`. It does not ask the gateway to trust the first Discord user it sees. The owner’s preferred form of address and assistant persona are collected privately in the first Discord conversation.

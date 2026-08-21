@@ -7,7 +7,7 @@ switch (command) {
   case "gateway":
     await import(resolve(import.meta.dirname!, "../src/gateway.ts"));
     break;
-  case "onboarding":
+  case "onbord":
     await import(resolve(import.meta.dirname!, "../src/onboarding-cli.ts"));
     break;
   case "install":

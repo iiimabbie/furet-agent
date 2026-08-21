@@ -192,7 +192,7 @@ export async function startBot(token: string): Promise<void> {
     await registerSlashCommands(token, c.user.id, guildIds);
 
     if (!config.discord.owner_id) {
-      console.log("Discord owner is not configured. Run `furet onboarding` locally, then use the bot in Discord.");
+      console.log("Discord owner is not configured. Run `furet onbord` locally, then use the bot in Discord.");
       logger.warn("fresh install awaiting local onboarding command");
     }
   });
@@ -214,7 +214,7 @@ export async function startBot(token: string): Promise<void> {
     // Before the local installer records owner_id, reject every Discord command.
     // This is intentionally before any session write or owner-only command check.
     if (!loadConfig().discord.owner_id) {
-      await interaction.reply({ content: "請在主機本機執行 `furet onboarding` 完成 Discord owner 設定。", flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: "請在主機本機執行 `furet onbord` 完成 Discord owner 設定。", flags: MessageFlags.Ephemeral });
       return;
     }
 
