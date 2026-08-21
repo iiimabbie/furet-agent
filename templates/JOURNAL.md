@@ -74,10 +74,11 @@ Write the daily journal for {{DATE}}. This task has three steps — all are requ
 The daily file `workspace/memory/{{DATE}}.md` is only a set of assistant notes — it is
 lossy and may be missing whole conversations. The **archived sessions are the ground truth**.
 
-1. Get the day's raw conversations with `sessions_by_date` for `{{DATE}}`.
+1. Get the day's clean conversation transcript with `journal_transcript_by_date` for `{{DATE}}`.
+   It keeps the dialogue while removing tool calls, harness bookkeeping, and transport metadata.
    Then read the notes in `workspace/memory/{{DATE}}.md` with `read_file` as a supplement.
 2. Rewrite the entire daily file as a clean personal diary, reconstructed from the raw
-   sessions (not just the notes):
+   conversation transcript (not just the notes):
    - Organize by category/milestone (e.g., development, community, personal)
    - Bullet points with clear headings
    - This is **your own diary, written first-person from your perspective** — record not
