@@ -13,6 +13,7 @@ import { fixMarkdownLinks } from "./utils/format.js";
 import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
 import { estimateCost } from "./utils/pricing.js";
 import { stamp } from "./utils/time.js";
+import { shouldOnboard, buildOnboardingContext, isWorkspaceUnconfigured } from "./onboarding.js";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -189,6 +190,11 @@ export async function startBot(token: string): Promise<void> {
 
     const guildIds = c.guilds.cache.map(g => g.id);
     await registerSlashCommands(token, c.user.id, guildIds);
+
+    if (!config.discord.owner_id) {
+      console.log("Discord owner is not configured. Run `furet onbord` locally, then use the bot in Discord.");
+      logger.warn("fresh install awaiting local onboarding command");
+    }
   });
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
@@ -205,7 +211,19 @@ export async function startBot(token: string): Promise<void> {
 
     if (!interaction.isChatInputCommand()) return;
 
+    // Before the local installer records owner_id, reject every Discord command.
+    // This is intentionally before any session write or owner-only command check.
+    if (!loadConfig().discord.owner_id) {
+      await interaction.reply({ content: "請在主機本機執行 `furet onbord` 完成 Discord owner 設定。", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
     if (interaction.commandName === "new") {
+      const config = loadConfig();
+      if (isWorkspaceUnconfigured() && interaction.user.id !== config.discord.owner_id) {
+        await interaction.reply({ content: "首次設定尚未完成，只有已設定的 owner 能重開 onboarding session。", flags: MessageFlags.Ephemeral });
+        return;
+      }
       const sessionId = interaction.guild
         ? `discord-channel-${interaction.channelId}`
         : `discord-dm-${interaction.user.id}`;
@@ -227,6 +245,14 @@ export async function startBot(token: string): Promise<void> {
       session.archive();
       logger.info({ sessionId }, "session archived via /new");
 
+      if (shouldOnboard(session.getMessages())) {
+        session.append({
+          role: "user",
+          content: buildOnboardingContext(interaction.user.id, interaction.user.username),
+          time: ts,
+          isOnboarding: true,
+        });
+      }
       const newSessionContent = `[System] <@${interaction.user.id}>(${interaction.user.username}) started a new session via /new. Follow the Session Initialization steps in your instructions (MEMORY.md and PEOPLE.md are already in your prompt — read only the recent daily memory), then greet them in character.`;
       session.append({ role: "user", content: newSessionContent, time: ts });
 
@@ -410,7 +436,27 @@ export async function startBot(token: string): Promise<void> {
     const isAmbient = !isDM && config.discord.ambient_channels.includes(message.channelId);
     const isTrigger = (isMentioned || isDM || isAmbient) && (!isBot || config.discord.respond_to_bots);
 
-    // Session 隔離：未被觸發且尚未有 session → 不偷看、不記錄
+    // A fresh gateway accepts no ordinary Discord traffic until the installer
+    // has configured owner_id locally. This happens before session creation, so
+    // strangers cannot poison a future owner session.
+    if (!config.discord.owner_id) {
+      if (isTrigger) logger.info({ userId: message.author.id, sessionId }, "message ignored while fresh-install setup is pending");
+      return;
+    }
+
+    // DM 只回 owner
+    if (isDM && message.author.id !== config.discord.owner_id) {
+      logger.info({ userId: message.author.id }, "DM from non-owner rejected");
+      return;
+    }
+    // owner 一律不受白名單限制——白名單是用來擋別人的，不是擋自己
+    if (message.author.id !== config.discord.owner_id) {
+      if (message.guild && config.discord.allowed_guilds.length > 0
+          && !config.discord.allowed_guilds.includes(message.guild.id)) return;
+      if (!isDM && !isAmbient && config.discord.allowed_channels.length > 0
+          && !config.discord.allowed_channels.includes(message.channelId)) return;
+    }
+
     // （只有 bot 被 @mention / reply / DM 後才會開啟這個 channel 的 session；
     //   之後該 channel 的所有訊息才會納入記錄，作為 reply chain 的上下文）
     if (!isTrigger && !Session.exists(sessionId)) return;
@@ -419,6 +465,9 @@ export async function startBot(token: string): Promise<void> {
     // 檔名帶上頻道名，方便在 sessions/ 裡辨識；頻道改名會自動 rename
     const channelName = (message.channel as { name?: string }).name;
     if (channelName) session.setChannelName(channelName);
+
+    // Setup context remains resumable until OWNER.md is completed.
+    const needsOnboarding = isTrigger && shouldOnboard(session.getMessages());
 
     // Thread/論壇貼文的第一次進入：抓初始訊息作為 context
     if (session.length === 0 && message.channel.isThread()) {
@@ -438,26 +487,22 @@ export async function startBot(token: string): Promise<void> {
       } catch { /* starter message not available */ }
     }
 
+    // Inject one-time onboarding context before the user's actual message
+    if (needsOnboarding) {
+      const onboardingCtx = buildOnboardingContext(
+        message.author.id,
+        message.author.username,
+        message.member?.displayName,
+      );
+      session.append({ role: "user", content: onboardingCtx, time: stamp(), isOnboarding: true });
+      logger.info({ sessionId, userId: message.author.id }, "onboarding context injected");
+    }
+
     const fmt = await formatIncomingMessage(message);
     const content = isTrigger ? fmt.content : `[context] ${fmt.content}`;
     session.append({ role: "user", content, time: fmt.time, msgId: fmt.msgId, ...(fmt.replyTo ? { replyTo: fmt.replyTo } : {}) });
 
     if (!isTrigger) return;
-
-    // DM 只回 owner
-    if (isDM && config.discord.owner_id && message.author.id !== config.discord.owner_id) {
-      logger.info({ userId: message.author.id }, "DM from non-owner rejected");
-      return;
-    }
-    // owner 一律不受白名單限制——白名單是用來擋別人的，不是擋自己
-    if (message.author.id !== config.discord.owner_id) {
-      // guild 白名單
-      if (message.guild && config.discord.allowed_guilds.length > 0
-          && !config.discord.allowed_guilds.includes(message.guild.id)) return;
-      // channel 白名單（ambient 頻道視同已放行，否則兩份清單的判定會互相矛盾）
-      if (!isDM && !isAmbient && config.discord.allowed_channels.length > 0
-          && !config.discord.allowed_channels.includes(message.channelId)) return;
-    }
 
     await handleTrigger(message, session, fmt.images);
   });

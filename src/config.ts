@@ -182,6 +182,24 @@ export function removeSkill(name: string): void {
   cached = null;
 }
 
+/**
+ * Save the local installer's Discord identity and optionally their first allowed
+ * channel. This runs from the host CLI before the gateway accepts Discord traffic.
+ */
+export function configureInitialDiscordOwner(ownerId: string, channelId?: string): void {
+  let raw: Record<string, unknown> = {};
+  try { raw = (parse(readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) ?? {}; } catch {}
+  const discord = (raw.discord as Record<string, unknown>) ?? {};
+  discord.owner_id = ownerId;
+  // Re-running `furet onbord` is an intentional full setup pass: a blank
+  // channel answer clears the initial channel restriction rather than keeping
+  // an old value invisibly.
+  discord.allowed_channels = channelId ? [channelId] : [];
+  raw.discord = discord;
+  writeFileSync(CONFIG_PATH, stringify(raw, { lineWidth: 0 }));
+  cached = null;
+}
+
 export function setCurrentModel(model: string): void {
   let raw: Record<string, unknown> = {};
   try {

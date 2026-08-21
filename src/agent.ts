@@ -5,6 +5,7 @@ import { anthropicTools, executeTool } from "./tools/registry.js";
 import { runWithContext, drainAttachments } from "./tools/context.js";
 import { searchVectors } from "./embedding.js";
 import { stamp } from "./utils/time.js";
+import { filterStaleOnboarding } from "./onboarding.js";
 import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions, ToolHistoryEvent } from "./types.js";
 
 /** 清除 API 回傳 content blocks 中的多餘欄位（如 caller），只保留我們定義的欄位 */
@@ -239,6 +240,8 @@ const COMPACT_KEEP_RECENT = 10; // keep last 10 messages after compaction
  */
 function compactTranscript(messages: Message[]): string {
   return messages.flatMap(message => {
+    // Onboarding context is infrastructure noise — never include in summaries
+    if (message.isOnboarding) return [];
     if ((message.isCompactSummary
       || (typeof message.content === "string" && message.content.startsWith("[System] Previous conversation summary:\n")))
       && typeof message.content === "string") {
@@ -379,7 +382,9 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
   }
 
   const allSessionMessages = session?.getMessages() ?? [];
-  const sessionMessages = ensureUserFirst(trimToTokenBudget(allSessionMessages, maxContextTokens));
+  const sessionMessages = ensureUserFirst(
+    filterStaleOnboarding(trimToTokenBudget(allSessionMessages, maxContextTokens))
+  );
 
   // 標準 multi-turn：直接展開 session messages 送 API
   const messages: ApiMessage[] = [];

@@ -26,6 +26,8 @@ export type Message = {
   replyTo?: string;    // replied message ID
   /** True only for the synthetic summary inserted by Session.compact(). */
   isCompactSummary?: boolean;
+  /** True only for the one-time onboarding context injected on first session in a fresh workspace. */
+  isOnboarding?: boolean;
 };
 
 // --- Token Usage ---
