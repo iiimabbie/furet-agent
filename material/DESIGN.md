@@ -60,9 +60,10 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
    `[msg:id 時間] <@id>(帳號名｜暱稱):` 這類中繼資料前綴，避免稀釋語意訊號
 3. 從 session 載入歷史 messages（標準 multi-turn 格式），用 `trimToTokenBudget()` 控制 context 上限，
    再經 `ensureUserFirst()` 確保第一則是 user role
-4. 送 API，收到回應 → 解析 content blocks（text / thinking / tool_use / server-side tool results）
-5. 有 tool_use → 本地執行 → tool_result 送回 → 回到 4
-6. 沒有 tool_use → 最後一輪，回傳文字
+4. 送 API，收到回應 → 解析 content blocks（text / thinking / image / tool_use / server-side tool results）
+5. 若 provider 回傳 base64 `image` block，立即寫入 `workspace/attachments/` 並排入 request-scoped 附件佇列；session 只留文字佔位，不保存大型 base64
+6. 有 tool_use → 本地執行 → tool_result 送回 → 回到 4
+7. 沒有 tool_use → 最後一輪，回傳文字與附件路徑
 
 ### Session 與 API 的訊息流
 
@@ -108,7 +109,8 @@ thinking block 的 `signature` 不是 `thinking` 欄位的校驗碼 —— **它
 
 - `ask(prompt, options)` — 主入口。prompt 為 null 時從 session 尾部取（Discord 用）
 - `callAnthropic(system, messages)` — 封裝 API 呼叫
-- `sanitizeContent(blocks)` — 清除 API 回傳的多餘欄位，保留 text / thinking / tool_use / tool_result
+- `sanitizeContent(blocks)` — 清除 API 回傳的多餘欄位，保留 text / thinking / image / tool_use / tool_result
+- `extractAndSaveImages(blocks)` — 將 provider 回傳的 base64 圖片落地到 attachments 並排入 Discord 回覆附件
 - `estimateTokens(msg)` — 粗估 token 數
 - `trimToTokenBudget(messages, maxTokens)` — token-based 歷史裁切
 - `ensureUserFirst(messages)` — 確保送 API 的第一則是 user role
@@ -126,7 +128,7 @@ cron / reminder / journal 跟使用者對話是並行跑的，trigger 與待送�
 - `queueAttachment()` / `drainAttachments()` — 工具排隊的檔案附件
 - ALS 範圍外呼叫時退回 `{ trigger: "unknown", pendingFiles: [] }`
 
-附件由 `ask()` 在結束時收集，透過 `AgentResponse.attachments` 回傳給呼叫端。
+附件由 `ask()` 在結束時收集，透過 `AgentResponse.attachments` 回傳給呼叫端。這同時涵蓋本地工具用 `discord_attach_to_reply` 排入的檔案，以及支援生圖的 provider 回傳之 base64 `image` block；能力以實際回應格式判定，不依模型名稱硬編碼。Claude 等未回傳 image block 的模型不會走生圖附件流程。
 
 ## Prompt 架構
 
