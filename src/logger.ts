@@ -8,7 +8,14 @@ mkdirSync(LOGS_DIR, { recursive: true });
 export const logger = pino({
   level: process.env.LOG_LEVEL ?? "debug",
   transport: {
-    target: "pino/file",
-    options: { destination: resolve(LOGS_DIR, "furet.log"), mkdir: true },
+    target: "pino-pretty",
+    options: {
+      destination: resolve(LOGS_DIR, "furet.log"),
+      mkdir: true,
+      colorize: false,
+      translateTime: "SYS:yyyy-mm-dd HH:MM:ss",
+      ignore: "pid,hostname",
+      singleLine: true,
+    },
   },
 });
