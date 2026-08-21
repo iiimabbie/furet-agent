@@ -2,7 +2,10 @@ import { logger } from "./logger.js";
 import { loadConfig } from "./config.js";
 import { buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
 import { anthropicTools, executeTool } from "./tools/registry.js";
-import { runWithContext, drainAttachments } from "./tools/context.js";
+import { runWithContext, drainAttachments, queueAttachment } from "./tools/context.js";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
+import { ATTACHMENTS_DIR } from "./paths.js";
 import { searchVectors } from "./embedding.js";
 import { stamp } from "./utils/time.js";
 import { filterStaleOnboarding } from "./onboarding.js";
@@ -16,6 +19,7 @@ function sanitizeContent(blocks: ContentBlock[]): ContentBlock[] {
       case "thinking": return { type: b.type, thinking: b.thinking, ...(b.signature ? { signature: b.signature } : {}) };
       case "tool_use": return { type: b.type, id: b.id, name: b.name, input: b.input };
       case "tool_result": return { type: b.type, tool_use_id: b.tool_use_id, content: b.content };
+      case "image": return { type: b.type, source: b.source };
       default: return b;
     }
   });
@@ -31,6 +35,24 @@ function sanitizeContent(blocks: ContentBlock[]): ContentBlock[] {
  */
 function stripThinking(blocks: ContentBlock[]): ContentBlock[] {
   return blocks.filter(b => b.type !== "thinking");
+}
+
+/**
+ * Strip image blocks before session persistence.
+ * Generated images are saved to disk by extractAndSaveImages(); storing the raw
+ * base64 in session JSON would bloat it by megabytes per image. A text placeholder
+ * is left so the model knows an image was generated in that turn.
+ */
+function stripImages(blocks: ContentBlock[]): ContentBlock[] {
+  let imageCount = 0;
+  const filtered = blocks.filter(b => {
+    if (b.type === "image") { imageCount++; return false; }
+    return true;
+  });
+  if (imageCount > 0) {
+    filtered.push({ type: "text", text: `[${imageCount} image(s) generated and saved to attachments]` });
+  }
+  return filtered;
 }
 
 /** Render a bounded, human-readable projection of recent tool work for the next turn.
@@ -139,6 +161,50 @@ function ensureUserFirst(messages: Message[]): Message[] {
 
 function extractText(blocks: ContentBlock[]): string {
   return blocks.filter((b): b is ContentBlock & { type: "text" } => b.type === "text").map(b => b.text).join("");
+}
+
+const MIME_TO_EXT: Record<string, string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+};
+
+/**
+ * Extract image blocks from API response, save them to workspace/attachments/,
+ * and queue them for Discord reply attachment.
+ *
+ * Some providers (e.g. GPT-4o via router) can generate images inline as base64
+ * content blocks. This function detects those blocks by type, regardless of which
+ * model or provider produced them, saves the binary data to disk, and queues the
+ * file path so `drainAttachments()` picks it up at the end of `ask()`.
+ *
+ * Returns the number of images saved.
+ */
+function extractAndSaveImages(blocks: ContentBlock[]): number {
+  const imageBlocks = blocks.filter(
+    (b): b is ContentBlock & { type: "image" } => b.type === "image",
+  );
+  if (imageBlocks.length === 0) return 0;
+
+  mkdirSync(ATTACHMENTS_DIR, { recursive: true });
+  let saved = 0;
+
+  for (const img of imageBlocks) {
+    try {
+      const ext = MIME_TO_EXT[img.source.media_type] ?? ".png";
+      const filename = `generated-${Date.now()}-${saved}${ext}`;
+      const outPath = resolve(ATTACHMENTS_DIR, filename);
+      writeFileSync(outPath, Buffer.from(img.source.data, "base64"));
+      queueAttachment(outPath);
+      saved++;
+      logger.info({ filename, mediaType: img.source.media_type }, "saved generated image to attachments");
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, "failed to save generated image");
+    }
+  }
+
+  return saved;
 }
 
 /** Fetch a single image URL and return a base64 image block for the Anthropic API */
@@ -470,13 +536,23 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
       }
     }
 
+    // Save any generated images from the response to disk and queue for attachment.
+    // This handles providers that return image content blocks (e.g. GPT-4o via router).
+    // Models that don't generate images simply produce no image blocks — no special
+    // casing by model name needed.
+    const savedImages = extractAndSaveImages(response.content as ContentBlock[]);
+
     const cleanContent = sanitizeContent(response.content);
     // Skip empty assistant content — some routers (Gemini) reject empty parts
     if (cleanContent.length > 0) {
-      // 當下這一輪要帶 thinking：接著回送 tool_result 時，reasoning model 需要它
-      messages.push({ role: "assistant", content: cleanContent });
-      // 存進 session：text + tool_use（不存 thinking / tool_result）
-      const persisted = stripThinking(cleanContent);
+      // 當下這一輪要帶 thinking：接著回送 tool_result 時，reasoning model 需要它。
+      // Image blocks are stripped from the messages array to avoid re-sending megabytes
+      // of base64 on subsequent API calls within this request. The images have already
+      // been saved to disk by extractAndSaveImages() above.
+      const forApi = stripImages(cleanContent);
+      if (forApi.length > 0) messages.push({ role: "assistant", content: forApi });
+      // 存進 session：text + tool_use（不存 thinking / tool_result / image）
+      const persisted = stripImages(stripThinking(cleanContent));
       if (persisted.length > 0) {
         session?.append({ role: "assistant", content: persisted, time: nowTimestamp() });
       }
@@ -485,9 +561,11 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
     // 沒有 tool call → 最後一輪
     if (toolUseBlocks.length === 0) {
       const finalText = extractText(cleanContent);
+      const hasSavedImages = savedImages > 0;
 
-      // 如果沒有文字回覆（agent 只做了 tool call），強制再跑一輪要求回話
-      if (!finalText && turn < maxTurns - 1) {
+      // 如果沒有文字回覆也沒有成功儲存的圖片，強制再跑一輪要求回話。
+      // API 即使回了 image block，落地失敗也不能當成已交付。
+      if (!finalText && !hasSavedImages && turn < maxTurns - 1) {
         messages.push({ role: "user", content: "[System] Please reply to the user with a text response." });
         continue;
       }
