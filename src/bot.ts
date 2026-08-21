@@ -13,6 +13,7 @@ import { fixMarkdownLinks } from "./utils/format.js";
 import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
 import { estimateCost } from "./utils/pricing.js";
 import { stamp } from "./utils/time.js";
+import { shouldOnboard, buildOnboardingContext } from "./onboarding.js";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -420,6 +421,9 @@ export async function startBot(token: string): Promise<void> {
     const channelName = (message.channel as { name?: string }).name;
     if (channelName) session.setChannelName(channelName);
 
+    // Onboarding: capture before thread starter / user message are appended
+    const needsOnboarding = isTrigger && shouldOnboard(session.length);
+
     // Thread/論壇貼文的第一次進入：抓初始訊息作為 context
     if (session.length === 0 && message.channel.isThread()) {
       try {
@@ -436,6 +440,17 @@ export async function startBot(token: string): Promise<void> {
           });
         }
       } catch { /* starter message not available */ }
+    }
+
+    // Inject one-time onboarding context before the user's actual message
+    if (needsOnboarding) {
+      const onboardingCtx = buildOnboardingContext(
+        message.author.id,
+        message.author.username,
+        message.member?.displayName,
+      );
+      session.append({ role: "user", content: onboardingCtx, time: stamp(), isOnboarding: true });
+      logger.info({ sessionId, userId: message.author.id }, "onboarding context injected");
     }
 
     const fmt = await formatIncomingMessage(message);
