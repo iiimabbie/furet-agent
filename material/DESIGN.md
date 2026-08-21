@@ -66,8 +66,8 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
 
 ### Session 與 API 的訊息流
 
-- Session 存：text + tool_use blocks（不存 thinking，見下；不存 tool_result，太大）
-- 送 API 時：從 session 展開成標準 multi-turn messages，過濾掉 tool_use blocks（因為沒有配對的 tool_result）
+- Session 存：對話 messages、完整 local `toolHistory`（工具 input / output / 成敗），以及用量；不存 thinking，見下；不把 live `tool_result` 混入對話 messages。
+- 送 API 時：從 session 展開成標準 multi-turn messages，過濾掉沒有配對 `tool_result` 的歷史 tool_use blocks；另外在 system prompt 注入最近 8 筆工具工作的有界摘要。
 
 - `trimToTokenBudget()`：從最新往回取，粗估 token（JSON 長度 / 4），確保 tool_use/tool_result 配對不被拆散。
   單則訊息本身就超過預算時，至少保留最後一則（否則會送出空 messages）
@@ -87,24 +87,22 @@ thinking block 的 `signature` 不是 `thinking` 欄位的校驗碼 —— **它
 等於每輪多背幾百個 token 換不到東西。因此 `stripThinking()` 在存進 session 前把它拿掉，
 展開歷史時再濾一次以相容舊 session。
 
-### tool_use 為什麼留著
+### Tool history：完整保存、精簡重播
 
-tool_use 跟 thinking 的成本結構不同：**它在每一條會送到 API 的路徑上都已經被濾掉**
-（歷史展開濾 `tool_use`、`compactSession()` 只取 `text` blocks、journal 走歷史展開那條），
-所以它的 token 成本是 0，只佔硬碟。留著是 agent 做過什麼的稽核紀錄，砍掉省不到錢。
+每次**本地** tool 執行完，`ask()` 都會以 `Session.recordToolEvent()` 寫入不可變的 `toolHistory`：
 
-### tool_use 的跨輪 recap
+- tool call ID、執行時間、工具名稱；
+- 完整 input（例如 bash command）；
+- 完整文字 result；
+- 成功／失敗狀態。
 
-tool_use 被濾掉的副作用是模型跨輪完全不知道自己做過什麼——它只看得到最後那句回覆。
-`summarizeToolUse()` 把它折成一行 `工具名(參數摘要)` 補回去，成本幾十個 token。
+這份完整紀錄存於 active session JSON，也會跟著 session archive／compact archive 保存，是稽核與後續查證的資料來源；不因為 context 控制而截斷。
 
-**這行字用 `[System]` 的 user message 送，不掛在 assistant 訊息裡。** 掛在 assistant
-訊息裡的話，模型看到的是一段宣稱呼叫過工具、卻沒有對應 tool_use block 的散文，正好撞上
-AGENT.md 的 "Never fabricate tool results"，會判定成自己捏造的並在下一輪否認、道歉。
-由 harness 以 user message 陳述時說話的人是系統，不是 agent 自己，就沒有這個問題。
+正常下一輪不會把完整 stdout 或每一筆工具操作塞回 messages。`renderToolHistory()` 只把**最近 8 筆**投影到 system prompt，每筆 input 最多 180 字、outcome 最多 280 字，並標示為 untrusted data。模型因此知道「做過什麼、成功或失敗、結果概略」，但不會每輪重付長輸出的 token；需要細節時，目前仍可從 session JSON／archive 查閱。
 
-參數摘要取 `TOOL_ARG_KEYS`（path / command / query…）裡第一個有值的字串欄位，截到 50 字元。
-recap 只存在於送 API 的 payload，不寫進 session，所以不影響 memory nudge 的計數。
+舊版 session 曾把 `tool_use` 摘成多條 `[System] Tools actually executed...` synthetic user message。載入歷史時會略過這些 legacy recap，讓它們隨 compact 或 archive 自然退場；新 tool history projection 取而代之。
+
+`thinking` 不寫入 session。reasoning signature 只在同一輪接著回送 `tool_result` 時有效；跨 request 重播既不能可靠延續推理，也只會消耗 context。保留可驗證的 tool evidence、最終文字回覆及 compact continuation brief，比保存私有逐字推理可靠。
 
 ### 關鍵函式
 
@@ -300,19 +298,28 @@ Session ID 是內部 routing key（不變）；檔名另外把長前綴縮寫成
 
 ### Session 格式
 
-Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 不保存）。
+Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 不保存）。session JSON 另有 `toolHistory`，保存完整 local tool input / result，和對話 context 分開。
 
 ```json
-{ "role": "user", "content": "<@id>(name): 內容", "time": "04/29 14:19", "msgId": "149...", "replyTo": "149..." }
-{ "role": "assistant", "content": [{"type":"text","text":"回覆"}], "time": "04/29 14:19" }
+{
+  "messages": [
+    { "role": "user", "content": "<@id>(name): 內容", "time": "04/29 14:19", "msgId": "149...", "replyTo": "149..." },
+    { "role": "assistant", "content": [{"type":"text","text":"回覆"}], "time": "04/29 14:19" }
+  ],
+  "toolHistory": [
+    { "id": "toolu_...", "time": "04/29 14:20", "tool": "bash", "input": {"command":"npm run build"}, "result": "...", "isError": false }
+  ]
+}
 ```
 
-### 歸檔流程
+### Compact 與歸檔流程
 
-`/new` 或每日 journal 觸發歸檔：
+`/compact` 或自動 compact 會先把即將被 summary 取代的原始 messages 寫成 `*-compact-*.json` archive，並索引到 SQLite；JSON archive 寫入失敗就中止 compact、保留 active session 原樣。summary 只是 active context cache，帶 `isCompactSummary`，不是原始歷史；後續歸檔會略過它，避免重複或把 synthetic text 誤當對話。
+
+`/new` 或每日 journal 觸發完整 session 歸檔：
 1. Silent memory flush：注入 flush 指令到 systemPrompt，讓 agent 自由使用 memory tools 整理記憶
-2. 歸檔到 `workspace/sessions/archive/`
-3. 清空 session
+2. 原始 messages、usage 與 `toolHistory` 歸檔到 `workspace/sessions/archive/`；SQLite 只作搜尋索引，JSON 是耐久的 source of truth
+3. 清空 active session
 
 ## Discord Bot
 
