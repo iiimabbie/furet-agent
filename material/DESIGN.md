@@ -53,6 +53,10 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
 
 `src/agent.ts` — 核心循環，直接用 fetch 呼叫 Anthropic Messages API。
 
+### API 錯誤可觀測性
+
+`callAnthropic()` 的 transport-level `fetch()` 失敗會包成帶 `cause` 的 Error，保留請求 endpoint 與底層錯誤鏈。`src/logger.ts` 對 `err` 欄位使用遞迴 serializer，記錄 Error 的 `type`、`message`、`stack`、自有屬性（如 `code`）與 `cause`；呼叫端應傳入原始 Error（`{ err }`），不要只留下 `err.message`，否則會遺失 `ECONNREFUSED`、`ECONNRESET`、DNS 等真正原因。
+
 整個 `ask()` 跑在獨立的 request context（AsyncLocalStorage）裡，見「Request Context」一節。
 
 1. 組 system prompt（`prompt.ts` 的 `buildSystemPrompt()`）

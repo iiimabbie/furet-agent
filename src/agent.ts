@@ -274,27 +274,33 @@ async function callAnthropic(system: string, messages: Message[], model?: string
 }> {
   // 每次都重讀 config —— base_url / api_key 跟 currentModel 一樣要能熱更新
   const { llm } = loadConfig();
-  const res = await fetch(`${llm.base_url || "https://api.anthropic.com/v1"}/messages`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": llm.api_key,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: model ?? llm.currentModel,
-      max_tokens: 8192,
-      system,
-      messages,
-      ...(withTools ? {
-        // Native image generation is exposed only to GPT models. Claude does not
-        // have this capability, so do not advertise a tool it cannot use.
-        tools: anthropicTools.filter(tool =>
-          /^gpt(?:-|$)/i.test(model ?? llm.currentModel) || tool.name !== "image_gen"
-        ),
-      } : {}),
-    }),
-  });
+  const endpoint = `${llm.base_url || "https://api.anthropic.com/v1"}/messages`;
+  let res: Response;
+  try {
+    res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": llm.api_key,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: model ?? llm.currentModel,
+        max_tokens: 8192,
+        system,
+        messages,
+        ...(withTools ? {
+          // Native image generation is exposed only to GPT models. Claude does not
+          // have this capability, so do not advertise a tool it cannot use.
+          tools: anthropicTools.filter(tool =>
+            /^gpt(?:-|$)/i.test(model ?? llm.currentModel) || tool.name !== "image_gen"
+          ),
+        } : {}),
+      }),
+    });
+  } catch (err) {
+    throw new Error(`Anthropic API request failed (${endpoint})`, { cause: err });
+  }
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(`Anthropic API ${res.status}: ${errText}`);
