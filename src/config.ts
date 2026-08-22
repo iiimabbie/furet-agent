@@ -46,6 +46,10 @@ export interface FuretConfig {
      */
     bash_allowed_users: string[];
   };
+  image_generation: {
+    /** Optional canonical identity image, relative to the Furet root or absolute. */
+    identity_reference_path: string;
+  };
   prompt: {
     /**
      * PEOPLE.md 內嵌進 system prompt 的字元上限。
@@ -90,6 +94,9 @@ const DEFAULTS: FuretConfig = {
   tools: {
     bash_owner_only: true,
     bash_allowed_users: [],
+  },
+  image_generation: {
+    identity_reference_path: "",
   },
   prompt: {
     peopleInlineLimit: 1500,
@@ -155,6 +162,7 @@ export function loadConfig(): FuretConfig {
     journal: { ...DEFAULTS.journal, ...defined(resolved.journal) } as FuretConfig["journal"],
     soul_guardian: { ...DEFAULTS.soul_guardian, ...defined(resolved.soul_guardian) } as FuretConfig["soul_guardian"],
     tools: { ...DEFAULTS.tools, ...defined(resolved.tools) } as FuretConfig["tools"],
+    image_generation: { ...DEFAULTS.image_generation, ...defined(resolved.image_generation) } as FuretConfig["image_generation"],
     prompt: { ...DEFAULTS.prompt, ...defined(resolved.prompt) } as FuretConfig["prompt"],
     skills: (resolved.skills as string[] | undefined) ?? DEFAULTS.skills,
     timezone: (resolved.timezone as string | undefined) ?? DEFAULTS.timezone,

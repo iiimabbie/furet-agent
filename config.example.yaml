@@ -59,4 +59,9 @@ tools:
                                         # Setting this to false lets ANY user who can mention
                                         # the bot execute commands on your machine.
 
+image_generation:
+  identity_reference_path: ""           # optional canonical face/identity image under
+                                        # workspace/attachments/; the agent sends it only
+                                        # when image_gen uses use_identity_reference=true.
+
 skills: []                              # enabled skill names (must exist in workspace/skills/<name>/)
