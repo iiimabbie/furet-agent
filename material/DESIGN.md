@@ -693,3 +693,13 @@ owner 稍後在同頻道觸發時 trigger 是 `discord-owner`、權限全開，�
 方向：在 session 歸檔時，把 Session Summarize 輸出的 assistant 最後一則回應（摘要）embed 存向量，而不是 embed 全部 8000+ 則原始訊息（成本過高）。這樣可以用語意搜尋找「哪個 session 討論過 X 主題」。
 
 等架構穩定後實作。
+
+## 後續架構計畫文件
+
+以下三份設計各自對應獨立、可驗收與可回滾的 PR，並以相對連結互相銜接：
+
+- [Subagent（派小弟）完整實作計畫書](./Subagent實作計畫書.md)：先完成 read-only、單層、最多兩隻 worker 的隔離 runtime。
+- [Bash 指令政策完整實作計畫書](./Bash指令政策實作計畫書.md)：建立 `allow / confirm / forbidden` 的可測試 command policy；是未來開放 worker shell 的前置條件。
+- [記憶抽取與彙整管線完整實作計畫書](./記憶管線實作計畫書.md)：將候選抽取與長期彙整分離，以 typed mutation、lock/lease、atomic write 與索引修復保護記憶完整性。
+
+建議順序：Subagent read-only MVP → Bash policy → Memory pipeline → 隔離 worktree／受控 Subagent Bash。
