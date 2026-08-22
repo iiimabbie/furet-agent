@@ -14,9 +14,10 @@ export type ContentBlock =
   | { type: "thinking"; thinking: string; signature?: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
   | { type: "tool_result"; tool_use_id: string; content: string }
-  | { type: "web_search_tool_result"; content: Array<{ type: string; url?: string; title?: string; encrypted_content?: string }> }
-  | { type: "web_fetch_tool_result"; content: unknown }
-  | { type: "code_execution_tool_result"; content: unknown }
+  | { type: "server_tool_use"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "web_search_tool_result"; tool_use_id?: string; content: Array<{ type: string; url?: string; title?: string; encrypted_content?: string }> }
+  | { type: "web_fetch_tool_result"; tool_use_id?: string; content: unknown }
+  | { type: "code_execution_tool_result"; tool_use_id?: string; content: unknown }
   | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
 
 export type Message = {

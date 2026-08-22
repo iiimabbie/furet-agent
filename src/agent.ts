@@ -38,6 +38,54 @@ function stripThinking(blocks: ContentBlock[]): ContentBlock[] {
 }
 
 /**
+ * Server-side tool protocol blocks are provider-owned transport state, not durable
+ * conversation history. Routers may emit IDs in an upstream-specific format (for
+ * example `ws_...`) that another model/provider rejects when replayed as Anthropic
+ * `server_tool_use` history. Keep the model's resulting text, but never persist or
+ * replay the protocol blocks across requests.
+ */
+function stripServerToolProtocol(blocks: ContentBlock[]): ContentBlock[] {
+  return blocks.filter(b =>
+    b.type !== "server_tool_use"
+    && b.type !== "web_search_tool_result"
+    && b.type !== "web_fetch_tool_result"
+    && b.type !== "code_execution_tool_result"
+  );
+}
+
+const SERVER_TOOL_ID_PATTERN = /^srvtoolu_[a-zA-Z0-9_]+$/;
+
+/**
+ * Within the current request, keep valid server-tool state because `pause_turn`
+ * continuation requires replaying the response. Only remove router-specific IDs
+ * that the Anthropic-compatible endpoint itself will reject on the next call.
+ */
+function stripInvalidServerToolProtocol(blocks: ContentBlock[]): ContentBlock[] {
+  const protocolIds = blocks.flatMap(b => {
+    if (b.type === "server_tool_use") return [b.id];
+    if (b.type === "web_search_tool_result"
+      || b.type === "web_fetch_tool_result"
+      || b.type === "code_execution_tool_result") {
+      return b.tool_use_id ? [b.tool_use_id] : [];
+    }
+    return [];
+  });
+  const invalidIds = new Set(protocolIds.filter(id => !SERVER_TOOL_ID_PATTERN.test(id)));
+  if (invalidIds.size === 0) return blocks;
+
+  logger.warn({ invalidIds: [...invalidIds] }, "dropping incompatible server-tool protocol blocks");
+  return blocks.filter(b => {
+    if (b.type === "server_tool_use") return !invalidIds.has(b.id);
+    if (b.type === "web_search_tool_result"
+      || b.type === "web_fetch_tool_result"
+      || b.type === "code_execution_tool_result") {
+      return !b.tool_use_id || !invalidIds.has(b.tool_use_id);
+    }
+    return true;
+  });
+}
+
+/**
  * Strip image blocks before session persistence.
  * Generated images are saved to disk by extractAndSaveImages(); storing the raw
  * base64 in session JSON would bloat it by megabytes per image. A text placeholder
@@ -493,7 +541,9 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
         // 自己上一輪做過什麼，所以折成一行文字摘要保留行為紀錄。
         // thinking 不存進 session（見 stripThinking），這裡再濾一次以相容既有的 session 檔
         const blocks = m.content as ContentBlock[];
-        const apiBlocks = blocks.filter(b => b.type !== "tool_use" && b.type !== "thinking");
+        const apiBlocks = stripServerToolProtocol(
+          blocks.filter(b => b.type !== "tool_use" && b.type !== "thinking"),
+        );
         if (apiBlocks.length > 0) messages.push({ role: m.role, content: apiBlocks });
       } else if (isLast && m.role === "user" && typeof m.content === "string") {
         messages.push({ role: m.role, content: await buildUserContent(m.content + hook, options.images) });
@@ -561,16 +611,23 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
       // Image blocks are stripped from the messages array to avoid re-sending megabytes
       // of base64 on subsequent API calls within this request. The images have already
       // been saved to disk by extractAndSaveImages() above.
-      const forApi = stripImages(cleanContent);
+      const forApi = stripInvalidServerToolProtocol(stripImages(cleanContent));
       if (forApi.length > 0) messages.push({ role: "assistant", content: forApi });
-      // 存進 session：text + tool_use（不存 thinking / tool_result / image）
-      const persisted = stripImages(stripThinking(cleanContent));
+      // 存進 session：text + local tool_use（不存 thinking / tool_result / image / server-tool protocol）
+      const persisted = stripServerToolProtocol(stripImages(stripThinking(cleanContent)));
       if (persisted.length > 0) {
         session?.append({ role: "assistant", content: persisted, time: nowTimestamp() });
       }
     }
 
-    // 沒有 tool call → 最後一輪
+    // Server-side tools may pause a long-running turn. Anthropic requires the
+    // assistant response to be replayed unchanged; router-invalid protocol IDs were
+    // removed above so the continuation cannot poison the next request with a 400.
+    if (response.stop_reason === "pause_turn" && turn < maxTurns - 1) {
+      continue;
+    }
+
+    // 沒有 local tool call → 最後一輪
     if (toolUseBlocks.length === 0) {
       const finalText = extractText(cleanContent);
       const hasSavedImages = savedImages > 0;
