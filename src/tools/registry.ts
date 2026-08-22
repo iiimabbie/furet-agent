@@ -29,6 +29,7 @@ const OWNER_ONLY_TOOLS = new Set([
   "self_evolve",
   "discord_bot_mention_toggle",
   "usage_dashboard",
+  "image_gen",
 ]);
 
 import { bash } from "./builtin/bash.js";
@@ -55,6 +56,7 @@ import { selfEvolve } from "./builtin/self-evolve.js";
 import { discordBotMentionToggle } from "./builtin/bot-config.js";
 import { sessionSearch, sessionsByDate, journalTranscriptByDate } from "./builtin/session-search.js";
 import { usageDashboard } from "./builtin/dashboard.js";
+import { imageGen } from "./builtin/image-gen.js";
 
 const tools: Tool[] = [
   bash, readFileTool, writeFileTool, weather,
@@ -78,6 +80,7 @@ const tools: Tool[] = [
   journalTranscriptByDate,
   discordBotMentionToggle,
   usageDashboard,
+  imageGen,
 ];
 
 const executorMap = new Map(tools.map(t => [t.name, t.execute]));

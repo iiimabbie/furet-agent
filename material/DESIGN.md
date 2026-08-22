@@ -36,6 +36,7 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
     │
     ├── Custom Tools（本地執行，透過 tools/registry.ts 統一管理）
     │   ├── bash / read_file / write_file / get_weather
+    │   ├── image_gen     # GPT-only，透過 Responses API 原生 image_generation 生圖並附檔
     │   ├── memory_*      # 記憶管理（save / search / list / add / replace / remove）
     │   ├── cron_*        # 排程管理（create / list / delete / toggle / update）
     │   ├── reminder_*    # 提醒管理（create / list / delete）
@@ -128,7 +129,7 @@ cron / reminder / journal 跟使用者對話是並行跑的，trigger 與待送�
 - `queueAttachment()` / `drainAttachments()` — 工具排隊的檔案附件
 - ALS 範圍外呼叫時退回 `{ trigger: "unknown", pendingFiles: [] }`
 
-附件由 `ask()` 在結束時收集，透過 `AgentResponse.attachments` 回傳給呼叫端。這同時涵蓋本地工具用 `discord_attach_to_reply` 排入的檔案，以及支援生圖的 provider 回傳之 base64 `image` block；能力以實際回應格式判定，不依模型名稱硬編碼。Claude 等未回傳 image block 的模型不會走生圖附件流程。
+附件由 `ask()` 在結束時收集，透過 `AgentResponse.attachments` 回傳給呼叫端。這同時涵蓋本地工具用 `discord_attach_to_reply` 排入的檔案、GPT-only `image_gen` 經 Responses API 生成的圖片，以及 provider 直接回傳之 base64 `image` block。`callAnthropic()` 只在 GPT 模型的工具清單中暴露 `image_gen`；Claude 不會看到或呼叫此工具。
 
 ## Prompt 架構
 
@@ -454,6 +455,7 @@ interface Tool {
 | `discord_create_thread/forum_post/delete_thread` | Discord 討論串 |
 | `discord_edit_message/delete_message` | 編輯/刪除 bot 訊息 |
 | `discord_attach_to_reply` | 附件到回覆 |
+| `image_gen` | GPT-only：呼叫 Responses API 的原生 `image_generation`，存入 attachments 並排入回覆附件（owner-only） |
 | `web_search` | Anthropic server-side 網路搜尋 |
 | `web_fetch` | Anthropic server-side 讀取 URL |
 | `code_execution` | Anthropic server-side Python 執行 |

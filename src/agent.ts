@@ -286,7 +286,13 @@ async function callAnthropic(system: string, messages: Message[], model?: string
       max_tokens: 8192,
       system,
       messages,
-      ...(withTools ? { tools: anthropicTools } : {}),
+      ...(withTools ? {
+        // Native image generation is exposed only to GPT models. Claude does not
+        // have this capability, so do not advertise a tool it cannot use.
+        tools: anthropicTools.filter(tool =>
+          /^gpt(?:-|$)/i.test(model ?? llm.currentModel) || tool.name !== "image_gen"
+        ),
+      } : {}),
     }),
   });
   if (!res.ok) {
