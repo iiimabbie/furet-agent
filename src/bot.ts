@@ -666,8 +666,20 @@ async function handleTrigger(message: Message, session: Session, images?: string
     if (attachments.length) firstPayload.files = attachments;
 
     if (progressMsg) {
-      await progressMsg.edit(firstPayload).catch(() => {});
-      sentIds.push(progressMsg.id);
+      try {
+        await progressMsg.edit(firstPayload);
+        sentIds.push(progressMsg.id);
+      } catch (err) {
+        // Editing the progress message can fail while uploading attachments. Do not
+        // silently leave the user with a stale ✓ tool-status message: log the real
+        // error and fall back to a fresh reply carrying the same payload.
+        logger.error({ err, attachmentCount: attachments.length }, "final progress message edit failed; sending fallback reply");
+        const sent = await message.reply(firstPayload);
+        sentIds.push(sent.id);
+        await progressMsg.delete().catch(deleteErr =>
+          logger.warn({ err: deleteErr }, "failed to delete stale progress message after fallback")
+        );
+      }
     } else {
       const sent = await message.reply(firstPayload);
       sentIds.push(sent.id);

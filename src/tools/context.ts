@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { existsSync } from "node:fs";
+import { logger } from "../logger.js";
 import type { TriggerSource } from "../types.js";
 
 /**
@@ -43,8 +45,17 @@ export function queueAttachment(filePath: string): void { ctx().pendingFiles.pus
 
 export function drainAttachments(): string[] {
   const c = ctx();
-  const files = c.pendingFiles;
+  const queued = c.pendingFiles;
   c.pendingFiles = [];
+
+  // Tools may rename a generated file after image_gen has already queued its
+  // original path. One stale path must not make Discord reject the whole reply.
+  const unique = [...new Set(queued)];
+  const files = unique.filter(filePath => {
+    if (existsSync(filePath)) return true;
+    logger.warn({ filePath }, "dropping missing queued attachment");
+    return false;
+  });
   return files;
 }
 
