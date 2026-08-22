@@ -684,7 +684,7 @@ async function handleTrigger(message: Message, session: Session, images?: string
     }
     logger.info({ sessionId: session.id, chunks: chunks.length, sentIds }, "discord reply sent");
   } catch (err) {
-    logger.error({ err: (err as Error).message, stack: (err as Error).stack }, "discord handle trigger failed");
+    logger.error({ err }, "discord handle trigger failed");
     if (progressMsg) await progressMsg.delete().catch(() => {});
     await message.react("🤕").catch(() => {});
   } finally {
