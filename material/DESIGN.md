@@ -350,6 +350,11 @@ Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 
   暱稱只是預設值，PEOPLE.md 指定了就以它為準。
 - Thread/論壇貼文首次進入時以 `[System]` user message 存入 starter message
 
+### 長訊息分段
+Discord 單則訊息上限為 2,000 字元。一般回覆、slash command 回覆與 Gateway 主動推送共用
+`utils/chunk-message.ts` 分段；若切點落在 fenced code block 內，前一段會自動補上關閉 fence，
+下一段以相同語言標記重新開啟，避免 diff、log 等長 code block 吞掉後續文字。
+
 ### 漸進式進度訊息
 Tool call 執行時即時顯示進度（`→` / `✓` / `✗`），完成後替換成最終回覆。防抖 1 秒避免 Discord rate limit。
 

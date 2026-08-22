@@ -10,6 +10,7 @@ import { logger } from "./logger.js";
 import { loadConfig, setCurrentModel } from "./config.js";
 import { setDiscordClient } from "./tools/builtin/discord.js";
 import { fixMarkdownLinks } from "./utils/format.js";
+import { chunkMessage } from "./utils/chunk-message.js";
 import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
 import { estimateCost } from "./utils/pricing.js";
 import { stamp } from "./utils/time.js";
@@ -689,18 +690,4 @@ async function handleTrigger(message: Message, session: Session, images?: string
   } finally {
     clearInterval(typingInterval);
   }
-}
-
-function chunkMessage(text: string, maxLength: number): string[] {
-  if (text.length <= maxLength) return [text];
-  const chunks: string[] = [];
-  let remaining = text;
-  while (remaining.length > maxLength) {
-    let cutAt = remaining.lastIndexOf("\n", maxLength);
-    if (cutAt < maxLength / 2) cutAt = maxLength;
-    chunks.push(remaining.slice(0, cutAt));
-    remaining = remaining.slice(cutAt).trimStart();
-  }
-  if (remaining) chunks.push(remaining);
-  return chunks;
 }

@@ -10,6 +10,7 @@ import { Session } from "./session.js";
 import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt } from "./prompt.js";
 import { loadConfig } from "./config.js";
 import { fixMarkdownLinks } from "./utils/format.js";
+import { chunkMessage } from "./utils/chunk-message.js";
 import { ROOT } from "./paths.js";
 import { stamp, today } from "./utils/time.js";
 
@@ -24,19 +25,10 @@ async function sendToChannel(channelId: string, text: string): Promise<string[]>
     }
     const formatted = fixMarkdownLinks(text);
     const sentIds: string[] = [];
-    // Discord 2000 字元限制
-    if (formatted.length <= 2000) {
-      const sent = await channel.send(formatted);
+    // Discord 2000 字元限制；跨段時維持 fenced code block 完整。
+    for (const chunk of chunkMessage(formatted, 2000)) {
+      const sent = await channel.send(chunk);
       sentIds.push(sent.id);
-    } else {
-      let remaining = formatted;
-      while (remaining.length > 0) {
-        let cutAt = remaining.lastIndexOf("\n", 2000);
-        if (cutAt < 1000) cutAt = 2000;
-        const sent = await channel.send(remaining.slice(0, cutAt));
-        sentIds.push(sent.id);
-        remaining = remaining.slice(cutAt).trimStart();
-      }
     }
     return sentIds;
   } catch (err) {
