@@ -11,7 +11,6 @@ type ImageFormat = "png" | "jpeg" | "webp";
 type ImageQuality = "low" | "medium" | "high" | "auto";
 type ImageSize = "auto" | "1024x1024" | "1536x1024" | "1024x1536";
 type ImageBackground = "auto" | "transparent" | "opaque";
-type InputFidelity = "low" | "high";
 
 const MAX_REFERENCE_IMAGES = 4;
 const MAX_REFERENCE_BYTES = 20 * 1024 * 1024;
@@ -88,11 +87,6 @@ export const imageGen: Tool = {
         maxItems: MAX_REFERENCE_IMAGES,
         description: "Optional local image paths under workspace/attachments/ to use as visual references.",
       },
-      input_fidelity: {
-        type: "string",
-        enum: ["low", "high"],
-        description: "How strongly to preserve input image details. Default: high when references are used.",
-      },
     },
     required: ["prompt"],
   },
@@ -110,7 +104,6 @@ export const imageGen: Tool = {
     const quality = (args.quality ?? "auto") as ImageQuality;
     const background = (args.background ?? "auto") as ImageBackground;
     const outputFormat = (args.output_format ?? "png") as ImageFormat;
-    const inputFidelity = (args.input_fidelity ?? "high") as InputFidelity;
     const useIdentityReference = args.use_identity_reference === true;
     const explicitReferences = Array.isArray(args.reference_images)
       ? args.reference_images.map(String).filter(Boolean)
@@ -147,7 +140,6 @@ export const imageGen: Tool = {
     };
     if (references.length > 0) {
       imageTool.action = "edit";
-      if (!/gpt-image-2-codex/i.test(model)) imageTool.input_fidelity = inputFidelity;
     }
 
     const res = await fetch(`${baseUrl}/responses`, {
