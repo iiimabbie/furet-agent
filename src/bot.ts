@@ -14,6 +14,7 @@ import { chunkMessage } from "./utils/chunk-message.js";
 import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
 import { estimateCost } from "./utils/pricing.js";
 import { stamp } from "./utils/time.js";
+import { isNoReplySentinel } from "./utils/no-reply.js";
 import { shouldOnboard, buildOnboardingContext, isWorkspaceUnconfigured } from "./onboarding.js";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -578,6 +579,10 @@ export function renderProgress(lines: ProgressLine[]): string {
   return body.length > 1900 ? `${body.slice(-1900)}` : body;
 }
 
+// 靜默哨符判定集中在 utils/no-reply.ts，一般對話與排程共用同一套語意。
+// 這裡 re-export，讓既有的 import path（含測試）維持不變。
+export { isNoReplySentinel };
+
 async function handleTrigger(message: Message, session: Session, images?: string[]): Promise<void> {
   logger.info({
     sessionId: session.id,
@@ -651,6 +656,14 @@ async function handleTrigger(message: Message, session: Session, images?: string
       // 沒有文字回覆：刪掉進度訊息，加 emoji
       if (progressMsg) await progressMsg.delete().catch(() => {});
       await message.react("🤔").catch(() => {});
+      return;
+    }
+
+    // 靜默哨符：模型最終文字整則就是 [no_reply]（trim + 大小寫不敏感）時，不送任何訊息。
+    // 只在 Discord 最終輸出邊界攔截，不影響 session 記錄與 agent 執行流程。
+    if (isNoReplySentinel(response.text)) {
+      if (progressMsg) await progressMsg.delete().catch(() => {});
+      logger.info({ sessionId: session.id }, "discord reply suppressed by [no_reply] sentinel");
       return;
     }
 

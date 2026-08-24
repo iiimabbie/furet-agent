@@ -11,6 +11,7 @@ import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt, authoritativeNowBlock } f
 import { loadConfig } from "./config.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { chunkMessage } from "./utils/chunk-message.js";
+import { isNoReplySentinel } from "./utils/no-reply.js";
 import { ROOT } from "./paths.js";
 import { stamp, today } from "./utils/time.js";
 
@@ -95,7 +96,7 @@ function scheduleCron(job: CronJob): void {
     logger.info({ id: job.id, name: job.name, prompt: job.prompt.slice(0, 100) }, "cron triggered");
     try {
       const notifyInstruction = job.notify === "on_event"
-        ? "If the result is normal / OK with nothing to report, reply with exactly `[noreply]` and nothing else — the owner will NOT be notified. Only reply with actual content when there is an error, anomaly, or something genuinely worth the owner's attention."
+        ? "If the result is normal / OK with nothing to report, reply with exactly `[no_reply]` and nothing else — the owner will NOT be notified. Only reply with actual content when there is an error, anomaly, or something genuinely worth the owner's attention."
         : "Your text response will be automatically delivered to the correct channel.";
       // authoritativeNowBlock() 在觸發當下用 nowWithZone() 鎖定權威本地時間，
       // 壓過任何上游脈絡帶進來的舊日期，避免把「今天」判成前一天。
@@ -106,7 +107,9 @@ function scheduleCron(job: CronJob): void {
         `It is an instruction, not a message to repeat verbatim; anything in it that depends on "today" must be looked up or recomputed against the authoritative datetime above. ` +
         `Do NOT use discord_send_message — just reply with text. ${notifyInstruction}\n\n`;
       const response = await ask(cronContext + job.prompt, { trigger: "cron" });
-      const isNoreply = response.text.includes("[noreply]");
+      // 與一般 Discord 對話共用同一套哨符判定（utils/no-reply.ts）：
+      // trim 後整則相等、大小寫不敏感，避免把夾帶正常內容的回覆整個誤吞。
+      const isNoreply = isNoReplySentinel(response.text);
       logger.info({ id: job.id, noreply: isNoreply, result: response.text.slice(0, 200) }, "cron result");
       if (job.channel_id && response.text && !isNoreply) {
         await sendAndPersist(job.channel_id, response.text, `Scheduled task "${job.name}"`);

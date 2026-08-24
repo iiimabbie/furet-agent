@@ -385,6 +385,25 @@ Agent 在 tool call 之間產生的文字以 `> 引用` 併進同一則進度訊
 純過場，最終回覆會覆蓋整則訊息，不另發訊息。emit 點在執行工具之前，順序才與實際動作一致。
 單段上限 300 字，整則超過 1900 字截尾；`text` 事件不套用防抖。
 
+### 靜默回覆哨符（`[no_reply]`）
+一般 Discord 對話與排程 / 提醒**共用同一套哨符判定**：當模型**最終**文字回覆整則就是
+`[no_reply]` 時，不向下游送出任何訊息。一般對話由 `handleTrigger` 直接刪掉進度訊息後 return；
+排程由 `gateway.ts` 判定為 no-reply 後不推播（`on_event` 模式下代表「正常、無事可報」）。這是
+防 bot 互相喚醒迴圈、以及排程靜默的收尾方式——想安靜停下時回這個哨符即可，不必再發一般文字。
+
+判定集中在 `src/utils/no-reply.ts` 的 `isNoReplySentinel()`，`bot.ts` 與 `gateway.ts` 都 import
+它，不再各自實作：**trim 後整則相等、大小寫不敏感**，`[no_reply]` / `  [NO_REPLY]  ` 都算。
+刻意不是 `includes`——一般對話的回覆常夾帶說明文字，`includes` 會把「我先不回好了，[no_reply]」
+這種含實質內容的訊息整個誤吞。因此哨符只在整則就是它本身時才生效，夾帶其他文字時**不**生效。
+
+Canonical token 統一為 `[no_reply]`，prompt（含排程 `on_event` 的指令：reply with exactly
+`[no_reply]`）與文件一律只推它。helper 另外接受早期排程用過的 legacy alias `[noreply]`（無底線）
+以相容既有 crons，但不在任何 prompt / 文件裡宣傳。
+
+攔截點在下游輸出邊界：一般對話是 `bot.ts` 的 `handleTrigger`，排在既有 `!response.text` 空文字
+分支之後；排程是 `gateway.ts` 的 cron 執行段。兩者都不動 agent 串流、核心執行迴圈或工具流程，
+session 照常記錄該回合。
+
 ### Slash Commands
 - `/new` — silent memory flush + 歸檔 session + AI 重新打招呼
 - `/status` — 顯示 model / cost / tokens / sessions / crons / reminders / skills
