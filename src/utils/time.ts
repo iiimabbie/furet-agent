@@ -1,15 +1,20 @@
 import { loadConfig } from "../config.js";
 
 /**
- * 時間格式化。全部走 config 的 timezone，不寫死任何地區。
+ * 解析當前使用的 IANA 時區。全專案共用的單一口徑，不寫死任何地區。
  *
- * config.timezone 留空時用系統時區（`Intl` 解析出來的），
- * 這樣別人裝起來預設就是對的，不會拿到台北時間。
+ * 優先序：`config.timezone` → 系統時區（`Intl` 解析出來的）→ 最後才 `UTC`。
+ * config.timezone 留空時用系統時區，這樣別人裝起來預設就是對的，不會拿到台北
+ * 時間；連系統時區都拿不到才退到 UTC。log 每日分檔（logger.ts）也走這支，
+ * 確保分檔日期與記憶檔名／日記日期同一口徑。
  */
-function tz(): string {
+export function resolveTimeZone(): string {
   const configured = loadConfig().timezone;
   return configured || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 }
+
+/** 內部別名，維持既有呼叫點簡潔。 */
+const tz = resolveTimeZone;
 
 /**
  * 對話用的短時間戳：`MM/DD HH:mm`

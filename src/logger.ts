@@ -1,7 +1,7 @@
 import pino from "pino";
 import pretty from "pino-pretty";
 import { LOGS_DIR } from "./paths.js";
-import { loadConfig } from "./config.js";
+import { resolveTimeZone } from "./utils/time.js";
 import { createDailyFileStream } from "./dailyFileStream.js";
 
 /**
@@ -41,10 +41,11 @@ function serializeError(error: unknown, seen = new WeakSet<object>()): unknown {
  * `YYYY-MM-DD HH:mm:ss` 單行格式，再寫入 daily file stream；後者依當下本地
  * 日期挑檔名，跨午夜時自動換檔、以 append 開啟，不需重啟程序。
  *
- * 分檔用的時區與記憶檔名／日記日期同一口徑：優先用 `config.timezone`，留空時
- * 才 fallback 到 `Asia/Taipei`，避免文件宣稱與實作不一致。
+ * 分檔用的時區走 `resolveTimeZone()`——與記憶檔名／日記日期／system prompt
+ * 同一口徑：優先 `config.timezone`，未設定或空白時退到系統 IANA 時區，最後才
+ * UTC，不硬編碼任何地區，避免文件宣稱與實作不一致。
  */
-const timeZone = loadConfig().timezone || "Asia/Taipei";
+const timeZone = resolveTimeZone();
 
 const prettyStream = pretty({
   destination: createDailyFileStream({ dir: LOGS_DIR, prefix: "furet", timeZone }),

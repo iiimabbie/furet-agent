@@ -67,7 +67,7 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
 
 為什麼不用 pino-pretty 的 `destination` 直接指路徑：那是固定字串，無法在跨午夜時自動換檔。改用 Writable 當 destination 才能在寫入當下決定檔名。
 
-**分檔時區跟 `config.timezone` 同一口徑**：`logger.ts` 傳入 `loadConfig().timezone`，留空時才 fallback 到 `Asia/Taipei`（`createDailyFileStream` 的 `timeZone` 預設）。這樣分檔日期與 `today()`（記憶檔名、日記日期）不會分岔——先前把時區寫死在 `Asia/Taipei` 才會造成文件宣稱與實作不一致。
+**分檔時區跟 `config.timezone` 同一口徑**：`logger.ts` 傳入 `resolveTimeZone()`（`src/utils/time.ts`）的結果——與 `today()`（記憶檔名、日記日期）、`nowWithZone()`（system prompt）共用同一支時區解析，優先序為 `config.timezone` → 系統 IANA 時區（`Intl.DateTimeFormat().resolvedOptions().timeZone`）→ `UTC`，**不硬編碼任何地區**。`createDailyFileStream` 的 `timeZone` 參數預設 `UTC`，只是底層工具在呼叫端未傳值時的最終保險；正常路徑一律由 `logger.ts` 傳入解析後的時區。這樣分檔日期與記憶／日記日期不會分岔——先前把 fallback 寫死成 `Asia/Taipei` 才會造成文件宣稱與實作不一致。
 
 **底層錯誤不會變成 uncaught crash**：`fs.WriteStream` 可能在 open 階段（權限不足、路徑不存在）或寫入時拋錯並 emit `error`；沒人監聽的話 Node 會升級成未處理例外直接讓程序倒下。自訂 Writable 因此分兩條路徑轉送，並用旗標互斥保證任一次錯誤只傳播一次、callback 不重複：
 

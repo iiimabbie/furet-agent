@@ -26,7 +26,11 @@ export interface DailyFileStreamOptions {
   dir: string;
   /** 檔名前綴，實際檔名為 `${prefix}-YYYY-MM-DD.log` */
   prefix?: string;
-  /** 用來取得本地日期的 IANA 時區，預設 Asia/Taipei */
+  /**
+   * 用來取得本地日期的 IANA 時區。呼叫端（logger.ts）一律傳入
+   * `resolveTimeZone()` 的結果（config.timezone → 系統時區 → UTC）；此處
+   * 預設的 `UTC` 只是底層工具的最終保險，不硬編碼任何地區。
+   */
   timeZone?: string;
 }
 
@@ -50,7 +54,7 @@ interface DatedStream {
 }
 
 export function createDailyFileStream(options: DailyFileStreamOptions): Writable {
-  const { dir, prefix = "furet", timeZone = "Asia/Taipei" } = options;
+  const { dir, prefix = "furet", timeZone = "UTC" } = options;
 
   mkdirSync(dir, { recursive: true });
 
