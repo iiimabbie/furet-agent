@@ -163,8 +163,12 @@ Read \`workspace/PEOPLE.md\` with read_file when you need someone's identity, ti
  * `<owner>` 刻意不套 PEOPLE.md 那種大小門檻：稱呼與權限判定每一輪都要用得到，
  * 退化成「需要時自己 read_file」等於允許它在某些輪次缺席。它只放不會過期的身分資訊，
  * 本來就不該長到需要設限——會長大的是 PEOPLE.md 和 MEMORY.md。
+ *
+ * `toolIndex`（`<tool-index>`）由 registry metadata 動態產生、agent.ts 依 exposure
+ * feature flag 決定要不要傳進來。它放在 skills 之後、runtime context（datetime /
+ * channel）之前，跟「你會什麼」歸在一起；persona anchor 仍留在最後一段。
  */
-export function buildSystemPrompt(extra?: string, recalled?: string): string {
+export function buildSystemPrompt(extra?: string, recalled?: string, toolIndex?: string): string {
   const persona = loadWorkspaceFile("SOUL.md");
 
   const skills = loadSkills();
@@ -180,7 +184,8 @@ export function buildSystemPrompt(extra?: string, recalled?: string): string {
     section(loadWorkspaceFile("MEMORY.md"), "memory"), // ┐
     buildPeopleSection(),                              // ├ 你知道什麼（太大時 people 退化成指標）
     section(recalled ?? "", "recalled-memories"),      // ┘
-    skillsSection,                                     // 你會什麼
+    skillsSection,                                     // 你會什麼（直接暴露的技能）
+    (toolIndex ?? "").trim(),                           // 你還會什麼（tool_catalog 可達的能力群）
     `Current datetime: ${nowWithZone()}`,              // ┐ 你現在在哪、什麼時候
     extra,                                             // ┘ channel / session 的 runtime context
     persona ? PERSONA_ANCHOR : "",                     // 錨定，最後一段

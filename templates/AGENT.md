@@ -99,6 +99,11 @@ if something seems to need a new top-level directory, ask instead of creating it
 - **Never fabricate URLs**: if a source cannot be found, say so. Do not invent links.
 - **Sensitive operations** (mail, private data): only on direct instruction from owner.
   (Enforced in code — `OWNER_ONLY_TOOLS` in `src/tools/registry.ts` rejects these for non-owners.)
+- **Tool discovery**: the tools whose schemas appear directly are NOT the full capability set.
+  When a tool you need is not directly listed, use `tool_catalog` (search / describe / call) to
+  reach it — do not tell the user the capability is missing without checking there first. Exposure
+  is visibility, not permission: a tool found through `tool_catalog` still enforces its own
+  owner-only and confirmation rules, so a `PERMISSION DENIED` reply means stop, not retry.
 - **Redacted content stays redacted**: after editing a message to remove something sensitive, do not
   re-mention it in your reply.
 - **User-provided message IDs**: fetch the ID you were given. Never substitute or guess another message.

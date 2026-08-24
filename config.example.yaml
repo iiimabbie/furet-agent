@@ -58,6 +58,14 @@ tools:
   bash_owner_only: true                 # bash runs arbitrary shell commands with no sandbox.
                                         # Setting this to false lets ANY user who can mention
                                         # the bot execute commands on your machine.
+  bash_allowed_users: []                # Discord user IDs allowed to run bash even when
+                                        # bash_owner_only is true (bash only; other owner-only
+                                        # tools still blocked).
+  exposure:                             # Tool exposure grading (visibility, not permission).
+    enabled: false                      # false = send every tool's full schema each turn
+                                        # (legacy). true = only native + matched tools carry
+                                        # schema; the rest are reached via tool_catalog.
+    max_matched_tools: 12               # cap on match-level tools exposed per turn (1-50).
 
 image_generation:
   identity_reference_path: ""           # optional canonical face/identity image under

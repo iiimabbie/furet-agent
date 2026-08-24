@@ -34,7 +34,8 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
     │   ├── web_fetch（web_fetch_20250910，max_uses: 5）
     │   └── code_execution（code_execution_20250825）
     │
-    ├── Custom Tools（本地執行，透過 tools/registry.ts 統一管理）
+    ├── Custom Tools（本地執行，透過 tools/registry.ts 統一管理；exposure 分級見 Tool 系統）
+    │   ├── tool_catalog # 探索／代理入口，exposure 開啟時走它取用未直接暴露的工具
     │   ├── bash / read_file / write_file / get_weather
     │   ├── image_gen     # GPT-only，Responses API 生圖／參考圖 edit 並附檔
     │   ├── memory_*      # 記憶管理（save / search / list / add / replace / remove）
@@ -169,6 +170,7 @@ cron / reminder / journal 跟使用者對話是並行跑的，trigger 與待送�
 | 人物層 | `workspace/PEOPLE.md` | `<people>` / `<people-index>` | 使用者身分、稱謂、權限（大小門檻，見下） |
 | 召回層 | 自動（向量搜尋） | `<recalled-memories>` | 根據 user message 語意召回的相關記憶 |
 | 技能層 | `workspace/skills/*/SKILL.md` | `<skills>` | 已啟用技能的描述 |
+| 工具索引層 | registry metadata（動態） | `<tool-index>` | exposure 開啟時列出 `tool_catalog` 可達的能力群；關閉時不插入（見 Tool 系統 › Tool Exposure） |
 | 時間層 | 自動生成 | （無） | 當前日期時間（時區由 `config.timezone` 決定） |
 | 額外層 | `options.systemPrompt` | （無） | 動態注入（如 Discord channel ID、session ID、flush 指令） |
 | 錨定層 | 自動生成 | `<persona-reminder>` | 結尾把語氣的最終依據指回 `<persona>` |
@@ -194,6 +196,12 @@ owner 的稱呼規則會整個從 prompt 消失，而程式不會察覺。
 召回記憶由 `ask()` 搜出來後傳進 `buildSystemPrompt()`，跟另外兩塊記憶排在一起——
 掛在字串尾端會排到錨定層後面，讓「結尾指回 persona」失效。
 各區塊組裝前先 trim：workspace 的 md 檔尾端自帶換行，不修掉會出現三連換行。
+
+`<tool-index>` 同理由 `ask()` 依 exposure feature flag 決定後傳進 `buildSystemPrompt()`
+的 `toolIndex` 參數，插在 skills 之後、runtime context（datetime / channel）之前——
+跟召回記憶一樣**不能**掛在字串尾端，否則會排到 persona anchor 後面，破壞「錨定留在
+最後一段」的不變量。tool history 投影是唯一刻意接在 anchor 之後的區塊：它是 untrusted
+的近期工具紀錄，要緊貼 messages，且本身已標明邊界。
 
 ### persona 的位置與錨定
 
@@ -470,9 +478,21 @@ interface Tool {
 
 ### Tool Registry
 
-`src/tools/registry.ts` — 統一管理所有 tool。新增 tool 只需：
+`src/tools/registry.ts` — 統一管理所有 tool，並且是**工具分級（exposure）的唯一來源**。
+新增 tool 只需：
 1. 在 `tools/builtin/` 建立檔案，導出 `Tool` 物件
-2. 在 `registry.ts` import 並加入陣列
+2. 在 `registry.ts` import，用 `reg(tool, exposure, group, { keywords, aliases, modelPredicate })`
+   加進 `baseRegistrations`
+
+`Tool` 介面本身不變；分級 metadata 包在 registry 端的 `ToolRegistration`（`tools/metadata.ts`）：
+`exposure`（`native` / `match` / `index` / `on-demand`）、`group`、`keywords`、`aliases`、
+`modelPredicate`。builtin 檔因此不用為了分級而改介面。module load 時會驗證工具名唯一、
+exposure 合法、`match` 至少有 keyword/alias。
+
+`executeTool(name, args)` 是**唯一執行入口**：owner-only 判定、bash allowlist、`read_file`
+路徑 guard 都在這裡。`executorMap` 與 owner-only 權限跟分級共用同一份註冊資料。
+`getToolDefinitions(ctx)` 每輪算出要送 API 的工具清單、`renderToolIndex()` 產生 `<tool-index>`、
+`getRegistration(name)` 供進度顯示查目標工具，全部由 registry 對外導出，`agent.ts` 不自行 filter。
 
 ### Tool 列表
 
@@ -516,7 +536,49 @@ interface Tool {
 | `skill_install/uninstall/list` | 技能管理 |
 | `usage_dashboard` | 用量／成本儀表板，輸出 PNG 到 attachments/ |
 | `discord_bot_mention_toggle` | 切換是否回應其他 bot |
+| `tool_catalog` | native 探索／代理入口：list_groups / search / describe / call，`call` 委派回 `executeTool()`（見 Tool Exposure） |
 | `self_evolve` | 用強模型（codingModel）修改自身代碼，sub-ask 模式 |
+
+### Tool Exposure（分級曝光）
+
+**曝光層只管理模型每輪看見多少工具資訊；權限仍由 `executeTool()` + `OWNER_ONLY_TOOLS` +
+trigger + 各工具確認規則負責。隱藏工具不等於降權，surface 工具也不等於提權。**
+
+由 `config.tools.exposure.enabled`（feature flag，預設 `false`）控制：
+
+- **關閉** → 行為與分級前完全一致：所有 local tool + 3 個 server tool 都送，GPT-only
+  `image_gen` 對非 GPT 仍過濾。一鍵 rollback 就是把 flag 設回 `false`。
+- **開啟** → 每輪只送必要工具的 schema，其餘走 `tool_catalog`。
+
+四個等級（`tools/metadata.ts` 的 `ExposureLevel`）：
+
+- `native`：每輪都送完整 schema（`tool_catalog` / `bash` / `read_file` / `write_file` /
+  `memory_save` / `memory_search` / `people_add` / `people_update` / `discord_react` /
+  `discord_attach_to_reply`）。3 個 server tool 視為 `native-provider`，因為不能被本地
+  `tool_catalog.call` 代理，第一版維持直接暴露。
+- `match`：由 `matchTools()` 這個 **deterministic** matcher（不另呼叫 LLM）依當輪 prompt 的
+  中英文 keyword、alias、名稱、日期/URL/路徑 signal 命中才送。命中有上限
+  `config.tools.exposure.max_matched_tools`（預設 12，clamp 1–50，native 不計入），
+  排序 exact name/alias > 多 keyword > 單 keyword/signal。
+- `index`：不送 schema，只在 `<tool-index>` 列出所屬能力群，需要時走 `tool_catalog`。
+- `on-demand`：不進 `<tool-index>`，只有使用者點名或 `tool_catalog.search` 才找得到；
+  給破壞性 / 不可逆 / 極低頻工具（delete 類、soul_guardian approve/restore、skill install/uninstall）。
+
+`tool_catalog`（`tools/builtin/tool-catalog.ts`）是統一探索／代理入口，永遠 `native`：
+
+- `list_groups` 列 index+match 可見能力群（on-demand 不列）；`search` 搜尋**所有**非 native
+  註冊（含 on-demand），回精簡結果；`describe` 回 description + input schema；`call` 代理執行。
+- **`call` 一律委派回注入的 `executeTool()`**，不碰 executor map，因此 owner-only、bash
+  allowlist、read_file guard、寄信/刪除確認全部照舊生效；`call` 拒絕呼叫自己（不遞迴）；
+  unknown tool / 權限不足 / schema 錯以純字串回給模型。輸出視為 untrusted metadata。
+- 避免循環 import：registry 建 catalog 時**注入** `executeTool` 與註冊清單，catalog 不 import
+  registry。
+
+`agent.ts` 端：`getToolDefinitions()` 每輪算清單傳給 `callAnthropic()`；`withTools=false` 的
+compact 流程仍完全不送工具。模型透過 `tool_catalog` `describe`/`call` 點到的工具會被加進
+request-scoped `enabledTools`，後續回合可直接暴露其 schema；進度顯示標成
+`tool_catalog → <target>`，tool history 照常留稽核證據。`image_gen` 的 GPT-only 由
+`modelPredicate` 在 `getToolDefinitions` 與 legacy 清單兩處都套用，catalog 不繞過。
 
 ## 記憶系統
 
@@ -689,7 +751,12 @@ furet/
 
 `bash` 是特例：它是沒有沙箱的任意指令執行，開放給非 owner 等於把 shell 開給
 任何能 @ 到 bot 的人。預設鎖成 owner-only，要放寬得在 `config.tools.bash_owner_only`
-明示 false。`self_evolve` 這類會改動自身原始碼的工具則不提供放寬選項。
+明示 false，或把個別 user ID 列進 `config.tools.bash_allowed_users`（僅放寬 bash，
+其他 owner-only 工具照擋）。`self_evolve` 這類會改動自身原始碼的工具則不提供放寬選項。
+
+工具**曝光**（exposure）跟工具**權限**是分開的兩層：`tool_catalog` 讓模型能找到並代理呼叫
+未直接暴露的工具，但代理一律回到 `executeTool()`，所以 on-demand / index 的降低可見度不會
+變成降低權限，owner-only 檢查也不會被 catalog 繞過（見 Tool 系統 › Tool Exposure）。
 
 `write_file` 同樣列入 owner-only：它沒有路徑邊界，寫得進 `src/` 就等於繞過
 `bash` 的限制。非 owner 也沒有寫任意檔案的需求——記人記事走 `people_*` /

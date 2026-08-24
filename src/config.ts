@@ -45,6 +45,16 @@ export interface FuretConfig {
      * 只放寬 bash，不等於 owner——其他 owner-only 工具仍然擋。
      */
     bash_allowed_users: string[];
+    /**
+     * Tool exposure grading. Off = every tool's full schema is sent each turn
+     * (legacy behavior). On = only native + matched tools carry schema; the rest are
+     * reached through tool_catalog. Exposure is visibility, not permission.
+     */
+    exposure: {
+      enabled: boolean;
+      /** Cap on how many `match`-level tools are exposed per turn (native excluded). */
+      max_matched_tools: number;
+    };
   };
   image_generation: {
     /** Optional canonical identity image, relative to the Furet root or absolute. */
@@ -94,6 +104,10 @@ const DEFAULTS: FuretConfig = {
   tools: {
     bash_owner_only: true,
     bash_allowed_users: [],
+    exposure: {
+      enabled: false,
+      max_matched_tools: 12,
+    },
   },
   image_generation: {
     identity_reference_path: "",
@@ -130,6 +144,40 @@ function defined(value: unknown): Record<string, unknown> {
   );
 }
 
+/** Clamp a possibly-invalid number to [min, max], falling back to `fallback` for
+ *  empty/NaN/non-finite/negative-out-of-range values. */
+function sanitizeInt(value: unknown, fallback: number, min: number, max: number): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const rounded = Math.round(n);
+  if (rounded < min) return min;
+  if (rounded > max) return max;
+  return rounded;
+}
+
+/**
+ * Merge the nested `tools` block with a deep pass on `exposure`. A shallow spread would
+ * let a user who writes only `exposure: { enabled: true }` drop `max_matched_tools`
+ * into undefined; here we merge exposure key-by-key and sanitize the cap.
+ */
+function mergeToolsConfig(resolvedTools: unknown): FuretConfig["tools"] {
+  const top = defined(resolvedTools);
+  const rawExposure = defined(top.exposure);
+  delete top.exposure;
+  const exposure = {
+    enabled: typeof rawExposure.enabled === "boolean"
+      ? rawExposure.enabled
+      : DEFAULTS.tools.exposure.enabled,
+    max_matched_tools: sanitizeInt(
+      rawExposure.max_matched_tools,
+      DEFAULTS.tools.exposure.max_matched_tools,
+      1,
+      50,
+    ),
+  };
+  return { ...DEFAULTS.tools, ...top, exposure } as FuretConfig["tools"];
+}
+
 let cached: FuretConfig | null = null;
 let cachedMtimeMs = 0;
 
@@ -161,7 +209,7 @@ export function loadConfig(): FuretConfig {
     discord: { ...DEFAULTS.discord, ...defined(resolved.discord) } as FuretConfig["discord"],
     journal: { ...DEFAULTS.journal, ...defined(resolved.journal) } as FuretConfig["journal"],
     soul_guardian: { ...DEFAULTS.soul_guardian, ...defined(resolved.soul_guardian) } as FuretConfig["soul_guardian"],
-    tools: { ...DEFAULTS.tools, ...defined(resolved.tools) } as FuretConfig["tools"],
+    tools: mergeToolsConfig(resolved.tools),
     image_generation: { ...DEFAULTS.image_generation, ...defined(resolved.image_generation) } as FuretConfig["image_generation"],
     prompt: { ...DEFAULTS.prompt, ...defined(resolved.prompt) } as FuretConfig["prompt"],
     skills: (resolved.skills as string[] | undefined) ?? DEFAULTS.skills,
