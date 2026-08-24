@@ -1,9 +1,8 @@
 import pino from "pino";
-import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import pretty from "pino-pretty";
 import { LOGS_DIR } from "./paths.js";
-
-mkdirSync(LOGS_DIR, { recursive: true });
+import { loadConfig } from "./config.js";
+import { createDailyFileStream } from "./dailyFileStream.js";
 
 /**
  * Preserve the full Error chain in structured logs.
@@ -35,18 +34,37 @@ function serializeError(error: unknown, seen = new WeakSet<object>()): unknown {
   return serialized;
 }
 
-export const logger = pino({
-  level: process.env.LOG_LEVEL ?? "debug",
-  serializers: { err: serializeError },
-  transport: {
-    target: "pino-pretty",
-    options: {
-      destination: resolve(LOGS_DIR, "furet.log"),
-      mkdir: true,
-      colorize: false,
-      translateTime: "SYS:yyyy-mm-dd HH:MM:ss",
-      ignore: "pid,hostname",
-      singleLine: true,
-    },
-  },
+/**
+ * Log 依「本地日期」每天分檔：`logs/furet-YYYY-MM-DD.log`。
+ *
+ * pino-pretty 在主執行緒把每筆 log 格式化成人類可讀的
+ * `YYYY-MM-DD HH:mm:ss` 單行格式，再寫入 daily file stream；後者依當下本地
+ * 日期挑檔名，跨午夜時自動換檔、以 append 開啟，不需重啟程序。
+ *
+ * 分檔用的時區與記憶檔名／日記日期同一口徑：優先用 `config.timezone`，留空時
+ * 才 fallback 到 `Asia/Taipei`，避免文件宣稱與實作不一致。
+ */
+const timeZone = loadConfig().timezone || "Asia/Taipei";
+
+const prettyStream = pretty({
+  destination: createDailyFileStream({ dir: LOGS_DIR, prefix: "furet", timeZone }),
+  colorize: false,
+  translateTime: "SYS:yyyy-mm-dd HH:MM:ss",
+  ignore: "pid,hostname",
+  singleLine: true,
 });
+
+// daily file stream 會把底層 fs 的 open/write 錯誤轉送成 "error"。這裡掛一個
+// 最終保險 listener：真的寫檔失敗時不讓它變成 uncaught exception，而是印到
+// stderr（此時 logger 本身可能已無法寫檔）。
+prettyStream.on("error", (err) => {
+  process.stderr.write(`[logger] daily file stream error: ${String(err)}\n`);
+});
+
+export const logger = pino(
+  {
+    level: process.env.LOG_LEVEL ?? "debug",
+    serializers: { err: serializeError },
+  },
+  prettyStream,
+);

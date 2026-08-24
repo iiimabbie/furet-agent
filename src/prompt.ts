@@ -55,6 +55,26 @@ For Step 1, call \`journal_transcript_by_date\` for ${date}, not \`sessions_by_d
   return template.replace(/\{\{DATE\}\}/g, date) + transcriptPolicy;
 }
 
+/**
+ * 觸發當下的權威本地日期時間區塊，給 cron / reminder 的 user prompt 開頭用。
+ *
+ * cron / reminder 這類主動觸發常在接近午夜、或上游脈絡帶著舊日期時執行；
+ * 觀察到即使主機、config timezone、工具回傳資料都是正確的當日，模型仍可能忽略
+ * system prompt 裡的 `Current datetime`，把「今天」判成前一天，或把工具回傳的
+ * 當日資料誤當成未來。這裡在每次觸發當下用 `nowWithZone()` 產生明確、權威的
+ * 本地時間放進 user prompt 最前面，並明確要求：忽略任何衝突日期、不要把工具
+ * 回傳的當日資料視為未來。放在 user prompt（而非 system prompt）是因為要壓過
+ * 上游脈絡帶進來的日期，越靠近 messages 越不會被中間大量指令稀釋。
+ */
+export function authoritativeNowBlock(now: string = nowWithZone()): string {
+  return (
+    `[System] AUTHORITATIVE CURRENT LOCAL DATETIME: ${now}. ` +
+    `This is the single source of truth for what "today" and "now" are, computed at the moment this task fired. ` +
+    `Ignore and override any other date implied by prior context, cached reasoning, or upstream messages if it conflicts with this. ` +
+    `Data returned by tools that is dated today (memory files, calendar, tasks, etc.) is CURRENT — do NOT treat today's data as belonging to the future or to a later day.\n\n`
+  );
+}
+
 // --- Skill loading ---
 
 interface SkillSummary {

@@ -59,6 +59,24 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
 
 整個 `ask()` 跑在獨立的 request context（AsyncLocalStorage）裡，見「Request Context」一節。
 
+### Logging：依本地日期每天分檔
+
+`src/logger.ts` 用 pino + pino-pretty，把 log 以人類可讀的 `[YYYY-MM-DD HH:mm:ss] LEVEL: msg {json}` 單行格式寫入 `logs/`。日誌**依本地日期每天分檔**，檔名為 `logs/furet-YYYY-MM-DD.log`。
+
+`src/dailyFileStream.ts` 的 `createDailyFileStream()` 提供這個行為：pino-pretty 在主執行緒把每筆 log 格式化後寫進一個自訂 Writable，該 Writable 在每次寫入前用 `Intl.DateTimeFormat("en-CA", { timeZone })` 取當下本地日期挑檔名。跨午夜時會無縫關掉舊 stream、開新日期檔，**不需重啟程序**；檔案一律以 `flags: "a"`（append）開啟，啟動時不會覆蓋既有的當日 log。
+
+為什麼不用 pino-pretty 的 `destination` 直接指路徑：那是固定字串，無法在跨午夜時自動換檔。改用 Writable 當 destination 才能在寫入當下決定檔名。
+
+**分檔時區跟 `config.timezone` 同一口徑**：`logger.ts` 傳入 `loadConfig().timezone`，留空時才 fallback 到 `Asia/Taipei`（`createDailyFileStream` 的 `timeZone` 預設）。這樣分檔日期與 `today()`（記憶檔名、日記日期）不會分岔——先前把時區寫死在 `Asia/Taipei` 才會造成文件宣稱與實作不一致。
+
+**底層錯誤不會變成 uncaught crash**：`fs.WriteStream` 可能在 open 階段（權限不足、路徑不存在）或寫入時拋錯並 emit `error`；沒人監聽的話 Node 會升級成未處理例外直接讓程序倒下。自訂 Writable 因此分兩條路徑轉送，並用旗標互斥保證任一次錯誤只傳播一次、callback 不重複：
+
+- 進行中的寫入遇錯 → 透過該次 `write()` 的 `callback(err)` 回報，Node 依標準 stream 語意 destroy 外層並對消費者 emit `error`。
+- 非寫入期間浮現的錯誤（非同步 open 失敗、閒置時底層出錯）→ 由持久的 `error` listener 轉成 `outer.destroy(err)`。跨午夜換掉的舊 stream 之後才出錯的話，其 listener 會自行略過，不干擾新檔。
+
+`logger.ts` 再對 pretty stream 掛一個最終保險 `error` listener：真的寫檔失敗時印到 stderr（此時 logger 本身可能已無法寫檔），而不是讓錯誤逸散。
+
+
 1. 組 system prompt（`prompt.ts` 的 `buildSystemPrompt()`）
 2. 自動記憶召回：用使用者訊息做語意搜尋（`searchVectors`），結果注入 system prompt。
    `prompt` 為 null 時（Discord 路徑）改取 session 最後一則 user message，並剝掉

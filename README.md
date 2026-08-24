@@ -12,7 +12,7 @@ A self-hosted personal AI assistant for Discord and the terminal. Furet runs an 
 - Provides tools for files, shell commands, Discord moderation and messaging, scheduled jobs, reminders, Google Calendar/Gmail/Drive/Tasks, and weather.
 - Supports installable workspace skills and an owner-only `self_evolve` tool for proposing source changes through a stronger coding model.
 - Protects configured workspace files with Soul Guardian integrity monitoring.
-- Writes readable local logs with timestamps such as `[2026-08-21 09:04:52] INFO: gateway start`.
+- Writes readable local logs, rotated into one file per local day (`logs/furet-YYYY-MM-DD.log`), with timestamps such as `[2026-08-21 09:04:52] INFO: gateway start`.
 
 For the detailed architecture and data flow, see [material/DESIGN.md](material/DESIGN.md).
 
@@ -139,7 +139,11 @@ The installer creates `furet.service` only on Linux hosts where systemd is detec
 
 ### Logs
 
-Furet writes application logs to `logs/furet.log`. Log entries use local system time and a human-readable format:
+Furet writes application logs to `logs/`, split into one file per day named
+`logs/furet-YYYY-MM-DD.log`. The date follows the local time zone
+(`config.timezone`, e.g. `Asia/Taipei`), so a new file starts at local midnight
+without restarting the gateway. Existing daily files are appended to, never
+overwritten. Log entries use local time and a human-readable format:
 
 ```text
 [2026-08-21 09:04:52] INFO: discord trigger {"sessionId":"...","author":"yubbae"}

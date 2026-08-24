@@ -7,7 +7,7 @@ import { loadReminders, saveReminders, type Reminder } from "./tools/builtin/rem
 import { getDiscordClient } from "./tools/builtin/discord.js";
 import { startBot } from "./bot.js";
 import { Session } from "./session.js";
-import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt } from "./prompt.js";
+import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt, authoritativeNowBlock } from "./prompt.js";
 import { loadConfig } from "./config.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { chunkMessage } from "./utils/chunk-message.js";
@@ -97,10 +97,13 @@ function scheduleCron(job: CronJob): void {
       const notifyInstruction = job.notify === "on_event"
         ? "If the result is normal / OK with nothing to report, reply with exactly `[noreply]` and nothing else — the owner will NOT be notified. Only reply with actual content when there is an error, anomaly, or something genuinely worth the owner's attention."
         : "Your text response will be automatically delivered to the correct channel.";
+      // authoritativeNowBlock() 在觸發當下用 nowWithZone() 鎖定權威本地時間，
+      // 壓過任何上游脈絡帶進來的舊日期，避免把「今天」判成前一天。
       const cronContext =
+        authoritativeNowBlock() +
         `[System] The scheduled task "${job.name}" you set up is now running. ` +
         `Below is the instruction you left for your future self — carry it out now and write the actual message for the user. ` +
-        `It is an instruction, not a message to repeat verbatim; anything in it that depends on "today" must be looked up or recomputed against the current time. ` +
+        `It is an instruction, not a message to repeat verbatim; anything in it that depends on "today" must be looked up or recomputed against the authoritative datetime above. ` +
         `Do NOT use discord_send_message — just reply with text. ${notifyInstruction}\n\n`;
       const response = await ask(cronContext + job.prompt, { trigger: "cron" });
       const isNoreply = response.text.includes("[noreply]");
@@ -174,11 +177,14 @@ async function runReminder(r: Reminder): Promise<void> {
   const lateBySec = Math.round((Date.now() - new Date(r.triggerAt).getTime()) / 1000);
   logger.info({ id: r.id, name: r.name, lateBySec, prompt: r.prompt.slice(0, 100) }, "reminder triggered");
   try {
+    // authoritativeNowBlock() 在觸發當下用 nowWithZone() 鎖定權威本地時間，
+    // 壓過任何上游脈絡帶進來的舊日期；相對時間一律對這個時間重算。
     const reminderContext =
+      authoritativeNowBlock() +
       `[System] The reminder "${r.name}" you scheduled earlier has just fired. ` +
       `Below is the instruction you left for your future self — carry it out now and write the actual message for the user. ` +
       `It is an instruction, not a message to repeat verbatim. ` +
-      `Any relative time in it (dates, days remaining) must be recomputed against the current time; ` +
+      `Any relative time in it (dates, days remaining) must be recomputed against the authoritative datetime above; ` +
       `this reminder was due at ${r.triggerAt} and may be firing late. ` +
       `Your text response is delivered to the user automatically — do NOT use discord_send_message, just reply with text.\n\n`;
     const response = await ask(reminderContext + r.prompt, { trigger: "reminder" });
