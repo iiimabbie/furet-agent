@@ -1,7 +1,7 @@
 import { logger } from "./logger.js";
 import { loadConfig } from "./config.js";
 import { buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
-import { anthropicTools, executeTool } from "./tools/registry.js";
+import { executeTool, getToolDefinitions, renderToolIndex } from "./tools/registry.js";
 import { runWithContext, drainAttachments, queueAttachment } from "./tools/context.js";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -315,7 +315,13 @@ function nowTimestamp(): string {
 }
 
 
-async function callAnthropic(system: string, messages: Message[], model?: string, withTools = true): Promise<{
+async function callAnthropic(
+  system: string,
+  messages: Message[],
+  model?: string,
+  withTools = true,
+  tools?: unknown[],
+): Promise<{
   content: ContentBlock[];
   stop_reason: string;
   usage: { input_tokens: number; output_tokens: number };
@@ -337,13 +343,9 @@ async function callAnthropic(system: string, messages: Message[], model?: string
         max_tokens: 8192,
         system,
         messages,
-        ...(withTools ? {
-          // Native image generation is exposed only to GPT models. Claude does not
-          // have this capability, so do not advertise a tool it cannot use.
-          tools: anthropicTools.filter(tool =>
-            /^gpt(?:-|$)/i.test(model ?? llm.currentModel) || tool.name !== "image_gen"
-          ),
-        } : {}),
+        // Tool definitions are computed per turn by the caller (see getToolDefinitions).
+        // withTools=false (compact path) sends no tools at all.
+        ...(withTools && tools ? { tools } : {}),
       }),
     });
   } catch (err) {
@@ -451,12 +453,18 @@ export async function compactSession(session: import("./session.js").Session, mo
  * 不會被並行的 cron / reminder / 其他使用者請求互相污染。
  */
 export function ask(prompt: string | null, options: AgentOptions = {}): Promise<AgentResponse> {
-  return runWithContext(options.trigger ?? "unknown", options.userId, () => askInContext(prompt, options));
+  // Resolve the request-scoped model once here so it is bound to the request context
+  // (same ALS that carries trigger/userId). Tool-level model-capability gates read it
+  // via getRequestModel(), reflecting options.model ?? currentModel without a global,
+  // race-prone variable — and without the schema exposure layer and the execution gate
+  // disagreeing when a concurrent request overrides the model.
+  const effectiveModel = options.model ?? loadConfig().llm.currentModel;
+  return runWithContext(options.trigger ?? "unknown", options.userId, effectiveModel, () => askInContext(prompt, options));
 }
 
 async function askInContext(prompt: string | null, options: AgentOptions = {}): Promise<AgentResponse> {
   const startTime = Date.now();
-  const maxTurns = options.maxTurns ?? 50;
+  const maxTurns = options.maxTurns ?? 100;
   const toolsUsed: ToolActivity[] = [];
   const totalUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
 
@@ -489,8 +497,19 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
     }
   }
 
-  const baseSystemPrompt = buildSystemPrompt(options.systemPrompt, recalledSection);
-  const systemPrompt = baseSystemPrompt + renderToolHistory(session?.getRecentToolEvents() ?? []);
+  // Exposure feature: read flag once for this request.
+  const cfg = loadConfig();
+  const exposureEnabled = cfg.tools.exposure.enabled;
+  const maxMatchedTools = cfg.tools.exposure.max_matched_tools;
+
+  // <tool-index> is only injected when exposure is on; off keeps the legacy prompt.
+  // It is placed inside buildSystemPrompt (after skills, before runtime context) so the
+  // persona anchor stays the final section. Tool history is appended last, closest to the
+  // messages, deliberately outside the anchor.
+  const toolIndexSection = exposureEnabled ? renderToolIndex() : "";
+  const baseSystemPrompt = buildSystemPrompt(options.systemPrompt, recalledSection, toolIndexSection);
+  const systemPrompt = baseSystemPrompt
+    + renderToolHistory(session?.getRecentToolEvents() ?? []);
   logger.info({ systemPromptLength: systemPrompt.length, hasPersona: systemPrompt.includes("<persona>"), hasMemory: systemPrompt.includes("<memory>") }, "system prompt check");
 
   type ApiMessage = { role: "user" | "assistant"; content: string | ContentBlock[] };
@@ -556,8 +575,28 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
     messages.push({ role: "user", content: await buildUserContent(prompt + hook, options.images) });
   }
 
+  // Text used by the deterministic matcher: the freshest user intent. Prefer the
+  // explicit prompt; fall back to the last user message in the session (Discord path).
+  const matchText = (prompt ?? recallQuery ?? "");
+  const effectiveModel = options.model ?? cfg.llm.currentModel;
+  // Tools surfaced this request (named directly, or described/searched via tool_catalog).
+  // Once surfaced, a tool's schema may be exposed directly on subsequent turns.
+  const enabledTools = new Set<string>();
+
+  function toolsForTurn(): unknown[] {
+    return getToolDefinitions({
+      model: effectiveModel,
+      prompt: matchText,
+      trigger: options.trigger ?? "unknown",
+      hasAttachment: (options.images?.length ?? 0) > 0,
+      exposureEnabled,
+      maxMatchedTools,
+      enabledTools,
+    });
+  }
+
   for (let turn = 0; turn < maxTurns; turn++) {
-    const response = await callAnthropic(systemPrompt, messages, options.model);
+    const response = await callAnthropic(systemPrompt, messages, options.model, true, toolsForTurn());
 
     logger.info({
       turn,
@@ -655,10 +694,23 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
     // 讓 AI 自行決定如何繼續，而不是讓整個 ask() 直接拋出例外中斷。
     const toolResults: ContentBlock[] = [];
     for (const toolBlock of toolUseBlocks) {
+      // When the model reaches a tool through tool_catalog, surface the real target
+      // in progress and mark it enabled so later turns may expose its schema directly.
+      // Execution itself still goes through executeTool inside the catalog, so all
+      // owner-only / guard / confirmation rules stay in force.
+      let displayName = toolBlock.name;
+      if (toolBlock.name === "tool_catalog") {
+        const catAction = String((toolBlock.input as Record<string, unknown>).action ?? "");
+        const catTarget = String((toolBlock.input as Record<string, unknown>).tool_name ?? "").trim();
+        if (catTarget && (catAction === "call" || catAction === "describe")) {
+          enabledTools.add(catTarget);
+          displayName = `tool_catalog → ${catTarget}`;
+        }
+      }
       toolsUsed.push({ tool: toolBlock.name, input: toolBlock.input });
       logger.info({ tool: toolBlock.name, input: toolBlock.input }, "tool call");
       options.onToolUse?.(toolBlock.name, toolBlock.input);
-      options.onProgress?.({ type: "tool_start", toolCallId: toolBlock.id, toolName: toolBlock.name });
+      options.onProgress?.({ type: "tool_start", toolCallId: toolBlock.id, toolName: displayName });
       let result: string;
       let isError = false;
       try {
