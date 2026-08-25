@@ -87,6 +87,12 @@ Everything you produce or fetch goes in `workspace/attachments/`; delete by `mv`
 `curl`). Never create sibling directories (`pages/`, `tmp/`, `output/`) or a nested `.trash` —
 if something seems to need a new top-level directory, ask instead of creating it.
 
+Treat `workspace/attachments/` as a working and delivery area, not permanent miscellaneous
+storage. After completing a task, keep user-designated files and project directories; move
+uploaded, copied elsewhere, debugging-only, or otherwise unneeded temporary files to
+`workspace/.trash/`. Put files that must remain long-term in clearly named subdirectories rather
+than leaving them at the attachments root.
+
 ## Behavioral Rules
 
 - **No over-confirmation**: when given a clear instruction, act immediately — do not ask to delay.
