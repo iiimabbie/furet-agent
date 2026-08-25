@@ -8,6 +8,7 @@ import {
   GROUP_LABELS, isGptModel, normalizeForMatch, detectSignals, matchTools,
 } from "./metadata.js";
 import { createToolCatalog } from "./builtin/tool-catalog.js";
+import type { PluginToolRegistration } from "./plugin-types.js";
 
 const OWNER_ONLY_TOOLS = new Set([
   // write_file 沒有路徑邊界，寫得進 src/ 就等於繞過 bash 的 owner-only。
@@ -68,7 +69,7 @@ function reg(
   tool: Tool,
   exposure: ExposureLevel,
   group: string,
-  extra: Partial<Pick<ToolRegistration, "keywords" | "aliases" | "modelPredicate">> = {},
+  extra: Partial<Pick<ToolRegistration, "keywords" | "aliases" | "signals" | "modelPredicate">> = {},
 ): ToolRegistration {
   return { tool, exposure, group, ...extra };
 }
@@ -99,12 +100,12 @@ const baseRegistrations: ToolRegistration[] = [
   reg(peopleRemove, "match", "memory-people", { keywords: ["刪除人物", "移除某人", "people"] }),
 
   // ── match: schedules ──
-  reg(cronCreate, "match", "schedules", { keywords: ["排程", "cron", "每天", "每週", "每周", "定時", "schedule", "recurring"], aliases: ["定期任務"] }),
+  reg(cronCreate, "match", "schedules", { keywords: ["排程", "cron", "每天", "每週", "每周", "定時", "schedule", "recurring"], aliases: ["定期任務"], signals: ["hasDateTime"] }),
   reg(cronList, "match", "schedules", { keywords: ["排程", "cron", "排程列表", "schedule"] }),
   reg(cronDelete, "match", "schedules", { keywords: ["刪排程", "取消排程", "cron", "刪除排程"] }),
   reg(cronToggle, "match", "schedules", { keywords: ["停用排程", "啟用排程", "cron"] }),
   reg(cronUpdate, "match", "schedules", { keywords: ["改排程", "更新排程", "cron"] }),
-  reg(reminderCreate, "match", "schedules", { keywords: ["提醒", "remind", "reminder", "提醒我", "幾點叫我", "叫我"], aliases: ["提醒我"] }),
+  reg(reminderCreate, "match", "schedules", { keywords: ["提醒", "remind", "reminder", "提醒我", "幾點叫我", "叫我"], aliases: ["提醒我"], signals: ["hasDateTime"] }),
   reg(reminderList, "match", "schedules", { keywords: ["提醒列表", "reminder", "列出提醒"] }),
   reg(reminderDelete, "match", "schedules", { keywords: ["刪提醒", "取消提醒", "reminder"] }),
 
@@ -120,7 +121,7 @@ const baseRegistrations: ToolRegistration[] = [
   reg(discordArchiveThread, "match", "discord-messages", { keywords: ["封存", "archive", "討論串"] }),
 
   // ── match: google calendar (non-delete) ──
-  reg(calendarListEvents, "match", "google-calendar", { keywords: ["行程", "日曆", "會議", "活動", "calendar", "event", "行事曆"] }),
+  reg(calendarListEvents, "match", "google-calendar", { keywords: ["行程", "日曆", "會議", "活動", "calendar", "event", "行事曆"], signals: ["hasDateTime"] }),
   reg(calendarCreateEvent, "match", "google-calendar", { keywords: ["建立行程", "新增活動", "calendar", "event", "加行程"] }),
   reg(calendarUpdateEvent, "match", "google-calendar", { keywords: ["改行程", "更新活動", "calendar", "event"] }),
 
@@ -142,7 +143,7 @@ const baseRegistrations: ToolRegistration[] = [
 
   // ── match: other explicit-intent ──
   reg(selfEvolve, "match", "self-development", { keywords: ["改 code", "改程式", "修程式", "實作", "self evolve", "source code", "自我修改", "改原始碼"], aliases: ["s-e", "self_evolve"] }),
-  reg(imageGen, "match", "image-generation", { keywords: ["生成圖片", "生圖", "畫", "照片", "自拍", "image", "圖片"], modelPredicate: isGptModel }),
+  reg(imageGen, "match", "image-generation", { keywords: ["生成圖片", "生圖", "畫一張", "幫我畫", "繪圖", "插圖", "照片", "自拍", "image", "圖片", "去背", "移除背景"], signals: ["hasImageEditRequest"], modelPredicate: isGptModel }),
   reg(sessionSearch, "match", "history-journal", { keywords: ["搜尋對話", "歷史對話", "session search", "找對話", "以前說過"] }),
   reg(skillList, "match", "skills", { keywords: ["技能", "skill", "skill list", "列出技能"] }),
   reg(usageDashboard, "match", "usage", { keywords: ["用量", "usage", "儀表板", "dashboard", "統計", "花費"] }),
@@ -172,7 +173,7 @@ const CATALOG_NAME = "tool_catalog";
 // Injection avoids a circular import: the catalog factory receives executeTool and
 // the registration list rather than importing this module.
 const toolCatalog = createToolCatalog({
-  listRegistrations: () => baseRegistrations,
+  listRegistrations: () => allRegistrations(),
   executeTool: (name, args) => executeTool(name, args),
   catalogName: CATALOG_NAME,
 });
@@ -181,6 +182,86 @@ const registrations: ToolRegistration[] = [
   reg(toolCatalog, "native", "catalog"),
   ...baseRegistrations,
 ];
+
+/**
+ * Plugin-contributed registrations. Populated at runtime by `registerPluginTools()`
+ * (called from the plugin loader after dynamic import). Kept in a SEPARATE mutable array
+ * so the builtin `registrations` list — and its module-load validation — stay intact, and
+ * so every consumer below can fold plugins in via `allRegistrations()`.
+ */
+const pluginRegistrations: ToolRegistration[] = [];
+
+/** Names of plugin tools declared owner-only (the plugin default). Mirrors the builtin
+ *  OWNER_ONLY_TOOLS set for plugin tools; consulted by `isOwnerOnly()`. */
+const pluginOwnerOnly = new Set<string>();
+
+/** Runtime availability for plugin tools. Tools that require a start hook remain hidden
+ *  and uncallable until that hook succeeds. Names stay reserved even when unavailable. */
+const pluginAvailability = new Map<string, boolean>();
+
+/** Builtin registrations + plugin registrations. Single iteration source for selection,
+ *  <tool-index> rendering, the catalog list and the legacy full tool list. */
+function activePluginRegistrations(): ToolRegistration[] {
+  return pluginRegistrations.filter(r => pluginAvailability.get(r.tool.name) === true);
+}
+
+function allRegistrations(): ToolRegistration[] {
+  const activePlugins = activePluginRegistrations();
+  return activePlugins.length ? [...registrations, ...activePlugins] : registrations;
+}
+
+/** True when a tool name is already registered (builtin OR plugin). Used by the plugin
+ *  loader to enforce global name uniqueness before accepting a plugin. */
+export function hasToolName(name: string): boolean {
+  return registrationMap.has(name) || pluginRegistrations.some(r => r.tool.name === name);
+}
+
+/**
+ * Register a batch of validated plugin tools. Called by the plugin loader. Re-checks
+ * global name uniqueness (authoritative gate) and updates the executor / registration
+ * maps plus the owner-only set. Throws on a duplicate so the loader can isolate that
+ * plugin; it rejects the whole batch before mutating anything, so no partial registration.
+ */
+export function registerPluginTools(
+  regs: PluginToolRegistration[],
+  options: { active?: boolean } = {},
+): void {
+  const batchNames = new Set<string>();
+  for (const r of regs) {
+    if (hasToolName(r.tool.name) || batchNames.has(r.tool.name)) {
+      throw new Error(`Duplicate plugin tool name: ${r.tool.name}`);
+    }
+    batchNames.add(r.tool.name);
+  }
+  for (const r of regs) {
+    const registration: ToolRegistration = {
+      tool: r.tool,
+      exposure: r.exposure ?? "on-demand",
+      group: r.group,
+      keywords: r.keywords,
+      aliases: r.aliases,
+      signals: r.signals,
+      modelPredicate: r.modelPredicate,
+    };
+    pluginRegistrations.push(registration);
+    registrationMap.set(r.tool.name, registration);
+    executorMap.set(r.tool.name, r.tool.execute);
+    pluginAvailability.set(r.tool.name, options.active ?? true);
+    // Plugin tools default to owner-only unless the author explicitly set ownerOnly:false.
+    if (r.ownerOnly !== false) pluginOwnerOnly.add(r.tool.name);
+  }
+}
+
+
+/** Activate or deactivate a previously registered plugin's tools as one lifecycle unit. */
+export function setPluginToolsActive(names: string[], active: boolean): void {
+  for (const name of names) {
+    if (!pluginAvailability.has(name)) {
+      throw new Error(`Unknown plugin tool: ${name}`);
+    }
+  }
+  for (const name of names) pluginAvailability.set(name, active);
+}
 
 // ── Registration validation (runs once at module load) ──
 (function validateRegistrations() {
@@ -215,16 +296,18 @@ function toAnthropicTool(t: Tool) {
 }
 
 /**
- * Legacy full tool list — used only when the exposure feature flag is OFF, to keep
- * behavior identical to the pre-exposure version: every local tool (from
- * baseRegistrations, WITHOUT the exposure-only tool_catalog) plus the 3 server tools,
- * with the GPT-only image_gen filter applied by the caller. tool_catalog is an
- * exposure-mode construct and must never appear when the flag is OFF.
+ * Legacy full tool list (exposure flag OFF). A function rather than a constant because
+ * plugin registrations are added at runtime AFTER this module loads — a const captured at
+ * load time would omit them. baseRegistrations excludes the exposure-only tool_catalog by
+ * construction; plugin tools are folded in so the OFF path still exposes them.
  */
-export const anthropicTools = [
-  ...baseRegistrations.map(r => toAnthropicTool(r.tool)),
-  ...SERVER_TOOLS,
-];
+export function getAnthropicTools(): AnthropicToolDefinition[] {
+  return [
+    ...baseRegistrations.map(r => toAnthropicTool(r.tool)),
+    ...activePluginRegistrations().map(r => toAnthropicTool(r.tool)),
+    ...SERVER_TOOLS,
+  ];
+}
 
 export interface ToolSelectionContext {
   model: string;
@@ -267,22 +350,24 @@ function passesModelGate(r: ToolRegistration, model: string): boolean {
  */
 export function getToolDefinitions(ctx: ToolSelectionContext): AnthropicToolDefinition[] {
   if (!ctx.exposureEnabled) {
-    return anthropicTools.filter(t =>
-      t.name === "image_gen" ? isGptModel(ctx.model) : true,
-    );
+    const localTools = [...baseRegistrations, ...activePluginRegistrations()]
+      .filter(r => passesModelGate(r, ctx.model))
+      .map(r => toAnthropicTool(r.tool));
+    return [...localTools, ...SERVER_TOOLS];
   }
 
   const out: AnthropicToolDefinition[] = [];
   const normalized = normalizeForMatch(ctx.prompt);
   const signals = detectSignals(ctx.prompt, ctx.hasAttachment ?? false);
-  const matchRegs = registrations.filter(r => r.exposure === "match");
+  const all = allRegistrations();
+  const matchRegs = all.filter(r => r.exposure === "match");
   const hits = matchTools(matchRegs, normalized, signals, ctx.maxMatchedTools);
   const hitNames = new Set(hits.map(h => h.name));
   const enabled = ctx.enabledTools ?? new Set<string>();
 
   const included: string[] = [];
   const matchedNames: string[] = [];
-  for (const r of registrations) {
+  for (const r of all) {
     const name = r.tool.name;
     if (!passesModelGate(r, ctx.model)) continue;
 
@@ -309,7 +394,7 @@ export function getToolDefinitions(ctx: ToolSelectionContext): AnthropicToolDefi
     {
       exposure: "on",
       model: ctx.model,
-      nativeCount: registrations.filter(r => r.exposure === "native" && passesModelGate(r, ctx.model)).length,
+      nativeCount: all.filter(r => r.exposure === "native" && passesModelGate(r, ctx.model)).length,
       matchedNames,
       toolCount: out.length,
       jsonBytes,
@@ -328,7 +413,7 @@ export function getToolDefinitions(ctx: ToolSelectionContext): AnthropicToolDefi
  */
 export function renderToolIndex(): string {
   const groups = new Set<string>();
-  for (const r of registrations) {
+  for (const r of allRegistrations()) {
     if (r.exposure === "index") groups.add(r.group);
   }
   if (groups.size === 0) return "";
@@ -351,7 +436,7 @@ function isOwnerOnly(name: string): boolean {
     const userId = getUserId();
     return !(userId && bash_allowed_users.includes(userId));
   }
-  return OWNER_ONLY_TOOLS.has(name);
+  return OWNER_ONLY_TOOLS.has(name) || pluginOwnerOnly.has(name);
 }
 
 export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
@@ -366,6 +451,10 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
   // Enforcing it here covers both direct schema calls and catalog-proxied calls, and
   // does not break GPT's normal use (the predicate passes for GPT).
   const reg = registrationMap.get(name);
+  if (pluginAvailability.has(name) && pluginAvailability.get(name) !== true) {
+    logger.warn({ tool: name }, "plugin tool unavailable because startup did not complete");
+    return `⚠️ TOOL UNAVAILABLE: ${name} is registered but its plugin did not start successfully.`;
+  }
   if (reg?.modelPredicate) {
     // Use the request-scoped model (options.model ?? currentModel), bound in the ALS
     // request context by ask(). This reflects the model the request is actually running
@@ -380,7 +469,11 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
   }
   const executor = executorMap.get(name);
   if (!executor) return `Unknown tool: ${name}`;
-  return executor(args);
+  const result = await executor(args);
+  if (typeof result !== "string") {
+    throw new TypeError(`Tool ${name} violated the tool contract: execute() must resolve to a string (received ${typeof result})`);
+  }
+  return result;
 }
 
 /** Look up a registration by tool name (used e.g. for progress display of proxied calls). */

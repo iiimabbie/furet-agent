@@ -10,11 +10,11 @@ A self-hosted personal AI assistant for Discord and the terminal. Furet runs an 
 - Keeps per-channel sessions, archives prior conversations, and maintains daily plus long-term memory.
 - Uses a workspace-first model: persona, operating instructions, people records, skills, memories, sessions, and generated files are stored locally under `workspace/`.
 - Provides tools for files, shell commands, Discord moderation and messaging, scheduled jobs, reminders, Google Calendar/Gmail/Drive/Tasks, and weather.
-- Supports installable workspace skills and an owner-only `self_evolve` tool for proposing source changes through a stronger coding model.
+- Supports installable workspace skills, local private plugins, and an owner-only `self_evolve` tool for proposing source changes through a stronger coding model.
 - Protects configured workspace files with Soul Guardian integrity monitoring.
 - Writes readable local logs, rotated into one file per local day (`logs/furet-YYYY-MM-DD.log`), with timestamps such as `[2026-08-21 09:04:52] INFO: gateway start`.
 
-For the detailed architecture and data flow, see [material/DESIGN.md](material/DESIGN.md).
+For the detailed architecture and data flow, see [material/DESIGN.md](material/DESIGN.md). To build a private tool integration, see [docs/PLUGINS.md](docs/PLUGINS.md).
 
 ## Requirements
 
@@ -221,6 +221,12 @@ To enable Calendar, Gmail, Drive, and Tasks:
 5. Restart Furet and use `/google-auth` as the owner to complete authorization.
 
 `GOOGLE_API_KEY` is separate: it is only used for Gemini embedding-based semantic memory recall. Without it, memory search still works through full-text search.
+
+## Private plugins
+
+Private plugins can register deployment-specific tools without editing the built-in registry or committing private integrations to this repository. Plugins are loaded from `config.plugins`, default to owner-only, participate in tool exposure/catalog discovery, and run inside the Furet process without a sandbox.
+
+See [docs/PLUGINS.md](docs/PLUGINS.md) for the API contract, a working module example, configuration, security guidance, lifecycle behavior, and troubleshooting.
 
 ## Development
 

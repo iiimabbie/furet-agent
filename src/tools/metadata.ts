@@ -21,6 +21,8 @@ export type ExposureLevel = "native" | "match" | "index" | "on-demand";
  * this keeps builtin tool files from needing edits. The registry is the single source
  * of truth for classification — no second copy lives in agent.ts or prompt.ts.
  */
+export type MatchSignalName = "hasDateTime" | "hasAttachment" | "hasImageEditRequest";
+
 export interface ToolRegistration {
   tool: Tool;
   exposure: ExposureLevel;
@@ -30,6 +32,8 @@ export interface ToolRegistration {
   keywords?: string[];
   /** Alternate names/phrases; an exact mention counts as a direct hit. */
   aliases?: string[];
+  /** Coarse request signals that may expose a match-level tool. */
+  signals?: MatchSignalName[];
   /** Optional model gate — e.g. image_gen only exposes to GPT family. */
   modelPredicate?: (model: string) => boolean;
 }
@@ -70,14 +74,12 @@ export function normalizeForMatch(text: string): string {
 }
 
 export interface MatchSignal {
-  /** Whether a URL appears in the prompt. */
-  hasUrl: boolean;
   /** Whether a date/time expression appears. */
   hasDateTime: boolean;
-  /** Whether a file path appears. */
-  hasPath: boolean;
-  /** Whether the request has attachments. */
+  /** Whether the request has image attachments. */
   hasAttachment: boolean;
+  /** Whether an attached-image request asks for an edit rather than visual analysis. */
+  hasImageEditRequest: boolean;
 }
 
 /**
@@ -92,13 +94,13 @@ export interface MatchSignal {
  */
 export function detectSignals(prompt: string, hasAttachment: boolean): MatchSignal {
   return {
-    hasUrl: /https?:\/\/\S+/i.test(prompt),
     hasDateTime:
       /\d{1,2}[:：]\d{2}/.test(prompt) ||
       /\d{4}-\d{2}-\d{2}/.test(prompt) ||
       /(明天|後天|下週|下周|每天|每週|每周|幾點|點叫我|tomorrow|每月|下個月|下禮拜|禮拜[一二三四五六日天])/i.test(prompt),
-    hasPath: /(?:\/[\w.-]+){2,}|workspace\/|\.(?:ts|js|md|json|png|jpg|pdf|txt|yaml)\b/i.test(prompt),
     hasAttachment,
+    hasImageEditRequest: hasAttachment &&
+      /(去背|移除背景|去掉背景|背景去掉|換背景|修改圖片|編輯圖片|修圖|edit (?:this )?(?:image|photo)|remove (?:the )?background)/i.test(prompt),
   };
 }
 
@@ -153,10 +155,11 @@ export function matchTools(
       continue;
     }
 
-    // Signal-based hits: a scheduling-shaped date/time expression surfaces schedules +
-    // calendar candidates. Delete-class tools are on-demand and never reached here.
-    if (signals.hasDateTime && (reg.group === "schedules" || reg.group === "google-calendar")) {
-      hits.push({ name, group: reg.group, priority: 1, reason: "signal:datetime" });
+    // Signal-based hits are explicit registry metadata, so adding a coarse signal does
+    // not accidentally expose every tool in a vaguely related group.
+    const matchedSignal = (reg.signals ?? []).find(signal => signals[signal]);
+    if (matchedSignal) {
+      hits.push({ name, group: reg.group, priority: 1, reason: `signal:${matchedSignal}` });
       continue;
     }
   }

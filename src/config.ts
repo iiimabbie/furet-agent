@@ -3,6 +3,14 @@ import { parse, stringify } from "yaml";
 import { CONFIG_PATH } from "./paths.js";
 import "dotenv/config";
 
+/** One private plugin entry. `path` may be absolute or relative to the Furet root. */
+export interface PluginConfig {
+  /** Path to the plugin module (absolute, or relative to the Furet root). */
+  path: string;
+  /** Whether to load this plugin. Disabled plugins are skipped entirely. */
+  enabled: boolean;
+}
+
 export interface FuretConfig {
   llm: {
     api_key: string;
@@ -68,6 +76,12 @@ export interface FuretConfig {
     peopleInlineLimit: number;
   };
   skills: string[];
+  /**
+   * 私有外掛清單（預設空）。每筆指定本機 `path`（絕對或相對 Furet root）與 `enabled`。
+   * 外掛可註冊額外工具而不需修改 `src/tools/registry.ts`；載入時機與權限見 DESIGN.md。
+   * 不要把任何私人連線資料寫進 repo——外掛模組自己從 .env / 私有設定讀。
+   */
+  plugins: PluginConfig[];
   /** IANA 時區名（如 "Asia/Taipei"）。留空 = 用系統時區 */
   timezone: string;
 }
@@ -116,6 +130,7 @@ const DEFAULTS: FuretConfig = {
     peopleInlineLimit: 1500,
   },
   skills: [],
+  plugins: [],
   timezone: "",
 };
 
@@ -178,6 +193,26 @@ function mergeToolsConfig(resolvedTools: unknown): FuretConfig["tools"] {
   return { ...DEFAULTS.tools, ...top, exposure } as FuretConfig["tools"];
 }
 
+/**
+ * Normalize the `plugins` list. Anything that is not an object with a non-empty string
+ * `path` is dropped (a malformed entry must not crash config load). `enabled` defaults
+ * to `true` when omitted so an author can just list a path; set `false` to keep the entry
+ * around but skip loading. Path resolution against the Furet root happens in the loader.
+ */
+function mergePluginsConfig(resolvedPlugins: unknown): PluginConfig[] {
+  if (!Array.isArray(resolvedPlugins)) return [];
+  const out: PluginConfig[] = [];
+  for (const entry of resolvedPlugins) {
+    if (entry === null || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const path = typeof e.path === "string" ? e.path.trim() : "";
+    if (!path) continue;
+    const enabled = typeof e.enabled === "boolean" ? e.enabled : true;
+    out.push({ path, enabled });
+  }
+  return out;
+}
+
 let cached: FuretConfig | null = null;
 let cachedMtimeMs = 0;
 
@@ -213,6 +248,7 @@ export function loadConfig(): FuretConfig {
     image_generation: { ...DEFAULTS.image_generation, ...defined(resolved.image_generation) } as FuretConfig["image_generation"],
     prompt: { ...DEFAULTS.prompt, ...defined(resolved.prompt) } as FuretConfig["prompt"],
     skills: (resolved.skills as string[] | undefined) ?? DEFAULTS.skills,
+    plugins: mergePluginsConfig(resolved.plugins),
     timezone: (resolved.timezone as string | undefined) ?? DEFAULTS.timezone,
   };
 

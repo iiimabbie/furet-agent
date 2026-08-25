@@ -5,6 +5,8 @@ import { loadConfig } from "./config.js";
 import { listSkillDirs, readSkillMeta } from "./skills.js";
 import { nowWithZone } from "./utils/time.js";
 import { wrapTag } from "./utils/tagged-file.js";
+import { NO_REPLY_TOKEN } from "./utils/no-reply.js";
+import type { TriggerSource } from "./types.js";
 
 // --- External prompt loading ---
 
@@ -134,6 +136,25 @@ Stay in character as defined in <persona> above. Your voice — tone, register, 
 </persona-reminder>`;
 
 /**
+ * Code-owned response protocol. Unlike workspace/AGENT.md, this cannot disappear when a user
+ * trims or replaces their editable agent instructions. Keep only behavior coupled directly to
+ * runtime output handling here; personality and general work style still belong in workspace files.
+ */
+function buildRuntimePolicy(trigger: TriggerSource): string {
+  if (trigger !== "discord-owner" && trigger !== "discord-other") return "";
+
+  return `<runtime-policy>
+For every Discord-triggered turn, independently choose the lightest appropriate interaction: a text reply; an emoji reaction plus text; an emoji reaction only; or no interaction.
+
+A substantive direct question or request normally requires a text reply. Never use silence to avoid substantive work. A Discord mention is transport/routing metadata, not by itself evidence that text is required: many channel turns reach the agent through mentions, including acknowledgements, bot chatter, and messages where a reaction or silence is sufficient. In DMs, still judge the message by substantive intent rather than replying merely because it is a DM. When a reaction fully communicates acknowledgement, amusement, or agreement, prefer calling discord_react without adding redundant text.
+
+If no text should be sent — whether after reacting or with no interaction — the final response must be exactly ${NO_REPLY_TOKEN} and nothing else. This is an internal control token intercepted by Discord output handling; never append it to user-facing text or explain it to the user.
+
+Messages prefixed with [context] are background chatter. Never send a text reply to them. You may react only when genuinely appropriate, then finish with ${NO_REPLY_TOKEN}; otherwise return ${NO_REPLY_TOKEN} directly.
+</runtime-policy>`;
+}
+
+/**
  * PEOPLE.md 會隨著認識的人變多而長大，不適合無條件塞進每一次請求。
  *
  * 小的時候直接內嵌——成本幾十個 token，換到稱謂和權限一定正確；
@@ -168,7 +189,7 @@ Read \`workspace/PEOPLE.md\` with read_file when you need someone's identity, ti
  * feature flag 決定要不要傳進來。它放在 skills 之後、runtime context（datetime /
  * channel）之前，跟「你會什麼」歸在一起；persona anchor 仍留在最後一段。
  */
-export function buildSystemPrompt(extra?: string, recalled?: string, toolIndex?: string): string {
+export function buildSystemPrompt(extra?: string, recalled?: string, toolIndex?: string, trigger: TriggerSource = "unknown"): string {
   const persona = loadWorkspaceFile("SOUL.md");
 
   const skills = loadSkills();
@@ -186,6 +207,7 @@ export function buildSystemPrompt(extra?: string, recalled?: string, toolIndex?:
     section(recalled ?? "", "recalled-memories"),      // ┘
     skillsSection,                                     // 你會什麼（直接暴露的技能）
     (toolIndex ?? "").trim(),                           // 你還會什麼（tool_catalog 可達的能力群）
+    buildRuntimePolicy(trigger),                       // 程式耦合的輸出協定（不可由 workspace 精簡掉）
     `Current datetime: ${nowWithZone()}`,              // ┐ 你現在在哪、什麼時候
     extra,                                             // ┘ channel / session 的 runtime context
     persona ? PERSONA_ANCHOR : "",                     // 錨定，最後一段

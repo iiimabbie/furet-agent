@@ -5,6 +5,7 @@ import { validate } from "node-cron";
 import { logger } from "../../logger.js";
 import { CRONS_FILE } from "../../paths.js";
 import type { Tool } from "../../types.js";
+import { NO_REPLY_TOKEN } from "../../utils/no-reply.js";
 
 export interface CronJob {
   id: string;
@@ -14,7 +15,7 @@ export interface CronJob {
   enabled: boolean;
   createdAt: string;
   channel_id?: string;
-  /** "always": send any response to Discord (default). "on_event": agent replies with empty text to stay silent, text only when something is worth reporting. */
+  /** "always": send any response to Discord (default). "on_event": stay silent unless something is worth reporting. The runtime injects the canonical no-reply instruction and suppresses that sentinel automatically. */
   notify?: "always" | "on_event";
 }
 
@@ -41,7 +42,7 @@ export const cronCreate: Tool = {
       schedule: { type: "string", description: "Cron expression (e.g. '0 9 * * *' for daily 9am, '*/30 * * * *' for every 30 min)" },
       prompt: { type: "string", description: "Instruction for your future self on every run, NOT the message the user sees (you write that then). Include the facts needed, and nothing that is only true today — look those up at run time." },
       channel_id: { type: "string", description: "Discord channel ID to send the result to." },
-      notify: { type: "string", enum: ["always", "on_event"], description: "'always' (default): every response is sent to Discord. 'on_event': agent replies with empty text to stay silent, only sends text when something is worth reporting (errors, anomalies, important updates)." },
+      notify: { type: "string", enum: ["always", "on_event"], description: `'always' (default): every response is sent to Discord. 'on_event': stay silent unless something is worth reporting (errors, anomalies, important updates). At run time, the system automatically instructs the agent to reply exactly ${NO_REPLY_TOKEN} when there is nothing to report, then suppresses that sentinel instead of sending it to Discord. Do not duplicate this instruction in the task prompt.` },
     },
     required: ["name", "schedule", "prompt", "channel_id"],
   },
@@ -135,7 +136,7 @@ export const cronUpdate: Tool = {
       schedule: { type: "string", description: "New cron expression" },
       prompt: { type: "string", description: "New instruction for your future self (see cron_create — an instruction, not the final message)" },
       channel_id: { type: "string", description: "New Discord channel ID to send results to." },
-      notify: { type: "string", enum: ["always", "on_event"], description: "Change notify mode." },
+      notify: { type: "string", enum: ["always", "on_event"], description: `Change notify mode. With 'on_event', the system automatically instructs the agent to reply exactly ${NO_REPLY_TOKEN} when there is nothing to report, then suppresses that sentinel instead of sending it to Discord. The task prompt only needs to describe when there is something worth reporting; do not duplicate the sentinel instruction there.` },
     },
     required: ["id"],
   },
