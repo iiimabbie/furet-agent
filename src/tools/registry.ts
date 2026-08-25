@@ -69,7 +69,7 @@ function reg(
   tool: Tool,
   exposure: ExposureLevel,
   group: string,
-  extra: Partial<Pick<ToolRegistration, "keywords" | "aliases" | "modelPredicate">> = {},
+  extra: Partial<Pick<ToolRegistration, "keywords" | "aliases" | "signals" | "modelPredicate">> = {},
 ): ToolRegistration {
   return { tool, exposure, group, ...extra };
 }
@@ -100,12 +100,12 @@ const baseRegistrations: ToolRegistration[] = [
   reg(peopleRemove, "match", "memory-people", { keywords: ["刪除人物", "移除某人", "people"] }),
 
   // ── match: schedules ──
-  reg(cronCreate, "match", "schedules", { keywords: ["排程", "cron", "每天", "每週", "每周", "定時", "schedule", "recurring"], aliases: ["定期任務"] }),
+  reg(cronCreate, "match", "schedules", { keywords: ["排程", "cron", "每天", "每週", "每周", "定時", "schedule", "recurring"], aliases: ["定期任務"], signals: ["hasDateTime"] }),
   reg(cronList, "match", "schedules", { keywords: ["排程", "cron", "排程列表", "schedule"] }),
   reg(cronDelete, "match", "schedules", { keywords: ["刪排程", "取消排程", "cron", "刪除排程"] }),
   reg(cronToggle, "match", "schedules", { keywords: ["停用排程", "啟用排程", "cron"] }),
   reg(cronUpdate, "match", "schedules", { keywords: ["改排程", "更新排程", "cron"] }),
-  reg(reminderCreate, "match", "schedules", { keywords: ["提醒", "remind", "reminder", "提醒我", "幾點叫我", "叫我"], aliases: ["提醒我"] }),
+  reg(reminderCreate, "match", "schedules", { keywords: ["提醒", "remind", "reminder", "提醒我", "幾點叫我", "叫我"], aliases: ["提醒我"], signals: ["hasDateTime"] }),
   reg(reminderList, "match", "schedules", { keywords: ["提醒列表", "reminder", "列出提醒"] }),
   reg(reminderDelete, "match", "schedules", { keywords: ["刪提醒", "取消提醒", "reminder"] }),
 
@@ -121,7 +121,7 @@ const baseRegistrations: ToolRegistration[] = [
   reg(discordArchiveThread, "match", "discord-messages", { keywords: ["封存", "archive", "討論串"] }),
 
   // ── match: google calendar (non-delete) ──
-  reg(calendarListEvents, "match", "google-calendar", { keywords: ["行程", "日曆", "會議", "活動", "calendar", "event", "行事曆"] }),
+  reg(calendarListEvents, "match", "google-calendar", { keywords: ["行程", "日曆", "會議", "活動", "calendar", "event", "行事曆"], signals: ["hasDateTime"] }),
   reg(calendarCreateEvent, "match", "google-calendar", { keywords: ["建立行程", "新增活動", "calendar", "event", "加行程"] }),
   reg(calendarUpdateEvent, "match", "google-calendar", { keywords: ["改行程", "更新活動", "calendar", "event"] }),
 
@@ -143,7 +143,7 @@ const baseRegistrations: ToolRegistration[] = [
 
   // ── match: other explicit-intent ──
   reg(selfEvolve, "match", "self-development", { keywords: ["改 code", "改程式", "修程式", "實作", "self evolve", "source code", "自我修改", "改原始碼"], aliases: ["s-e", "self_evolve"] }),
-  reg(imageGen, "match", "image-generation", { keywords: ["生成圖片", "生圖", "畫", "照片", "自拍", "image", "圖片"], modelPredicate: isGptModel }),
+  reg(imageGen, "match", "image-generation", { keywords: ["生成圖片", "生圖", "畫一張", "幫我畫", "繪圖", "插圖", "照片", "自拍", "image", "圖片", "去背", "移除背景"], signals: ["hasImageEditRequest"], modelPredicate: isGptModel }),
   reg(sessionSearch, "match", "history-journal", { keywords: ["搜尋對話", "歷史對話", "session search", "找對話", "以前說過"] }),
   reg(skillList, "match", "skills", { keywords: ["技能", "skill", "skill list", "列出技能"] }),
   reg(usageDashboard, "match", "usage", { keywords: ["用量", "usage", "儀表板", "dashboard", "統計", "花費"] }),
@@ -195,10 +195,19 @@ const pluginRegistrations: ToolRegistration[] = [];
  *  OWNER_ONLY_TOOLS set for plugin tools; consulted by `isOwnerOnly()`. */
 const pluginOwnerOnly = new Set<string>();
 
+/** Runtime availability for plugin tools. Tools that require a start hook remain hidden
+ *  and uncallable until that hook succeeds. Names stay reserved even when unavailable. */
+const pluginAvailability = new Map<string, boolean>();
+
 /** Builtin registrations + plugin registrations. Single iteration source for selection,
  *  <tool-index> rendering, the catalog list and the legacy full tool list. */
+function activePluginRegistrations(): ToolRegistration[] {
+  return pluginRegistrations.filter(r => pluginAvailability.get(r.tool.name) === true);
+}
+
 function allRegistrations(): ToolRegistration[] {
-  return pluginRegistrations.length ? [...registrations, ...pluginRegistrations] : registrations;
+  const activePlugins = activePluginRegistrations();
+  return activePlugins.length ? [...registrations, ...activePlugins] : registrations;
 }
 
 /** True when a tool name is already registered (builtin OR plugin). Used by the plugin
@@ -213,7 +222,10 @@ export function hasToolName(name: string): boolean {
  * maps plus the owner-only set. Throws on a duplicate so the loader can isolate that
  * plugin; it rejects the whole batch before mutating anything, so no partial registration.
  */
-export function registerPluginTools(regs: PluginToolRegistration[]): void {
+export function registerPluginTools(
+  regs: PluginToolRegistration[],
+  options: { active?: boolean } = {},
+): void {
   const batchNames = new Set<string>();
   for (const r of regs) {
     if (hasToolName(r.tool.name) || batchNames.has(r.tool.name)) {
@@ -228,14 +240,27 @@ export function registerPluginTools(regs: PluginToolRegistration[]): void {
       group: r.group,
       keywords: r.keywords,
       aliases: r.aliases,
+      signals: r.signals,
       modelPredicate: r.modelPredicate,
     };
     pluginRegistrations.push(registration);
     registrationMap.set(r.tool.name, registration);
     executorMap.set(r.tool.name, r.tool.execute);
+    pluginAvailability.set(r.tool.name, options.active ?? true);
     // Plugin tools default to owner-only unless the author explicitly set ownerOnly:false.
     if (r.ownerOnly !== false) pluginOwnerOnly.add(r.tool.name);
   }
+}
+
+
+/** Activate or deactivate a previously registered plugin's tools as one lifecycle unit. */
+export function setPluginToolsActive(names: string[], active: boolean): void {
+  for (const name of names) {
+    if (!pluginAvailability.has(name)) {
+      throw new Error(`Unknown plugin tool: ${name}`);
+    }
+  }
+  for (const name of names) pluginAvailability.set(name, active);
 }
 
 // ── Registration validation (runs once at module load) ──
@@ -279,7 +304,7 @@ function toAnthropicTool(t: Tool) {
 export function getAnthropicTools(): AnthropicToolDefinition[] {
   return [
     ...baseRegistrations.map(r => toAnthropicTool(r.tool)),
-    ...pluginRegistrations.map(r => toAnthropicTool(r.tool)),
+    ...activePluginRegistrations().map(r => toAnthropicTool(r.tool)),
     ...SERVER_TOOLS,
   ];
 }
@@ -325,9 +350,10 @@ function passesModelGate(r: ToolRegistration, model: string): boolean {
  */
 export function getToolDefinitions(ctx: ToolSelectionContext): AnthropicToolDefinition[] {
   if (!ctx.exposureEnabled) {
-    return getAnthropicTools().filter(t =>
-      t.name === "image_gen" ? isGptModel(ctx.model) : true,
-    );
+    const localTools = [...baseRegistrations, ...activePluginRegistrations()]
+      .filter(r => passesModelGate(r, ctx.model))
+      .map(r => toAnthropicTool(r.tool));
+    return [...localTools, ...SERVER_TOOLS];
   }
 
   const out: AnthropicToolDefinition[] = [];
@@ -425,6 +451,10 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
   // Enforcing it here covers both direct schema calls and catalog-proxied calls, and
   // does not break GPT's normal use (the predicate passes for GPT).
   const reg = registrationMap.get(name);
+  if (pluginAvailability.has(name) && pluginAvailability.get(name) !== true) {
+    logger.warn({ tool: name }, "plugin tool unavailable because startup did not complete");
+    return `⚠️ TOOL UNAVAILABLE: ${name} is registered but its plugin did not start successfully.`;
+  }
   if (reg?.modelPredicate) {
     // Use the request-scoped model (options.model ?? currentModel), bound in the ALS
     // request context by ask(). This reflects the model the request is actually running
@@ -439,7 +469,11 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
   }
   const executor = executorMap.get(name);
   if (!executor) return `Unknown tool: ${name}`;
-  return executor(args);
+  const result = await executor(args);
+  if (typeof result !== "string") {
+    throw new TypeError(`Tool ${name} violated the tool contract: execute() must resolve to a string (received ${typeof result})`);
+  }
+  return result;
 }
 
 /** Look up a registration by tool name (used e.g. for progress display of proxied calls). */

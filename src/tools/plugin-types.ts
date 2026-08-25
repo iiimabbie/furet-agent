@@ -1,5 +1,5 @@
 import type { Tool } from "../types.js";
-import type { ExposureLevel } from "./metadata.js";
+import type { ExposureLevel, MatchSignalName } from "./metadata.js";
 
 /**
  * Stable public API for private Furet plugins (extensions).
@@ -39,6 +39,8 @@ export interface PluginToolRegistration {
   keywords?: string[];
   /** Alternate names/phrases; an exact mention counts as a direct match hit. */
   aliases?: string[];
+  /** Optional coarse request signals used by match exposure. */
+  signals?: MatchSignalName[];
   /** Optional model gate — same semantics as builtin `modelPredicate`. */
   modelPredicate?: (model: string) => boolean;
   /**

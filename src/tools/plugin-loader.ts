@@ -5,9 +5,9 @@ import { logger } from "../logger.js";
 import { loadConfig, type PluginConfig } from "../config.js";
 import { ROOT } from "../paths.js";
 import type { Tool } from "../types.js";
-import type { ExposureLevel } from "./metadata.js";
+import type { ExposureLevel, MatchSignalName } from "./metadata.js";
 import type { PluginManifest, PluginModule, PluginToolRegistration } from "./plugin-types.js";
-import { registerPluginTools, hasToolName } from "./registry.js";
+import { registerPluginTools, hasToolName, setPluginToolsActive } from "./registry.js";
 
 /**
  * Plugin loader + lifecycle.
@@ -30,7 +30,12 @@ interface LoadedPlugin {
   manifest: PluginManifest;
   /** Resolved absolute module path, for diagnostics. */
   resolvedPath: string;
+  toolNames: string[];
+  state: "loaded" | "started" | "failed";
 }
+
+const PLUGIN_START_TIMEOUT_MS = 10_000;
+const VALID_SIGNALS: MatchSignalName[] = ["hasDateTime", "hasAttachment", "hasImageEditRequest"];
 
 let loaded: LoadedPlugin[] = [];
 let didLoad = false;
@@ -100,11 +105,18 @@ function validatePluginTool(
     return { ok: false, error: `tool ${name}: aliases must be an array of non-empty strings` };
   }
   if (
+    r.signals !== undefined &&
+    (!Array.isArray(r.signals) || r.signals.some(v => !VALID_SIGNALS.includes(v as MatchSignalName)))
+  ) {
+    return { ok: false, error: `tool ${name}: signals must contain only ${VALID_SIGNALS.join(", ")}` };
+  }
+  if (
     exposure === "match" &&
     ((r.keywords as string[] | undefined)?.length ?? 0) === 0 &&
-    ((r.aliases as string[] | undefined)?.length ?? 0) === 0
+    ((r.aliases as string[] | undefined)?.length ?? 0) === 0 &&
+    ((r.signals as MatchSignalName[] | undefined)?.length ?? 0) === 0
   ) {
-    return { ok: false, error: `tool ${name}: match exposure requires at least one keyword or alias` };
+    return { ok: false, error: `tool ${name}: match exposure requires at least one keyword, alias, or signal` };
   }
   if (r.modelPredicate !== undefined && typeof r.modelPredicate !== "function") {
     return { ok: false, error: `tool ${name}: modelPredicate must be a function` };
@@ -121,6 +133,7 @@ function validatePluginTool(
       group: r.group as string,
       keywords: r.keywords as string[] | undefined,
       aliases: r.aliases as string[] | undefined,
+      signals: r.signals as MatchSignalName[] | undefined,
       modelPredicate: r.modelPredicate as ((model: string) => boolean) | undefined,
       // Plugin tools default to owner-only unless the author explicitly opts out.
       ownerOnly: r.ownerOnly === false ? false : true,
@@ -187,7 +200,9 @@ async function loadOne(entry: PluginConfig): Promise<void> {
   }
 
   try {
-    registerPluginTools(accepted);
+    // A plugin with a start hook is registered inactive: its names are reserved, but
+    // schemas/catalog entries stay hidden and execution is denied until start succeeds.
+    registerPluginTools(accepted, { active: manifest.start === undefined });
   } catch (err) {
     // registerPluginTools re-validates uniqueness under a lock; treat any throw as fatal
     // for this plugin only.
@@ -195,7 +210,12 @@ async function loadOne(entry: PluginConfig): Promise<void> {
     return;
   }
 
-  loaded.push({ manifest, resolvedPath });
+  loaded.push({
+    manifest,
+    resolvedPath,
+    toolNames: accepted.map(r => r.tool.name),
+    state: manifest.start ? "loaded" : "started",
+  });
   logger.info(
     { plugin: manifest.name, resolvedPath, toolCount: accepted.length },
     "plugin loaded",
@@ -229,11 +249,26 @@ export async function loadPlugins(): Promise<void> {
 export async function startPlugins(): Promise<void> {
   if (!didLoad) await loadPlugins();
   for (const p of loaded) {
-    if (!p.manifest.start) continue;
+    if (!p.manifest.start || p.state !== "loaded") continue;
+    let timer: NodeJS.Timeout | undefined;
     try {
-      await p.manifest.start();
+      await Promise.race([
+        Promise.resolve().then(() => p.manifest.start!()),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`plugin start timed out after ${PLUGIN_START_TIMEOUT_MS}ms`)),
+            PLUGIN_START_TIMEOUT_MS,
+          );
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      setPluginToolsActive(p.toolNames, true);
+      p.state = "started";
       logger.info({ plugin: p.manifest.name }, "plugin started");
     } catch (err) {
+      if (timer) clearTimeout(timer);
+      setPluginToolsActive(p.toolNames, false);
+      p.state = "failed";
       logger.error({ plugin: p.manifest.name, err }, "plugin start failed (isolated)");
     }
   }

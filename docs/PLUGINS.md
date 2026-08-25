@@ -92,6 +92,7 @@ interface PluginToolRegistration {
   exposure?: "native" | "match" | "index" | "on-demand";
   keywords?: string[];
   aliases?: string[];
+  signals?: ("hasDateTime" | "hasAttachment" | "hasImageEditRequest")[];
   modelPredicate?: (model: string) => boolean;
   ownerOnly?: boolean;
 }
@@ -109,8 +110,10 @@ The canonical TypeScript definitions are in `src/tools/plugin-types.ts` and `src
 ### Manifest
 
 - `name` is required and is used for logs and diagnostics. It is not a tool-name namespace.
-- `start` is optional and runs once during gateway startup, after registration and before background services begin accepting traffic.
-- `stop` is optional and runs during normal `SIGINT` or `SIGTERM` shutdown.
+- `start` is optional and runs once during gateway startup, after name reservation and before background services begin accepting traffic.
+- A plugin with `start` remains hidden from tool schemas and `tool_catalog`, and its tools cannot execute, until `start` succeeds.
+- Each `start` hook has a 10-second timeout. A throw or timeout marks that plugin failed while the gateway continues starting.
+- `stop` is optional and runs during normal `SIGINT` or `SIGTERM` shutdown, including best-effort cleanup for a plugin whose startup failed partway through.
 - A lifecycle hook failure is logged and isolated from other plugins.
 - `/restart` exits immediately for systemd to restart the process, so it intentionally does not wait for plugin `stop` hooks. A plugin must tolerate abrupt process termination.
 
@@ -119,7 +122,7 @@ The canonical TypeScript definitions are in `src/tools/plugin-types.ts` and `src
 - `name` must be non-empty and globally unique across built-in tools and all plugins. Names are not automatically prefixed with the plugin name.
 - `description` should clearly state what the tool does and when it should be used.
 - `parameters` is the JSON Schema sent to the model.
-- `execute` receives an argument object and must resolve to a string.
+- `execute` receives an argument object and must resolve to a string. Furet validates the result at runtime; a non-string result becomes a recoverable tool execution error instead of crashing the agent loop.
 - Validate security-sensitive arguments inside `execute`; the plugin loader validates the registration shape, not every runtime value.
 - Return useful error text for expected failures. Throwing is reserved for unexpected failures and is reported as a tool execution error.
 
@@ -149,6 +152,16 @@ Non-empty Chinese or English strings used by `match` exposure. Prefer specific p
 #### `aliases`
 
 Alternative tool names or phrases. Exact aliases receive stronger matching priority and are also useful for catalog search.
+
+#### `signals`
+
+Optional coarse request signals for `match` tools:
+
+- `hasDateTime`: a scheduling-shaped date or time expression is present.
+- `hasAttachment`: the request includes one or more image attachments.
+- `hasImageEditRequest`: the request includes an image and asks for an edit such as background removal or image modification.
+
+A signal must be declared explicitly by the tool. Prefer the narrower `hasImageEditRequest` for editing tools so a normal image-analysis request does not expose them unnecessarily.
 
 #### `modelPredicate`
 
@@ -188,6 +201,7 @@ Plugin loading is intentionally fail-soft:
 - Missing files, import errors, invalid manifests, invalid registration metadata, and duplicate tool names are logged.
 - One broken plugin does not prevent the gateway from starting.
 - A plugin is registered all-or-nothing. If any tool in it is invalid, none of its tools are registered.
+- Tool names are reserved when the module loads, but plugins with a `start` hook remain unavailable until startup succeeds. Failed or timed-out plugins do not appear in schemas or the catalog.
 - Loading is idempotent within one process. Editing a plugin file requires a process restart.
 - Disabled entries remain in configuration but are skipped.
 
@@ -214,7 +228,7 @@ Before enabling a plugin:
 - Every tool has a precise description and JSON Schema.
 - `execute` validates sensitive arguments and returns only non-secret text.
 - `ownerOnly` remains `true` unless non-owner access was deliberately reviewed.
-- `match` tools have at least one specific keyword or alias.
+- `match` tools have at least one specific keyword, alias, or supported signal.
 - Startup and shutdown hooks are idempotent and tolerate partial initialization.
 - Network clients have timeouts; shutdown does not depend on an unbounded wait.
 - The plugin tolerates abrupt `/restart` termination.

@@ -171,6 +171,7 @@ cron / reminder / journal 跟使用者對話是並行跑的，trigger 與待送�
 | 召回層 | 自動（向量搜尋） | `<recalled-memories>` | 根據 user message 語意召回的相關記憶 |
 | 技能層 | `workspace/skills/*/SKILL.md` | `<skills>` | 已啟用技能的描述 |
 | 工具索引層 | registry metadata（動態） | `<tool-index>` | exposure 開啟時列出 `tool_catalog` 可達的能力群；關閉時不插入（見 Tool 系統 › Tool Exposure） |
+| Runtime policy 層 | `src/prompt.ts`（程式生成） | `<runtime-policy>` | 與輸出攔截直接耦合、不可被 workspace 精簡掉的 Discord 回覆／靜默協定 |
 | 時間層 | 自動生成 | （無） | 當前日期時間（時區由 `config.timezone` 決定） |
 | 額外層 | `options.systemPrompt` | （無） | 動態注入（如 Discord channel ID、session ID、flush 指令） |
 | 錨定層 | 自動生成 | `<persona-reminder>` | 結尾把語氣的最終依據指回 `<persona>` |
@@ -396,20 +397,33 @@ Agent 在 tool call 之間產生的文字以 `> 引用` 併進同一則進度訊
 ### 靜默回覆哨符（`[no_reply]`）
 一般 Discord 對話與排程 / 提醒**共用同一套哨符判定**：當模型**最終**文字回覆整則就是
 `[no_reply]` 時，不向下游送出任何訊息。一般對話由 `handleTrigger` 直接刪掉進度訊息後 return；
-排程由 `gateway.ts` 判定為 no-reply 後不推播（`on_event` 模式下代表「正常、無事可報」）。這是
-防 bot 互相喚醒迴圈、以及排程靜默的收尾方式——想安靜停下時回這個哨符即可，不必再發一般文字。
+排程與提醒由 `gateway.ts` 判定為 no-reply 後不推播（cron 的 `on_event` 模式下代表「正常、無事可報」）。
+
+光有輸出攔截不夠：模型若不知道哨符存在，就永遠不會主動選擇它。但這項規則也不能只放在
+使用者可精簡或整份替換的 `workspace/AGENT.md`。`src/prompt.ts` 因此對 Discord trigger 固定生成
+`<runtime-policy>`：每回合自行在文字、reaction + 文字、reaction-only、完全不互動之間選最輕的
+適當回應；reaction-only 或不互動時，工具做完後最終只回 `[no_reply]`。有實質內容的直接問題或
+請求原則上仍要文字回覆，不能拿靜默逃避工作；mention 與 DM 只代表 Discord 的傳輸／路由形式，
+本身不構成必須回文字的理由，仍應依訊息意圖判斷。`[context]` 旁聽訊息禁止文字回覆，可視情況
+只按 reaction，再以哨符收尾。
+
+這個分工讓 code-owned runtime policy 負責「何時自主安靜」與哨符語法，輸出邊界負責「真的不要
+送出去」，而 cron 的 `on_event` runtime context 再針對「正常無事」加強一次。`AGENT.md` 不再承擔
+這個程式協定；它只保留可由使用者客製的工作方式。也不能只放在 cron tool description：那只在
+建立排程時可見，既管不到一般聊天，也不保證未來觸發排程的模型仍記得。
 
 判定集中在 `src/utils/no-reply.ts` 的 `isNoReplySentinel()`，`bot.ts` 與 `gateway.ts` 都 import
 它，不再各自實作：**trim 後整則相等、大小寫不敏感**，`[no_reply]` / `  [NO_REPLY]  ` 都算。
 刻意不是 `includes`——一般對話的回覆常夾帶說明文字，`includes` 會把「我先不回好了，[no_reply]」
 這種含實質內容的訊息整個誤吞。因此哨符只在整則就是它本身時才生效，夾帶其他文字時**不**生效。
 
-Canonical token 統一為 `[no_reply]`，prompt（含排程 `on_event` 的指令：reply with exactly
-`[no_reply]`）與文件一律只推它。helper 另外接受早期排程用過的 legacy alias `[noreply]`（無底線）
-以相容既有 crons，但不在任何 prompt / 文件裡宣傳。
+Canonical token 統一為 `[no_reply]`。程式生成的 prompt 與 tool schema 都從
+`src/utils/no-reply.ts` 匯入 `NO_REPLY_TOKEN`，避免 runtime 字串各自寫死；code-owned `<runtime-policy>`
+也用同一常數生成，讓模型一定知道如何輸出，不依賴 `AGENT.md`。架構文件只記錄協定。helper 另外接受早期排程用過的 legacy alias
+`[noreply]`（無底線）以相容既有 crons，但不在任何 prompt / 文件裡宣傳。
 
 攔截點在下游輸出邊界：一般對話是 `bot.ts` 的 `handleTrigger`，排在既有 `!response.text` 空文字
-分支之後；排程是 `gateway.ts` 的 cron 執行段。兩者都不動 agent 串流、核心執行迴圈或工具流程，
+分支之後；排程與提醒是 `gateway.ts` 各自的執行段。它們都不動 agent 串流、核心執行迴圈或工具流程，
 session 照常記錄該回合。
 
 ### Slash Commands
@@ -487,8 +501,8 @@ interface Tool {
 
 `Tool` 介面本身不變；分級 metadata 包在 registry 端的 `ToolRegistration`（`tools/metadata.ts`）：
 `exposure`（`native` / `match` / `index` / `on-demand`）、`group`、`keywords`、`aliases`、
-`modelPredicate`。builtin 檔因此不用為了分級而改介面。module load 時會驗證工具名唯一、
-exposure 合法、`match` 至少有 keyword/alias。
+`signals`、`modelPredicate`。builtin 檔因此不用為了分級而改介面。module load 時會驗證工具名唯一、
+exposure 合法、`match` 至少有 keyword/alias/signal。
 
 `executeTool(name, args)` 是**唯一執行入口**：owner-only 判定、bash allowlist、`read_file`
 路徑 guard 都在這裡。`executorMap` 與 owner-only 權限跟分級共用同一份註冊資料。
@@ -558,9 +572,9 @@ trigger + 各工具確認規則負責。隱藏工具不等於降權，surface �
   `discord_attach_to_reply`）。3 個 server tool 視為 `native-provider`，因為不能被本地
   `tool_catalog.call` 代理，第一版維持直接暴露。
 - `match`：由 `matchTools()` 這個 **deterministic** matcher（不另呼叫 LLM）依當輪 prompt 的
-  中英文 keyword、alias、名稱、日期/URL/路徑 signal 命中才送。命中有上限
+  中英文 keyword、alias、名稱，或工具明確宣告的日期時間／圖片附件 signal 命中才送。命中有上限
   `config.tools.exposure.max_matched_tools`（預設 12，clamp 1–50，native 不計入），
-  排序 exact name/alias > 多 keyword > 單 keyword/signal。
+  排序 exact name/alias > 多 keyword > 單 keyword/signal。signal 必須由每個工具在 registry 明確宣告；目前 `hasDateTime` 用於排程／日曆候選，`hasImageEditRequest`（附件加上修圖語意）用於圖片編輯；`hasAttachment` 保留給確實需要所有圖片附件的外掛。圖片關鍵字使用「幫我畫」「畫一張」等詞組，不使用單字「畫」，避免「計畫」誤觸。
 - `index`：不送 schema，只在 `<tool-index>` 列出所屬能力群，需要時走 `tool_catalog`。
 - `on-demand`：不進 `<tool-index>`，只有使用者點名或 `tool_catalog.search` 才找得到；
   給破壞性 / 不可逆 / 極低頻工具（delete 類、soul_guardian approve/restore、skill install/uninstall）。
@@ -614,6 +628,7 @@ interface PluginToolRegistration {
   exposure?: ExposureLevel;       // 省略預設 "on-demand"，私有工具不外洩到每輪 prompt
   keywords?: string[];            // match 用
   aliases?: string[];             // match 用
+  signals?: ("hasDateTime" | "hasAttachment" | "hasImageEditRequest")[]; // match 用的粗粒度 request signal
   modelPredicate?: (m: string) => boolean;
   ownerOnly?: boolean;            // 省略／true = owner-only（外掛預設）；明確 false 才放給非 owner
 }
@@ -625,7 +640,7 @@ interface PluginToolRegistration {
 ### 載入與生命週期
 
 - `loadPlugins()`：讀 `config.plugins`，只載 `enabled` 的。動態 `import(pathToFileURL(...))`，驗證 manifest / 每個 tool 的 schema（name/description/parameters/execute）、exposure 合法、名稱唯一、match metadata。**外掛是 all-or-nothing**：任一 tool 驗證失敗就整個外掛不載入，避免半註冊留下懸空名稱。單一外掛載入失敗一律 `logger.error` 後跳過，程式繼續啟動，**不讓 gateway crash**。冪等：同一 process 內重複呼叫是 no-op。
-- `startPlugins()` / `stopPlugins()`：分別跑各外掛的 `manifest.start()` / `stop()`。**失敗逐一隔離**——單一外掛 start/stop throw 只記錄，不拖垮其他外掛。
+- `startPlugins()` / `stopPlugins()`：分別跑各外掛的 `manifest.start()` / `stop()`。有 `start()` 的外掛在載入時只保留名稱、工具維持 inactive：不進 schema / catalog，也不能執行；`start()` 成功才整批啟用。每個 start hook 有 **10 秒 timeout**，throw 或逾時會標記 failed 並維持 inactive，單一外掛不會卡住或拖垮 gateway。`stop()` 仍會對 failed plugin 做 best-effort cleanup，處理部分初始化資源。
 - **時機**：`gateway.ts` 在初始化 SQLite 後、`loadAndScheduleAll()`（cron/reminder/journal/Discord 這些背景服務接流量）之前 `await loadPlugins()` + `await startPlugins()`。shutdown（SIGINT / SIGTERM）走共用的 `shutdown()`：先 `stopPlugins()`、再 `cleanup()` 清 PID、`process.exit(0)`；並設 5 秒硬性 timeout，任何外掛 stop 卡住都保證程序仍退出，**不 wedge systemd**。
 - `/restart`（`bot.ts` 的 `selfRestart()`）是刻意的立即 `process.exit(0)`，由 systemd（`Restart=always`）拉起，新 process 開機時重新 `loadPlugins()`；這條路徑不接 `stopPlugins`，維持既有 `/restart` 行為不變。
 
@@ -635,11 +650,11 @@ interface PluginToolRegistration {
 
 ### 權限與 catalog 一致性
 
-外掛工具跟 builtin 走**同一條** `executeTool()`：owner-only（`isOwnerOnly` 併查 `pluginOwnerOnly`）、model-capability gate、路徑 guard、確認規則全部照舊。`tool_catalog` 的 `list_groups` / `search` / `describe` / `call` 都看得到外掛工具，`call` 一樣委派回 `executeTool()`，所以**外掛的 ownerOnly 不會被 catalog 繞過**。exposure OFF 的 legacy 全工具清單（`getAnthropicTools()`）也把外掛折進來——因為外掛在 module load 之後才註冊，這個清單改成函式而非載入期常數，否則會漏掉外掛。
+已成功啟動的外掛工具跟 builtin 走**同一條** `executeTool()`：owner-only（`isOwnerOnly` 併查 `pluginOwnerOnly`）、model-capability gate、runtime string-result contract、路徑 guard、確認規則全部照舊。`tool_catalog` 的 `list_groups` / `search` / `describe` / `call` 都只看得到 active 外掛工具，`call` 一樣委派回 `executeTool()`，所以**外掛的 ownerOnly 不會被 catalog 繞過**。exposure OFF 的 legacy 全工具清單也只折入 active 外掛，並對每個 builtin/plugin registration 套用同一個 `modelPredicate`；不能只特判 `image_gen`，否則私人外掛的 model gate 會在 rollback 模式失效。
 
 ### 已知限制
 
-第一版 `Tool.execute` 仍是 `Promise<string>`，先不為了圖片結果大改 agent protocol。**Livly screenshot 若要在同一輪直接做視覺辨識**（把截圖當 image block 餵回模型），需要後續擴充 rich tool result（讓 tool 回傳結構化內容 / 圖片而非純字串），連動 `agent.ts` 的 tool_result 組裝與 `ContentBlock` 流。這次聚焦「擴充註冊」，rich result 留待後續。
+第一版 `Tool.execute` 仍是 `Promise<string>`，並在統一執行入口做 runtime 型別檢查；外部 JavaScript plugin 回傳 `undefined` 等非字串值時會成為可恢復的 tool error，不會一路流到 `agent.ts` 對 `.slice()` 造成 crash。先不為了圖片結果大改 agent protocol。**Livly screenshot 若要在同一輪直接做視覺辨識**（把截圖當 image block 餵回模型），需要後續擴充 rich tool result（讓 tool 回傳結構化內容 / 圖片而非純字串），連動 `agent.ts` 的 tool_result 組裝與 `ContentBlock` 流。這次聚焦「擴充註冊」，rich result 留待後續。
 
 ## 記憶系統
 

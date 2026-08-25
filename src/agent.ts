@@ -464,7 +464,7 @@ export function ask(prompt: string | null, options: AgentOptions = {}): Promise<
 
 async function askInContext(prompt: string | null, options: AgentOptions = {}): Promise<AgentResponse> {
   const startTime = Date.now();
-  const maxTurns = options.maxTurns ?? 100;
+  const maxTurns = options.maxTurns ?? 50;
   const toolsUsed: ToolActivity[] = [];
   const totalUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
 
@@ -507,7 +507,7 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
   // persona anchor stays the final section. Tool history is appended last, closest to the
   // messages, deliberately outside the anchor.
   const toolIndexSection = exposureEnabled ? renderToolIndex() : "";
-  const baseSystemPrompt = buildSystemPrompt(options.systemPrompt, recalledSection, toolIndexSection);
+  const baseSystemPrompt = buildSystemPrompt(options.systemPrompt, recalledSection, toolIndexSection, options.trigger ?? "unknown");
   const systemPrompt = baseSystemPrompt
     + renderToolHistory(session?.getRecentToolEvents() ?? []);
   logger.info({ systemPromptLength: systemPrompt.length, hasPersona: systemPrompt.includes("<persona>"), hasMemory: systemPrompt.includes("<memory>") }, "system prompt check");
