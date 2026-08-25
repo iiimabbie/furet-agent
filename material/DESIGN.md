@@ -430,6 +430,7 @@ session 照常記錄該回合。
 | Reminder | 一次性提醒，每 15 秒輪詢 reminders.json 掃到期的，觸發後自動刪除 |
 | Journal | 每天固定時間：silent flush 所有 active session → 歸檔 → 重寫日記 → 更新 MEMORY.md |
 | Discord Bot | 有 token 且 enabled 時啟動 |
+| Plugins | 背景服務接流量前 `loadPlugins()` + `startPlugins()`；shutdown 時 `stopPlugins()`（見 Plugin 系統） |
 | PID file | `furet.pid`，啟動時殺掉舊進程確保單實例 |
 
 日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日記憶檔的 memory_save 筆記只當輔助。只讀每日檔會漏掉未被 memory_save 的對話（例如純聊天的社群互動）——flush 那步用的是「長期記憶」的門檻，而日記要的是連續性。兩道門檻因此分開：MEMORY.md 留 30 天長期濾網，每日檔／日記照收社群互動。
@@ -580,6 +581,64 @@ request-scoped `enabledTools`，後續回合可直接暴露其 schema；進度�
 `tool_catalog → <target>`，tool history 照常留稽核證據。`image_gen` 的 GPT-only 由
 `modelPredicate` 在 `getToolDefinitions` 與 legacy 清單兩處都套用，catalog 不繞過。
 
+## Plugin 系統（私有外掛）
+
+`src/tools/plugin-loader.ts` + `src/tools/plugin-types.ts` — 讓私有外掛（如私人的
+livly-mumu 外掛）從 `config.yaml` 指定的本機路徑載入並註冊額外工具，**不需修改
+`src/tools/registry.ts`**，也不把私人連線資料寫進 repo。
+
+### 設定
+
+`config.plugins`（預設空陣列）每筆 `{ path, enabled }`：
+
+- `path`：外掛模組路徑，**絕對**或**相對 Furet root**（`src/paths.ts` 的 `ROOT`）。相對路徑一律對 `ROOT` 解析，不依當下工作目錄——CWD 會漂移。
+- `enabled`：`false` 直接跳過。省略 `enabled` 視為 `true`。
+- 正規化在 `config.ts` 的 `mergePluginsConfig()`：非物件、`path` 非字串或空的條目直接丟棄，畸形設定不會讓 config load 崩潰。
+- **私人 secret 不放這裡**——外掛模組自己從 `.env` / 私有設定讀。repo 只知道路徑。
+
+### Plugin API（穩定介面）
+
+外掛模組 default export（或直接匯出同形狀的 namespace）為 `PluginModule`：
+
+```typescript
+interface PluginModule {
+  manifest: { name: string; start?: () => Promise<void> | void; stop?: () => Promise<void> | void };
+  tools: PluginToolRegistration[];
+}
+
+interface PluginToolRegistration {
+  tool: Tool;                     // 標準 Tool，execute 仍回 Promise<string>
+  group: string;                  // 能力群（<tool-index> / catalog 分組）
+  exposure?: ExposureLevel;       // 省略預設 "on-demand"，私有工具不外洩到每輪 prompt
+  keywords?: string[];            // match 用
+  aliases?: string[];             // match 用
+  modelPredicate?: (m: string) => boolean;
+  ownerOnly?: boolean;            // 省略／true = owner-only（外掛預設）；明確 false 才放給非 owner
+}
+```
+
+- **Tool 名稱全域唯一**：跟 builtin 或其他外掛撞名的工具會被拒，整個外掛不載入（不 silent shadow）。
+- **`ownerOnly` 預設 true**：私有外掛通常操作 owner 的資料/動作，預設鎖 owner。要放給 `discord-other` 得明確寫 `ownerOnly: false`。builtin 的 owner-only 走寫死的 `OWNER_ONLY_TOOLS` set；外掛改用這個 inline 宣告，由 `registry.ts` 的 `pluginOwnerOnly` set 承接，`isOwnerOnly()` 一併判定。
+
+### 載入與生命週期
+
+- `loadPlugins()`：讀 `config.plugins`，只載 `enabled` 的。動態 `import(pathToFileURL(...))`，驗證 manifest / 每個 tool 的 schema（name/description/parameters/execute）、exposure 合法、名稱唯一、match metadata。**外掛是 all-or-nothing**：任一 tool 驗證失敗就整個外掛不載入，避免半註冊留下懸空名稱。單一外掛載入失敗一律 `logger.error` 後跳過，程式繼續啟動，**不讓 gateway crash**。冪等：同一 process 內重複呼叫是 no-op。
+- `startPlugins()` / `stopPlugins()`：分別跑各外掛的 `manifest.start()` / `stop()`。**失敗逐一隔離**——單一外掛 start/stop throw 只記錄，不拖垮其他外掛。
+- **時機**：`gateway.ts` 在初始化 SQLite 後、`loadAndScheduleAll()`（cron/reminder/journal/Discord 這些背景服務接流量）之前 `await loadPlugins()` + `await startPlugins()`。shutdown（SIGINT / SIGTERM）走共用的 `shutdown()`：先 `stopPlugins()`、再 `cleanup()` 清 PID、`process.exit(0)`；並設 5 秒硬性 timeout，任何外掛 stop 卡住都保證程序仍退出，**不 wedge systemd**。
+- `/restart`（`bot.ts` 的 `selfRestart()`）是刻意的立即 `process.exit(0)`，由 systemd（`Restart=always`）拉起，新 process 開機時重新 `loadPlugins()`；這條路徑不接 `stopPlugins`，維持既有 `/restart` 行為不變。
+
+### 避免循環 import
+
+`plugin-loader.ts` import `registry.ts` 取 `registerPluginTools()` / `hasToolName()` 把註冊推進去；**registry 從不 import loader**（只 import `plugin-types.ts` 的型別）。註冊資料放在 registry 的獨立可變陣列 `pluginRegistrations`，builtin 的 `registrations` 與其 module-load 驗證維持不動；所有消費端（`getToolDefinitions`、`renderToolIndex`、`tool_catalog` 的 `listRegistrations`、`registrationMap` / `executorMap`、model gate）透過 `allRegistrations()` 把外掛折進來。`registerPluginTools()` 在同步臨界區再驗一次全域唯一（撞名先整批拒絕再變動，不留半批）。
+
+### 權限與 catalog 一致性
+
+外掛工具跟 builtin 走**同一條** `executeTool()`：owner-only（`isOwnerOnly` 併查 `pluginOwnerOnly`）、model-capability gate、路徑 guard、確認規則全部照舊。`tool_catalog` 的 `list_groups` / `search` / `describe` / `call` 都看得到外掛工具，`call` 一樣委派回 `executeTool()`，所以**外掛的 ownerOnly 不會被 catalog 繞過**。exposure OFF 的 legacy 全工具清單（`getAnthropicTools()`）也把外掛折進來——因為外掛在 module load 之後才註冊，這個清單改成函式而非載入期常數，否則會漏掉外掛。
+
+### 已知限制
+
+第一版 `Tool.execute` 仍是 `Promise<string>`，先不為了圖片結果大改 agent protocol。**Livly screenshot 若要在同一輪直接做視覺辨識**（把截圖當 image block 餵回模型），需要後續擴充 rich tool result（讓 tool 回傳結構化內容 / 圖片而非純字串），連動 `agent.ts` 的 tool_result 組裝與 `ContentBlock` 流。這次聚焦「擴充註冊」，rich result 留待後續。
+
 ## 記憶系統
 
 ### 三層設計
@@ -708,6 +767,8 @@ furet/
 │       ├── registry.ts       # tool 註冊中心 ← tool 的權威清單
 │       ├── context.ts        # request context（AsyncLocalStorage）
 │       ├── guard.ts          # 非 owner 的檔案讀取路徑邊界
+│       ├── plugin-types.ts   # 私有外掛的穩定 API/型別
+│       ├── plugin-loader.ts  # 外掛動態載入 + start/stop 生命週期
 │       └── builtin/          # 每個 tool 一個檔
 ├── workspace/                # agent 工作空間（不進 git，由 templates/ 初始化）
 │   ├── *.md                  # AGENT / SOUL / MEMORY / PEOPLE / JOURNAL

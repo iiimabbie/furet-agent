@@ -14,6 +14,7 @@ import { chunkMessage } from "./utils/chunk-message.js";
 import { isNoReplySentinel } from "./utils/no-reply.js";
 import { ROOT } from "./paths.js";
 import { stamp, today } from "./utils/time.js";
+import { loadPlugins, startPlugins, stopPlugins } from "./tools/plugin-loader.js";
 
 async function sendToChannel(channelId: string, text: string): Promise<string[]> {
   const client = getDiscordClient();
@@ -282,6 +283,12 @@ logger.info("gateway start");
 import { getDb } from "./db.js";
 getDb();
 
+// Load & start private plugins BEFORE background services accept traffic (cron/reminder/
+// journal/Discord). A plugin's failure is isolated and logged inside the loader; it never
+// crashes the gateway.
+await loadPlugins();
+await startPlugins();
+
 loadAndScheduleAll();
 console.log(`Loaded ${loadReminders().length} reminders`);
 scheduleJournal();
@@ -308,15 +315,33 @@ function cleanup() {
   } catch {}
 }
 
-process.on("SIGINT", () => {
+/**
+ * Graceful shutdown shared by SIGINT / SIGTERM. Stops plugins (per-plugin isolated inside
+ * stopPlugins), removes the PID file, then exits 0 so systemd (Restart=always) and
+ * /restart keep working exactly as before. A hard timeout guarantees exit even if a
+ * plugin's stop() hangs — shutdown must never wedge.
+ */
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  // Safety net: force-exit if graceful stop takes too long.
+  const forceTimer = setTimeout(() => {
+    logger.warn({ signal }, "graceful shutdown timed out; forcing exit");
+    process.exit(0);
+  }, 5000);
+  forceTimer.unref?.();
+  try {
+    await stopPlugins();
+  } catch (err) {
+    logger.error({ err }, "stopPlugins threw during shutdown");
+  }
   cleanup();
-  console.log("\nGateway stopped.");
-  logger.info("gateway stop");
+  if (signal === "SIGINT") console.log("\nGateway stopped.");
+  logger.info({ signal }, "gateway stop");
+  clearTimeout(forceTimer);
   process.exit(0);
-});
+}
 
-process.on("SIGTERM", () => {
-  cleanup();
-  logger.info("gateway stop (SIGTERM)");
-  process.exit(0);
-});
+process.on("SIGINT", () => { void shutdown("SIGINT"); });
+process.on("SIGTERM", () => { void shutdown("SIGTERM"); });

@@ -8,6 +8,7 @@ import {
   GROUP_LABELS, isGptModel, normalizeForMatch, detectSignals, matchTools,
 } from "./metadata.js";
 import { createToolCatalog } from "./builtin/tool-catalog.js";
+import type { PluginToolRegistration } from "./plugin-types.js";
 
 const OWNER_ONLY_TOOLS = new Set([
   // write_file 沒有路徑邊界，寫得進 src/ 就等於繞過 bash 的 owner-only。
@@ -172,7 +173,7 @@ const CATALOG_NAME = "tool_catalog";
 // Injection avoids a circular import: the catalog factory receives executeTool and
 // the registration list rather than importing this module.
 const toolCatalog = createToolCatalog({
-  listRegistrations: () => baseRegistrations,
+  listRegistrations: () => allRegistrations(),
   executeTool: (name, args) => executeTool(name, args),
   catalogName: CATALOG_NAME,
 });
@@ -181,6 +182,61 @@ const registrations: ToolRegistration[] = [
   reg(toolCatalog, "native", "catalog"),
   ...baseRegistrations,
 ];
+
+/**
+ * Plugin-contributed registrations. Populated at runtime by `registerPluginTools()`
+ * (called from the plugin loader after dynamic import). Kept in a SEPARATE mutable array
+ * so the builtin `registrations` list — and its module-load validation — stay intact, and
+ * so every consumer below can fold plugins in via `allRegistrations()`.
+ */
+const pluginRegistrations: ToolRegistration[] = [];
+
+/** Names of plugin tools declared owner-only (the plugin default). Mirrors the builtin
+ *  OWNER_ONLY_TOOLS set for plugin tools; consulted by `isOwnerOnly()`. */
+const pluginOwnerOnly = new Set<string>();
+
+/** Builtin registrations + plugin registrations. Single iteration source for selection,
+ *  <tool-index> rendering, the catalog list and the legacy full tool list. */
+function allRegistrations(): ToolRegistration[] {
+  return pluginRegistrations.length ? [...registrations, ...pluginRegistrations] : registrations;
+}
+
+/** True when a tool name is already registered (builtin OR plugin). Used by the plugin
+ *  loader to enforce global name uniqueness before accepting a plugin. */
+export function hasToolName(name: string): boolean {
+  return registrationMap.has(name) || pluginRegistrations.some(r => r.tool.name === name);
+}
+
+/**
+ * Register a batch of validated plugin tools. Called by the plugin loader. Re-checks
+ * global name uniqueness (authoritative gate) and updates the executor / registration
+ * maps plus the owner-only set. Throws on a duplicate so the loader can isolate that
+ * plugin; it rejects the whole batch before mutating anything, so no partial registration.
+ */
+export function registerPluginTools(regs: PluginToolRegistration[]): void {
+  const batchNames = new Set<string>();
+  for (const r of regs) {
+    if (hasToolName(r.tool.name) || batchNames.has(r.tool.name)) {
+      throw new Error(`Duplicate plugin tool name: ${r.tool.name}`);
+    }
+    batchNames.add(r.tool.name);
+  }
+  for (const r of regs) {
+    const registration: ToolRegistration = {
+      tool: r.tool,
+      exposure: r.exposure ?? "on-demand",
+      group: r.group,
+      keywords: r.keywords,
+      aliases: r.aliases,
+      modelPredicate: r.modelPredicate,
+    };
+    pluginRegistrations.push(registration);
+    registrationMap.set(r.tool.name, registration);
+    executorMap.set(r.tool.name, r.tool.execute);
+    // Plugin tools default to owner-only unless the author explicitly set ownerOnly:false.
+    if (r.ownerOnly !== false) pluginOwnerOnly.add(r.tool.name);
+  }
+}
 
 // ── Registration validation (runs once at module load) ──
 (function validateRegistrations() {
@@ -215,16 +271,18 @@ function toAnthropicTool(t: Tool) {
 }
 
 /**
- * Legacy full tool list — used only when the exposure feature flag is OFF, to keep
- * behavior identical to the pre-exposure version: every local tool (from
- * baseRegistrations, WITHOUT the exposure-only tool_catalog) plus the 3 server tools,
- * with the GPT-only image_gen filter applied by the caller. tool_catalog is an
- * exposure-mode construct and must never appear when the flag is OFF.
+ * Legacy full tool list (exposure flag OFF). A function rather than a constant because
+ * plugin registrations are added at runtime AFTER this module loads — a const captured at
+ * load time would omit them. baseRegistrations excludes the exposure-only tool_catalog by
+ * construction; plugin tools are folded in so the OFF path still exposes them.
  */
-export const anthropicTools = [
-  ...baseRegistrations.map(r => toAnthropicTool(r.tool)),
-  ...SERVER_TOOLS,
-];
+export function getAnthropicTools(): AnthropicToolDefinition[] {
+  return [
+    ...baseRegistrations.map(r => toAnthropicTool(r.tool)),
+    ...pluginRegistrations.map(r => toAnthropicTool(r.tool)),
+    ...SERVER_TOOLS,
+  ];
+}
 
 export interface ToolSelectionContext {
   model: string;
@@ -267,7 +325,7 @@ function passesModelGate(r: ToolRegistration, model: string): boolean {
  */
 export function getToolDefinitions(ctx: ToolSelectionContext): AnthropicToolDefinition[] {
   if (!ctx.exposureEnabled) {
-    return anthropicTools.filter(t =>
+    return getAnthropicTools().filter(t =>
       t.name === "image_gen" ? isGptModel(ctx.model) : true,
     );
   }
@@ -275,14 +333,15 @@ export function getToolDefinitions(ctx: ToolSelectionContext): AnthropicToolDefi
   const out: AnthropicToolDefinition[] = [];
   const normalized = normalizeForMatch(ctx.prompt);
   const signals = detectSignals(ctx.prompt, ctx.hasAttachment ?? false);
-  const matchRegs = registrations.filter(r => r.exposure === "match");
+  const all = allRegistrations();
+  const matchRegs = all.filter(r => r.exposure === "match");
   const hits = matchTools(matchRegs, normalized, signals, ctx.maxMatchedTools);
   const hitNames = new Set(hits.map(h => h.name));
   const enabled = ctx.enabledTools ?? new Set<string>();
 
   const included: string[] = [];
   const matchedNames: string[] = [];
-  for (const r of registrations) {
+  for (const r of all) {
     const name = r.tool.name;
     if (!passesModelGate(r, ctx.model)) continue;
 
@@ -309,7 +368,7 @@ export function getToolDefinitions(ctx: ToolSelectionContext): AnthropicToolDefi
     {
       exposure: "on",
       model: ctx.model,
-      nativeCount: registrations.filter(r => r.exposure === "native" && passesModelGate(r, ctx.model)).length,
+      nativeCount: all.filter(r => r.exposure === "native" && passesModelGate(r, ctx.model)).length,
       matchedNames,
       toolCount: out.length,
       jsonBytes,
@@ -328,7 +387,7 @@ export function getToolDefinitions(ctx: ToolSelectionContext): AnthropicToolDefi
  */
 export function renderToolIndex(): string {
   const groups = new Set<string>();
-  for (const r of registrations) {
+  for (const r of allRegistrations()) {
     if (r.exposure === "index") groups.add(r.group);
   }
   if (groups.size === 0) return "";
@@ -351,7 +410,7 @@ function isOwnerOnly(name: string): boolean {
     const userId = getUserId();
     return !(userId && bash_allowed_users.includes(userId));
   }
-  return OWNER_ONLY_TOOLS.has(name);
+  return OWNER_ONLY_TOOLS.has(name) || pluginOwnerOnly.has(name);
 }
 
 export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
