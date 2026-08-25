@@ -41,7 +41,7 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
     │   ├── memory_*      # 記憶管理（save / search / list / add / replace / remove）
     │   ├── cron_*        # 排程管理（create / list / delete / toggle / update）
     │   ├── reminder_*    # 提醒管理（create / list / delete）
-    │   ├── discord_*     # Discord 操作（fetch / send / react / pin / thread / forum / edit / delete）
+    │   ├── discord_*     # Discord 操作（fetch / send / buttons / react / pin / thread / forum / edit / delete）
     │   ├── google_*      # Google API（calendar / gmail / drive / tasks）
     │   ├── soul_guardian_* # 核心檔案保護
     │   └── skill_*       # 技能安裝/移除
@@ -213,6 +213,8 @@ persona 通常只有一兩百字，AGENT.md 的操作規範動輒好幾千字（
 2. AGENT.md 開頭的 `## Voice` 明確劃分：persona 決定**怎麼說**，AGENT.md 決定**做什麼**，
    衝突時語氣以 persona 為準
 3. 結尾的 `<persona-reminder>` 利用結尾的注意力高點把語氣依據指回去
+
+人格的主觀喜惡只作用於人際、生活、遊戲、審美等非技術選擇。凡涉及程式碼、code review、除錯、系統設計、架構、資安、工具、規格或系統維運，`SOUL.md` 與 `MEMORY.md` 明確要求回到證據、測試、文件與工程準則；可以下明確結論，但不能用人格偏好代替技術判斷。這條邊界避免 persona 的「喜惡分明」外溢到技術分析。
 
 `PEOPLE.md` 一併載入 system prompt——AGENT.md 的「Use titles from `workspace/PEOPLE.md`」
 要那個檔案在場才有依據。
@@ -426,6 +428,20 @@ Canonical token 統一為 `[no_reply]`。程式生成的 prompt 與 tool schema 
 分支之後；排程與提醒是 `gateway.ts` 各自的執行段。它們都不動 agent 串流、核心執行迴圈或工具流程，
 session 照常記錄該回合。
 
+### Discord 按鈕工具
+
+`discord_send_buttons` 是通用的 Discord component 工具，不把「確認流程」、私人外掛或特定服務寫死在主程式。呼叫端自行提供訊息內容、1–5 顆按鈕、標籤、樣式與行為；「確認／修改／拒絕」只是其中一種組合，不是工具固定的 UI 或語意。
+
+每顆按鈕支援三種底層行為：
+
+- **`execute`**：在 `discord-owner` request context 中呼叫指定的已註冊 tool 與參數；仍經過 `executeTool()` 的 owner-only、model gate 與 plugin availability 檢查。
+- **`edit`**：開啟 Discord Modal，修改指定 `execute` 按鈕之 action args 內一個 top-level string 欄位，修改後按鈕組保持可操作。可選擇把該欄位設為動態 preview，讓原訊息同步更新。
+- **`close`**：關閉整組按鈕，不執行外部 action。顯示文字由呼叫端提供，不預設代表拒絕或取消。
+
+按鈕狀態持久化在 `workspace/config/discord-buttons.json`（mode `0600`），因此訊息建立後即使 Gateway 重啟，既有按鈕仍能找到對應 action。每組按鈕有到期時間；執行、關閉、失敗或過期後會移除 components 並在原訊息顯示最終狀態。每組按鈕可指定 `allowed_user_ids`；省略時只允許 `config.discord.owner_id`。未列入者只收到 ephemeral 拒絕訊息。允許非 owner 點擊時，action 會以 `discord-other` request context 執行，因此仍不能繞過 owner-only tool 權限。
+
+Button message 會停用 allowed mentions，避免外部文字或草稿意外 ping 使用者。執行 action 前先把整組狀態改為 `processing` 並移除按鈕，再透過 process-local serialized queue 保護持久化狀態轉換，防止快速重複點擊造成同一 action 執行兩次，也避免並行寫入互相覆蓋。第一版每則訊息限制單列最多 5 顆按鈕、Modal 只修改一個字串欄位；多列 components 與多欄表單留待實際需求再擴充。
+
 ### Slash Commands
 - `/new` — silent memory flush + 歸檔 session + AI 重新打招呼
 - `/status` — 顯示 model / cost / tokens / sessions / crons / reminders / skills
@@ -533,6 +549,7 @@ exposure 合法、`match` 至少有 keyword/alias/signal。
 | `reminder_create/list/delete` | 提醒管理 |
 | `discord_fetch_message/channel_messages` | 抓 Discord 訊息 |
 | `discord_send_message/react/pin/unpin` | Discord 互動 |
+| `discord_send_buttons` | 發送 1–5 顆可自訂標籤、樣式、可操作使用者與行為的按鈕；可執行 tool、開 Modal 修改參數或直接關閉 |
 | `discord_create_thread/forum_post/delete_thread` | Discord 討論串 |
 | `discord_edit_message/delete_message` | 編輯/刪除 bot 訊息 |
 | `discord_attach_to_reply` | 附件到回覆 |

@@ -9,6 +9,9 @@ import { SESSION_SUMMARIZE_PROMPT } from "./prompt.js";
 import { logger } from "./logger.js";
 import { loadConfig, setCurrentModel } from "./config.js";
 import { setDiscordClient } from "./tools/builtin/discord.js";
+import { executeTool } from "./tools/registry.js";
+import { runWithContext } from "./tools/context.js";
+import { handleDiscordButtonInteraction } from "./discord-buttons.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { chunkMessage } from "./utils/chunk-message.js";
 import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
@@ -200,6 +203,29 @@ export async function startBot(token: string): Promise<void> {
   });
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
+    try {
+      const handled = await handleDiscordButtonInteraction(
+        interaction,
+        client,
+        (toolName, args) => {
+          const trigger = interaction.user.id === loadConfig().discord.owner_id ? "discord-owner" : "discord-other";
+          return runWithContext(
+            trigger,
+            interaction.user.id,
+            loadConfig().llm.currentModel,
+            () => executeTool(toolName, args),
+          );
+        },
+      );
+      if (handled) return;
+    } catch (err) {
+      logger.error({ err, customId: "customId" in interaction ? interaction.customId : undefined }, "Discord button interaction failed");
+      if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: "處理按鈕互動時發生錯誤，請先不要重複操作；可查看原訊息狀態或日誌確認結果。", flags: MessageFlags.Ephemeral }).catch(() => {});
+      }
+      return;
+    }
+
     // autocomplete for /model
     if (interaction.isAutocomplete() && interaction.commandName === "model") {
       const focused = interaction.options.getFocused();
