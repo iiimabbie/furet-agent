@@ -14,6 +14,7 @@ export const OWNER_FILE = resolve(WORKSPACE_DIR, "OWNER.md");
 export const WORKSPACE_CONFIG_DIR = resolve(WORKSPACE_DIR, "config");
 export const CRONS_FILE = resolve(WORKSPACE_CONFIG_DIR, "crons.json");
 export const REMINDERS_FILE = resolve(WORKSPACE_CONFIG_DIR, "reminders.json");
+export const DISCORD_BUTTONS_FILE = resolve(WORKSPACE_CONFIG_DIR, "discord-buttons.json");
 export const GOOGLE_TOKEN_PATH = resolve(WORKSPACE_CONFIG_DIR, "google-token.json");
 export const SKILLS_DIR = resolve(WORKSPACE_DIR, "skills");
 

@@ -4,6 +4,7 @@ import { logger } from "../../logger.js";
 import type { Tool } from "../../types.js";
 import { normalizeMentions, formatName } from "../../utils/discord-mentions.js";
 import { queueAttachment } from "../context.js";
+import { createDiscordButtonMessage, type DiscordButtonDefinition } from "../../discord-buttons.js";
 
 let discordClient: Client | null = null;
 
@@ -93,6 +94,99 @@ export const discordSendMessage: Tool = {
       if (reply_to) options.reply = { messageReference: reply_to };
       const sent = await channel.send(options);
       return `Message sent (msg:${sent.id})`;
+    } catch (err) {
+      return `Error: ${(err as Error).message}`;
+    }
+  },
+};
+
+export const discordSendButtons: Tool = {
+  name: "discord_send_buttons",
+  description: "Send a Discord message with 1-5 configurable buttons. Buttons are generic interaction primitives: execute a registered tool, open a modal to edit one string argument of another button, or close the button set without executing anything. Labels and styles are fully caller-defined; this tool is not limited to confirmation flows.",
+  parameters: {
+    type: "object",
+    properties: {
+      channel_id: { type: "string", description: "Discord channel ID where the message should be sent" },
+      content: { type: "string", description: "Message content displayed above the buttons" },
+      allowed_user_ids: { type: "array", items: { type: "string" }, description: "Optional Discord user IDs allowed to click. Defaults to the configured owner." },
+      buttons: {
+        type: "array",
+        minItems: 1,
+        maxItems: 5,
+        description: "Configurable buttons. Use behavior=execute to run a tool, edit to modify a target execute button's string argument, or close to end without an action.",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Unique button ID using letters, numbers, underscore, or hyphen (max 32 chars)" },
+            label: { type: "string", description: "Visible button label (max 80 chars)" },
+            style: { type: "string", enum: ["primary", "secondary", "success", "danger"], description: "Discord button style" },
+            behavior: { type: "string", enum: ["execute", "edit", "close"], description: "What clicking the button does" },
+            action_tool: { type: "string", description: "For execute: registered tool to run" },
+            action_args: { type: "object", description: "For execute: arguments passed to action_tool" },
+            target_button_id: { type: "string", description: "For edit: ID of the execute button whose action_args will be edited" },
+            editable_field: { type: "string", description: "For edit: top-level string field in the target button's action_args" },
+            editable_label: { type: "string", description: "For edit: modal title/input label" },
+            result_text: { type: "string", description: "Optional text shown after execute or close; otherwise the tool result/button label is shown" },
+          },
+          required: ["id", "label", "style", "behavior"],
+        },
+      },
+      preview_button_id: { type: "string", description: "Optional execute button ID whose string argument should be previewed in the message" },
+      preview_field: { type: "string", description: "Optional string field from preview_button_id action_args to display and refresh after edits" },
+      preview_label: { type: "string", description: "Optional label above the dynamic preview" },
+      expires_in_minutes: { type: "number", description: "Optional expiry, 1-10080 minutes (default 1440 / 24 hours)" },
+    },
+    required: ["channel_id", "content", "buttons"],
+  },
+  execute: async (args) => {
+    const {
+      channel_id, content, allowed_user_ids, buttons, preview_button_id, preview_field, preview_label, expires_in_minutes,
+    } = args as {
+      channel_id: string;
+      content: string;
+      allowed_user_ids?: string[];
+      buttons: Array<{
+        id: string;
+        label: string;
+        style: "primary" | "secondary" | "success" | "danger";
+        behavior: "execute" | "edit" | "close";
+        action_tool?: string;
+        action_args?: Record<string, unknown>;
+        target_button_id?: string;
+        editable_field?: string;
+        editable_label?: string;
+        result_text?: string;
+      }>;
+      preview_button_id?: string;
+      preview_field?: string;
+      preview_label?: string;
+      expires_in_minutes?: number;
+    };
+    const definitions: DiscordButtonDefinition[] = buttons.map(button => ({
+      id: button.id,
+      label: button.label,
+      style: button.style,
+      behavior: button.behavior,
+      actionTool: button.action_tool,
+      actionArgs: button.action_args,
+      targetButtonId: button.target_button_id,
+      editableField: button.editable_field,
+      editableLabel: button.editable_label,
+      resultText: button.result_text,
+    }));
+    logger.info({ channel_id, buttonCount: definitions.length }, "discord_send_buttons");
+    try {
+      const record = await createDiscordButtonMessage(getClient(), {
+        channelId: channel_id,
+        content,
+        buttons: definitions,
+        allowedUserIds: allowed_user_ids,
+        previewButtonId: preview_button_id,
+        previewField: preview_field,
+        previewLabel: preview_label,
+        expiresInMinutes: expires_in_minutes,
+      });
+      return `Button message sent (buttons:${record.id}, msg:${record.messageId})`;
     } catch (err) {
       return `Error: ${(err as Error).message}`;
     }

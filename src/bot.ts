@@ -7,8 +7,11 @@ import { ask, compactSession } from "./agent.js";
 import { Session } from "./session.js";
 import { SESSION_SUMMARIZE_PROMPT } from "./prompt.js";
 import { logger } from "./logger.js";
-import { loadConfig, setCurrentModel } from "./config.js";
+import { loadConfig, REASONING_EFFORTS, setModelConfig, type ReasoningEffort } from "./config.js";
 import { setDiscordClient } from "./tools/builtin/discord.js";
+import { executeTool } from "./tools/registry.js";
+import { runWithContext } from "./tools/context.js";
+import { handleDiscordButtonInteraction } from "./discord-buttons.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { chunkMessage } from "./utils/chunk-message.js";
 import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
@@ -70,6 +73,15 @@ const SLASH_COMMANDS = [
     .setDescription("切換 AI 模型（owner only）")
     .addStringOption(opt =>
       opt.setName("name").setDescription("模型名稱").setRequired(true).setAutocomplete(true)
+    )
+    .addStringOption(opt =>
+      opt.setName("effort")
+        .setDescription("思考等級（省略時使用模型預設）")
+        .setRequired(false)
+        .addChoices(...REASONING_EFFORTS.map(value => ({
+          name: value === "default" ? "default（模型預設）" : value,
+          value,
+        })))
     )
     .toJSON(),
   new SlashCommandBuilder()
@@ -200,6 +212,29 @@ export async function startBot(token: string): Promise<void> {
   });
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
+    try {
+      const handled = await handleDiscordButtonInteraction(
+        interaction,
+        client,
+        (toolName, args) => {
+          const trigger = interaction.user.id === loadConfig().discord.owner_id ? "discord-owner" : "discord-other";
+          return runWithContext(
+            trigger,
+            interaction.user.id,
+            loadConfig().llm.currentModel,
+            () => executeTool(toolName, args),
+          );
+        },
+      );
+      if (handled) return;
+    } catch (err) {
+      logger.error({ err, customId: "customId" in interaction ? interaction.customId : undefined }, "Discord button interaction failed");
+      if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: "處理按鈕互動時發生錯誤，請先不要重複操作；可查看原訊息狀態或日誌確認結果。", flags: MessageFlags.Ephemeral }).catch(() => {});
+      }
+      return;
+    }
+
     // autocomplete for /model
     if (interaction.isAutocomplete() && interaction.commandName === "model") {
       const focused = interaction.options.getFocused();
@@ -292,6 +327,7 @@ export async function startBot(token: string): Promise<void> {
         .setTitle("Furet Status")
         .addFields(
           { name: "Model", value: `\`${config.llm.currentModel}\``, inline: true },
+          { name: "Reasoning", value: `\`${config.llm.reasoningEffort}\``, inline: true },
           { name: "Cost", value: cost, inline: true },
           { name: "Tokens", value: `${totalTokens.toLocaleString()} (in: ${usage.inputTokens.toLocaleString()} / out: ${usage.outputTokens.toLocaleString()})`, inline: false },
           { name: "Active Sessions", value: `${activeSessions.length}`, inline: true },
@@ -333,10 +369,15 @@ export async function startBot(token: string): Promise<void> {
         await interaction.reply({ content: `不在 modelList 裡：\`${name}\``, flags: MessageFlags.Ephemeral });
         return;
       }
+      const effort = (interaction.options.getString("effort") ?? "default") as ReasoningEffort;
       const prev = config.llm.currentModel;
-      setCurrentModel(name);
-      logger.info({ prev, next: name, user: interaction.user.id }, "/model switched");
-      await interaction.reply({ content: `模型已切換：\`${prev}\` → \`${name}\``, flags: MessageFlags.Ephemeral });
+      const prevEffort = config.llm.reasoningEffort;
+      setModelConfig(name, effort);
+      logger.info({ prev, next: name, prevEffort, effort, user: interaction.user.id }, "/model switched");
+      await interaction.reply({
+        content: `模型已切換：\`${prev} (${prevEffort})\` → \`${name} (${effort})\``,
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
     if (interaction.commandName === "google-auth") {

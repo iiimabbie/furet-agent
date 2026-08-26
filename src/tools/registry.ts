@@ -23,7 +23,7 @@ const OWNER_ONLY_TOOLS = new Set([
   "people_remove",
   "cron_create", "cron_delete", "cron_toggle", "cron_update",
   "reminder_create", "reminder_delete",
-  "discord_send_message", "discord_pin", "discord_unpin",
+  "discord_send_message", "discord_send_buttons", "discord_pin", "discord_unpin",
   "discord_create_thread", "discord_create_forum_post", "discord_delete_thread",
   "discord_edit_message", "discord_delete_message", "discord_archive_thread",
   "google_calendar_list_events", "google_calendar_create_event", "google_calendar_update_event", "google_calendar_delete_event",
@@ -47,7 +47,7 @@ import { peopleAdd, peopleUpdate, peopleRemove } from "./builtin/people.js";
 import { cronCreate, cronList, cronDelete, cronToggle, cronUpdate } from "./builtin/cron.js";
 import { reminderCreate, reminderList, reminderDelete } from "./builtin/reminder.js";
 import {
-  discordFetchMessage, discordSendMessage, discordReact, discordFetchChannelMessages,
+  discordFetchMessage, discordSendMessage, discordSendButtons, discordReact, discordFetchChannelMessages,
   discordPin, discordUnpin,
   discordCreateThread, discordCreateForumPost, discordDeleteThread,
   discordEditMessage, discordDeleteMessage, discordAttachToReply, discordArchiveThread,
@@ -113,6 +113,7 @@ const baseRegistrations: ToolRegistration[] = [
   reg(discordFetchMessage, "match", "discord-messages", { keywords: ["訊息", "message", "抓訊息", "fetch"] }),
   reg(discordFetchChannelMessages, "match", "discord-messages", { keywords: ["頻道訊息", "channel", "抓訊息", "歷史訊息"] }),
   reg(discordSendMessage, "match", "discord-messages", { keywords: ["發訊息", "傳訊息", "send message", "發送"] }),
+  reg(discordSendButtons, "match", "discord-messages", { keywords: ["按鈕", "button", "確認", "拒絕", "修改", "互動元件"] }),
   reg(discordPin, "match", "discord-messages", { keywords: ["釘選", "pin", "置頂"] }),
   reg(discordUnpin, "match", "discord-messages", { keywords: ["取消釘選", "unpin", "取消置頂"] }),
   reg(discordCreateThread, "match", "discord-messages", { keywords: ["討論串", "thread", "開串"] }),
