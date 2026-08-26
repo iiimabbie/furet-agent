@@ -7,7 +7,7 @@ import { ask, compactSession } from "./agent.js";
 import { Session } from "./session.js";
 import { SESSION_SUMMARIZE_PROMPT } from "./prompt.js";
 import { logger } from "./logger.js";
-import { loadConfig, setCurrentModel } from "./config.js";
+import { loadConfig, REASONING_EFFORTS, setModelConfig, type ReasoningEffort } from "./config.js";
 import { setDiscordClient } from "./tools/builtin/discord.js";
 import { executeTool } from "./tools/registry.js";
 import { runWithContext } from "./tools/context.js";
@@ -73,6 +73,15 @@ const SLASH_COMMANDS = [
     .setDescription("切換 AI 模型（owner only）")
     .addStringOption(opt =>
       opt.setName("name").setDescription("模型名稱").setRequired(true).setAutocomplete(true)
+    )
+    .addStringOption(opt =>
+      opt.setName("effort")
+        .setDescription("思考等級（省略時使用模型預設）")
+        .setRequired(false)
+        .addChoices(...REASONING_EFFORTS.map(value => ({
+          name: value === "default" ? "default（模型預設）" : value,
+          value,
+        })))
     )
     .toJSON(),
   new SlashCommandBuilder()
@@ -318,6 +327,7 @@ export async function startBot(token: string): Promise<void> {
         .setTitle("Furet Status")
         .addFields(
           { name: "Model", value: `\`${config.llm.currentModel}\``, inline: true },
+          { name: "Reasoning", value: `\`${config.llm.reasoningEffort}\``, inline: true },
           { name: "Cost", value: cost, inline: true },
           { name: "Tokens", value: `${totalTokens.toLocaleString()} (in: ${usage.inputTokens.toLocaleString()} / out: ${usage.outputTokens.toLocaleString()})`, inline: false },
           { name: "Active Sessions", value: `${activeSessions.length}`, inline: true },
@@ -359,10 +369,15 @@ export async function startBot(token: string): Promise<void> {
         await interaction.reply({ content: `不在 modelList 裡：\`${name}\``, flags: MessageFlags.Ephemeral });
         return;
       }
+      const effort = (interaction.options.getString("effort") ?? "default") as ReasoningEffort;
       const prev = config.llm.currentModel;
-      setCurrentModel(name);
-      logger.info({ prev, next: name, user: interaction.user.id }, "/model switched");
-      await interaction.reply({ content: `模型已切換：\`${prev}\` → \`${name}\``, flags: MessageFlags.Ephemeral });
+      const prevEffort = config.llm.reasoningEffort;
+      setModelConfig(name, effort);
+      logger.info({ prev, next: name, prevEffort, effort, user: interaction.user.id }, "/model switched");
+      await interaction.reply({
+        content: `模型已切換：\`${prev} (${prevEffort})\` → \`${name} (${effort})\``,
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
     if (interaction.commandName === "google-auth") {

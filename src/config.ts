@@ -11,11 +11,15 @@ export interface PluginConfig {
   enabled: boolean;
 }
 
+export const REASONING_EFFORTS = ["default", "none", "auto", "minimal", "low", "medium", "high", "xhigh"] as const;
+export type ReasoningEffort = typeof REASONING_EFFORTS[number];
+
 export interface FuretConfig {
   llm: {
     api_key: string;
     base_url: string;
     currentModel: string;
+    reasoningEffort: ReasoningEffort;
     modelList: string[];
     maxContextTokens: number;
     memoryCharLimit: number;
@@ -91,6 +95,7 @@ const DEFAULTS: FuretConfig = {
     api_key: "",
     base_url: "",
     currentModel: "claude-sonnet-4-20250514",
+    reasoningEffort: "default",
     modelList: [],
     maxContextTokens: 150_000,
     memoryCharLimit: 3000,
@@ -175,6 +180,14 @@ function sanitizeInt(value: unknown, fallback: number, min: number, max: number)
  * let a user who writes only `exposure: { enabled: true }` drop `max_matched_tools`
  * into undefined; here we merge exposure key-by-key and sanitize the cap.
  */
+function mergeLlmConfig(resolvedLlm: unknown): FuretConfig["llm"] {
+  const llm = { ...DEFAULTS.llm, ...defined(resolvedLlm) } as FuretConfig["llm"];
+  if (!REASONING_EFFORTS.includes(llm.reasoningEffort as ReasoningEffort)) {
+    llm.reasoningEffort = DEFAULTS.llm.reasoningEffort;
+  }
+  return llm;
+}
+
 function mergeToolsConfig(resolvedTools: unknown): FuretConfig["tools"] {
   const top = defined(resolvedTools);
   const rawExposure = defined(top.exposure);
@@ -240,7 +253,7 @@ export function loadConfig(): FuretConfig {
   const resolved = resolveEnvVars(raw) as Record<string, unknown>;
 
   cached = {
-    llm: { ...DEFAULTS.llm, ...defined(resolved.llm) } as FuretConfig["llm"],
+    llm: mergeLlmConfig(resolved.llm),
     discord: { ...DEFAULTS.discord, ...defined(resolved.discord) } as FuretConfig["discord"],
     journal: { ...DEFAULTS.journal, ...defined(resolved.journal) } as FuretConfig["journal"],
     soul_guardian: { ...DEFAULTS.soul_guardian, ...defined(resolved.soul_guardian) } as FuretConfig["soul_guardian"],
@@ -292,13 +305,14 @@ export function configureInitialDiscordOwner(ownerId: string, channelId?: string
   cached = null;
 }
 
-export function setCurrentModel(model: string): void {
+export function setModelConfig(model: string, reasoningEffort: ReasoningEffort): void {
   let raw: Record<string, unknown> = {};
   try {
     raw = (parse(readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) ?? {};
   } catch {}
   const llm = (raw.llm as Record<string, unknown>) ?? {};
   llm.currentModel = model;
+  llm.reasoningEffort = reasoningEffort;
   raw.llm = llm;
   writeFileSync(CONFIG_PATH, stringify(raw, { lineWidth: 0 }));
   cached = null;

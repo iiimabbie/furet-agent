@@ -1,5 +1,5 @@
 import { logger } from "./logger.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, type ReasoningEffort } from "./config.js";
 import { buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
 import { executeTool, getToolDefinitions, renderToolIndex } from "./tools/registry.js";
 import { runWithContext, drainAttachments, queueAttachment } from "./tools/context.js";
@@ -315,6 +315,10 @@ function nowTimestamp(): string {
 }
 
 
+function transportModel(model: string, reasoningEffort: ReasoningEffort): string {
+  return reasoningEffort === "default" ? model : `${model}(${reasoningEffort})`;
+}
+
 async function callAnthropic(
   system: string,
   messages: Message[],
@@ -329,6 +333,8 @@ async function callAnthropic(
   // 每次都重讀 config —— base_url / api_key 跟 currentModel 一樣要能熱更新
   const { llm } = loadConfig();
   const endpoint = `${llm.base_url || "https://api.anthropic.com/v1"}/messages`;
+  const baseModel = model ?? llm.currentModel;
+  const requestModel = transportModel(baseModel, llm.reasoningEffort);
   let res: Response;
   try {
     res = await fetch(endpoint, {
@@ -339,7 +345,7 @@ async function callAnthropic(
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: model ?? llm.currentModel,
+        model: requestModel,
         max_tokens: 8192,
         system,
         messages,

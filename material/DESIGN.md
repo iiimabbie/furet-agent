@@ -54,6 +54,10 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
 
 `src/agent.ts` — 核心循環，直接用 fetch 呼叫 Anthropic Messages API。
 
+### 模型與思考等級
+
+`config.llm.currentModel` 保存基礎模型名稱，`config.llm.reasoningEffort` 保存思考等級；兩者不混寫，避免模型清單驗證、工具 model gate 與價格估算把 router transport suffix 誤認成模型名稱。思考等級可為 `default`、`none`、`auto`、`minimal`、`low`、`medium`、`high`、`xhigh`：`default` 不加後綴，其餘只在 `callAnthropic()` 送出請求時組成 `<model>(<effort>)`。`/model` 會原子地更新兩個欄位；省略 `effort` 時重設為 `default`，避免切到不支援既有思考等級的模型後直接失敗。`/status` 分開顯示基礎模型與思考等級。
+
 ### API 錯誤可觀測性
 
 `callAnthropic()` 的 transport-level `fetch()` 失敗會包成帶 `cause` 的 Error，保留請求 endpoint 與底層錯誤鏈。`src/logger.ts` 對 `err` 欄位使用遞迴 serializer，記錄 Error 的 `type`、`message`、`stack`、自有屬性（如 `code`）與 `cause`；呼叫端應傳入原始 Error（`{ err }`），不要只留下 `err.message`，否則會遺失 `ECONNREFUSED`、`ECONNRESET`、DNS 等真正原因。
@@ -446,7 +450,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 - `/new` — silent memory flush + 歸檔 session + AI 重新打招呼
 - `/status` — 顯示 model / cost / tokens / sessions / crons / reminders / skills
 - `/restart` — 重啟 gateway（spawn detached child）
-- `/model` — 切換 AI 模型（autocomplete from modelList）
+- `/model` — 切換 AI 模型與思考等級（模型名稱 autocomplete from modelList；effort 省略時為 default）
 - `/google-auth` — Google OAuth 授權流程
 - `/task` — 列出 Google Tasks
 
