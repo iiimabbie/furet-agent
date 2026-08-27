@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import type { Tool } from "../../types.js";
 import { loadConfig } from "../../config.js";
 import { ATTACHMENTS_DIR, ROOT } from "../../paths.js";
@@ -14,6 +14,37 @@ type ImageBackground = "auto" | "transparent" | "opaque";
 
 const MAX_REFERENCE_IMAGES = 4;
 const MAX_REFERENCE_BYTES = 20 * 1024 * 1024;
+const DEFAULT_OUTPUT_DIRECTORY = "generated-images";
+
+export function prepareOutputDirectory(rawDirectory: unknown): string {
+  const requested = String(rawDirectory ?? DEFAULT_OUTPUT_DIRECTORY).trim() || DEFAULT_OUTPUT_DIRECTORY;
+  if (isAbsolute(requested)) throw new Error("output_directory must be relative to workspace/attachments/");
+
+  const attachmentsRoot = realpathSync(ATTACHMENTS_DIR);
+  const destination = resolve(attachmentsRoot, requested);
+  const lexicalRel = relative(attachmentsRoot, destination);
+  if (lexicalRel === "" || lexicalRel.startsWith("..") || isAbsolute(lexicalRel)) {
+    throw new Error("output_directory must be a subdirectory of workspace/attachments/");
+  }
+
+  mkdirSync(destination, { recursive: true });
+  const realDestination = realpathSync(destination);
+  const realRel = relative(attachmentsRoot, realDestination);
+  if (realRel === "" || realRel.startsWith("..") || isAbsolute(realRel)) {
+    throw new Error("output_directory resolves outside workspace/attachments/");
+  }
+  return realDestination;
+}
+
+export function safeFilenameHint(rawHint: unknown): string {
+  const hint = basename(String(rawHint ?? "image").trim() || "image")
+    .replace(/\.[^.]+$/, "")
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{N}_-]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return hint || "image";
+}
 
 function referenceDataUrl(rawPath: string): { path: string; dataUrl: string } {
   const candidate = isAbsolute(rawPath) ? resolve(rawPath) : resolve(ROOT, rawPath);
@@ -52,7 +83,7 @@ function isGptModel(model: string): boolean {
 
 export const imageGen: Tool = {
   name: "image_gen",
-  description: "Generate or edit an image and attach it to the final Discord reply. When depicting the agent itself, always set use_identity_reference=true so the configured canonical face is actually sent to the image model. Use reference_images for other image references. Never claim identity was preserved unless this tool returns success with references_used.",
+  description: "Generate or edit an image, save it directly into an organized subdirectory under workspace/attachments/, and attach the final path to the Discord reply. Before calling, prefer an existing semantically appropriate attachments subdirectory and pass it as output_directory; otherwise omit it to use generated-images/. Never leave generated files at the attachments root or rename/move them after this tool queues them. When depicting the agent itself, always set use_identity_reference=true so the configured canonical face is actually sent to the image model. Use reference_images for other image references. Never claim identity was preserved unless this tool returns success with references_used.",
   parameters: {
     type: "object",
     properties: {
@@ -76,6 +107,14 @@ export const imageGen: Tool = {
         type: "string",
         enum: ["png", "jpeg", "webp"],
         description: "Image file format. Default: png.",
+      },
+      output_directory: {
+        type: "string",
+        description: "Relative subdirectory under workspace/attachments/ for the generated image. Prefer an existing semantically appropriate directory. Default: generated-images.",
+      },
+      filename_hint: {
+        type: "string",
+        description: "Short descriptive filename stem. Unsafe path characters and extensions are removed. Default: image.",
       },
       use_identity_reference: {
         type: "boolean",
@@ -104,6 +143,8 @@ export const imageGen: Tool = {
     const quality = (args.quality ?? "auto") as ImageQuality;
     const background = (args.background ?? "auto") as ImageBackground;
     const outputFormat = (args.output_format ?? "png") as ImageFormat;
+    const outputDirectory = prepareOutputDirectory(args.output_directory);
+    const filenameHint = safeFilenameHint(args.filename_hint);
     const useIdentityReference = args.use_identity_reference === true;
     const explicitReferences = Array.isArray(args.reference_images)
       ? args.reference_images.map(String).filter(Boolean)
@@ -167,13 +208,12 @@ export const imageGen: Tool = {
     );
     if (calls.length === 0) throw new Error("Image generation completed without an image result");
 
-    mkdirSync(ATTACHMENTS_DIR, { recursive: true });
     const files: string[] = [];
     for (const call of calls) {
       const format = call.output_format === "jpeg" || call.output_format === "webp" ? call.output_format : outputFormat;
       const ext = format === "jpeg" ? "jpg" : format;
-      const filename = `generated-${Date.now()}-${randomBytes(4).toString("hex")}.${ext}`;
-      const filePath = join(ATTACHMENTS_DIR, filename);
+      const filename = `${filenameHint}-${Date.now()}-${randomBytes(4).toString("hex")}.${ext}`;
+      const filePath = join(outputDirectory, filename);
       writeFileSync(filePath, Buffer.from(call.result!, "base64"));
       queueAttachment(filePath);
       files.push(filePath);
