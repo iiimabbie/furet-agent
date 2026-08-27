@@ -14,7 +14,7 @@ import { chunkMessage } from "./utils/chunk-message.js";
 import { NO_REPLY_TOKEN, isNoReplySentinel } from "./utils/no-reply.js";
 import { ROOT } from "./paths.js";
 import { stamp, today } from "./utils/time.js";
-import { loadPlugins, startPlugins, stopPlugins } from "./tools/plugin-loader.js";
+import { emitPluginEvent, loadPlugins, startPlugins, stopPlugins } from "./tools/plugin-loader.js";
 
 async function sendToChannel(channelId: string, text: string): Promise<string[]> {
   const client = getDiscordClient();
@@ -247,10 +247,14 @@ function scheduleJournal(): void {
     // 總結+歸檔所有 active session
     await summarizeAndArchiveAll();
 
-    // 再整理日記 + 更新 MEMORY.md
+    // 再整理日記 + 更新 MEMORY.md。只有內建日記成功後才發出事件；
+    // 外掛 handler 失敗由 plugin-loader 隔離，不會反過來把日記標成失敗。
     const prompt = buildJournalPrompt(date);
-    ask(prompt, { trigger: "journal" })
-      .then(response => logger.info({ date, result: response.text.slice(0, 200) }, "journal done"))
+    void ask(prompt, { trigger: "journal" })
+      .then(async response => {
+        logger.info({ date, result: response.text.slice(0, 200) }, "journal done");
+        await emitPluginEvent({ event: "journal:completed", date, result: response.text });
+      })
       .catch(err => logger.error({ err, date }, "journal failed"));
   });
   logger.info({ expr }, "journal scheduled");
@@ -288,7 +292,9 @@ getDb();
 // journal/Discord). A plugin's failure is isolated and logged inside the loader; it never
 // crashes the gateway.
 await loadPlugins();
-await startPlugins();
+await startPlugins({
+  ask: (prompt, options = {}) => ask(prompt, { ...options, trigger: "plugin" }),
+});
 
 loadAndScheduleAll();
 console.log(`Loaded ${loadReminders().length} reminders`);

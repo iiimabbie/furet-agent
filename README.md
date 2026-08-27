@@ -224,7 +224,7 @@ To enable Calendar, Gmail, Drive, and Tasks:
 
 ## Private plugins
 
-Private plugins can register deployment-specific tools without editing the built-in registry or committing private integrations to this repository. Plugins are loaded from `config.plugins`, default to owner-only, participate in tool exposure/catalog discovery, and run inside the Furet process without a sandbox.
+Private plugins can register deployment-specific tools, recurring background jobs, and lifecycle event handlers without editing the built-in registry or committing private integrations to this repository. Plugins are loaded from `config.plugins`; tool permissions still flow through the central registry, plugin schedules follow plugin startup/shutdown automatically, and all plugin code runs inside the Furet process without a sandbox.
 
 See [docs/PLUGINS.md](docs/PLUGINS.md) for the API contract, a working module example, configuration, security guidance, lifecycle behavior, and troubleshooting.
 

@@ -18,6 +18,7 @@ import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
 import { estimateCost } from "./utils/pricing.js";
 import { stamp } from "./utils/time.js";
 import { isNoReplySentinel } from "./utils/no-reply.js";
+import { getPluginRuntimeStatus } from "./tools/plugin-loader.js";
 import { KeyedSerialQueue } from "./utils/keyed-serial-queue.js";
 import { shouldOnboard, buildOnboardingContext, isWorkspaceUnconfigured } from "./onboarding.js";
 import { readFile, unlink, writeFile } from "node:fs/promises";
@@ -331,6 +332,7 @@ export async function startBot(token: string): Promise<void> {
       const reminders = loadReminders();
       const activeSessions = Session.listActive();
       const skills = config.skills;
+      const pluginStatus = getPluginRuntimeStatus();
 
       const totalTokens = usage.inputTokens + usage.outputTokens;
       const cost = estimateCost(usage, config.llm.currentModel);
@@ -345,7 +347,11 @@ export async function startBot(token: string): Promise<void> {
           { name: "Active Sessions", value: `${activeSessions.length}`, inline: true },
           { name: "Crons", value: `${crons.filter(c => c.enabled).length} active / ${crons.length} total`, inline: true },
           { name: "Reminders", value: `${reminders.length} pending`, inline: true },
-          { name: "Skills", value: skills.length > 0 ? skills.join(", ") : "none", inline: true },
+          { name: "Plugin Jobs", value: `${pluginStatus.activeSchedules} scheduled / ${pluginStatus.runningJobs} running`, inline: true },
+          { name: "Plugins", value: pluginStatus.plugins.length > 0
+            ? pluginStatus.plugins.map(p => `${p.name} (${p.state})`).join(", ")
+            : "none", inline: false },
+          { name: "Skills", value: skills.length > 0 ? skills.join(", ") : "none", inline: false },
         )
         .setTimestamp();
 

@@ -77,11 +77,11 @@ skills: []                              # enabled skill names (must exist in wor
 
 plugins: []                             # private plugin modules loaded from local paths.
                                         # Each entry: { path: <abs or relative-to-root>, enabled: true }.
-                                        # A plugin exports { manifest: { name, start?, stop? }, tools: [...] }
-                                        # and can register tools WITHOUT editing src/tools/registry.ts.
-                                        # Plugin tools default to owner-only; tool names must be globally
-                                        # unique. A load failure is logged and skipped, never crashing the
-                                        # gateway. Do NOT put private connection data here — the plugin
+                                        # A plugin exports a manifest plus optional tools, schedules, and
+                                        # event handlers. Schedules follow plugin startup/shutdown and are
+                                        # not written to crons.json. Plugin tools default to owner-only.
+                                        # A load failure is logged and skipped, never crashing the gateway.
+                                        # Do NOT put private connection data here — the plugin
                                         # module reads its own secrets from .env / its own config.
                                         # Example:
                                         #   - path: ../furet-plugins/livly-mumu/index.ts

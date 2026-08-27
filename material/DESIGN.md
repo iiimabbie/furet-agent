@@ -451,7 +451,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 
 ### Slash Commands
 - `/new` — silent memory flush + 歸檔 session + AI 重新打招呼
-- `/status` — 顯示 model / cost / tokens / sessions / crons / reminders / skills
+- `/status` — 顯示 model / cost / tokens / sessions / crons / reminders / plugin jobs / plugins / skills
 - `/restart` — 重啟 gateway（spawn detached child）
 - `/model` — 切換 AI 模型與思考等級（模型名稱 autocomplete from modelList；effort 省略時為 default）
 - `/google-auth` — Google OAuth 授權流程
@@ -467,7 +467,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 | Reminder | 一次性提醒，每 15 秒輪詢 reminders.json 掃到期的，觸發後自動刪除 |
 | Journal | 每天固定時間：silent flush 所有 active session → 歸檔 → 重寫日記 → 更新 MEMORY.md |
 | Discord Bot | 有 token 且 enabled 時啟動 |
-| Plugins | 背景服務接流量前 `loadPlugins()` + `startPlugins()`；shutdown 時 `stopPlugins()`（見 Plugin 系統） |
+| Plugins | 背景服務接流量前 `loadPlugins()` + `startPlugins()`；自動註冊外掛 schedules／events，shutdown 時 `stopPlugins()`（見 Plugin 系統） |
 | PID file | `furet.pid`，啟動時殺掉舊進程確保單實例 |
 
 日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日記憶檔的 memory_save 筆記只當輔助。只讀每日檔會漏掉未被 memory_save 的對話（例如純聊天的社群互動）——flush 那步用的是「長期記憶」的門檻，而日記要的是連續性。兩道門檻因此分開：MEMORY.md 留 30 天長期濾網，每日檔／日記照收社群互動。
@@ -638,35 +638,51 @@ livly-mumu 外掛）從 `config.yaml` 指定的本機路徑載入並註冊額外
 
 ### Plugin API（穩定介面）
 
-外掛模組 default export（或直接匯出同形狀的 namespace）為 `PluginModule`：
+外掛模組 default export（或直接匯出同形狀的 namespace）為 `PluginModule`。`tools`、`schedules`、`events` 都是可選能力；至少要宣告一項，讓只做背景工作的外掛不必硬塞一個工具。
 
 ```typescript
 interface PluginModule {
   manifest: { name: string; start?: () => Promise<void> | void; stop?: () => Promise<void> | void };
-  tools: PluginToolRegistration[];
+  tools?: PluginToolRegistration[];
+  schedules?: PluginScheduleRegistration[];
+  events?: PluginEventRegistration[];
 }
 
-interface PluginToolRegistration {
-  tool: Tool;                     // 標準 Tool，execute 仍回 Promise<string>
-  group: string;                  // 能力群（<tool-index> / catalog 分組）
-  exposure?: ExposureLevel;       // 省略預設 "on-demand"，私有工具不外洩到每輪 prompt
-  keywords?: string[];            // match 用
-  aliases?: string[];             // match 用
-  signals?: ("hasDateTime" | "hasAttachment" | "hasImageEditRequest")[]; // match 用的粗粒度 request signal
-  modelPredicate?: (m: string) => boolean;
-  ownerOnly?: boolean;            // 省略／true = owner-only（外掛預設）；明確 false 才放給非 owner
+interface PluginScheduleRegistration {
+  id: string;                     // plugin 內唯一；runtime key 為 <plugin>:<id>
+  name?: string;
+  schedule: string;               // node-cron expression（五欄，亦支援 seconds 欄）
+  timezone?: string;              // IANA timezone
+  timeoutMs?: number;             // 超時告警；callback 不會被強制中止
+  run: (context: PluginRuntimeContext) => Promise<void> | void;
+}
+
+interface PluginEventRegistration {
+  event: "journal:completed";
+  id: string;
+  timeoutMs?: number;
+  run: (payload: JournalCompletedEvent, context: PluginRuntimeContext) => Promise<void> | void;
+}
+
+interface PluginRuntimeContext {
+  ask(prompt: string, options?: { systemPrompt?: string; maxTurns?: number; model?: string }): Promise<AgentResponse>;
 }
 ```
 
 - **Tool 名稱全域唯一**：跟 builtin 或其他外掛撞名的工具會被拒，整個外掛不載入（不 silent shadow）。
-- **`ownerOnly` 預設 true**：私有外掛通常操作 owner 的資料/動作，預設鎖 owner。要放給 `discord-other` 得明確寫 `ownerOnly: false`。builtin 的 owner-only 走寫死的 `OWNER_ONLY_TOOLS` set；外掛改用這個 inline 宣告，由 `registry.ts` 的 `pluginOwnerOnly` set 承接，`isOwnerOnly()` 一併判定。
+- **Plugin manifest 名稱全域唯一**：它是 schedules／events 的 namespace，重名外掛整體跳過。
+- **`ownerOnly` 預設 true**：私有外掛工具預設鎖 owner；明確 `false` 才放給 `discord-other`。外掛背景 callback 本身是受信任的 in-process code，呼叫 `context.ask()` 時使用獨立的 `plugin` trigger，不冒充 Discord 使用者。
+- **Agent API 受限**：背景工作只拿到 `prompt`、`systemPrompt`、`maxTurns`、`model`；不能自行偽造 trigger、user ID、Discord session 或進度 callback。回傳完整 `AgentResponse`，附件是否送出由外掛自行決定。
 
-### 載入與生命週期
+### 載入、排程與事件生命週期
 
-- `loadPlugins()`：讀 `config.plugins`，只載 `enabled` 的。動態 `import(pathToFileURL(...))`，驗證 manifest / 每個 tool 的 schema（name/description/parameters/execute）、exposure 合法、名稱唯一、match metadata。**外掛是 all-or-nothing**：任一 tool 驗證失敗就整個外掛不載入，避免半註冊留下懸空名稱。單一外掛載入失敗一律 `logger.error` 後跳過，程式繼續啟動，**不讓 gateway crash**。冪等：同一 process 內重複呼叫是 no-op。
-- `startPlugins()` / `stopPlugins()`：分別跑各外掛的 `manifest.start()` / `stop()`。有 `start()` 的外掛在載入時只保留名稱、工具維持 inactive：不進 schema / catalog，也不能執行；`start()` 成功才整批啟用。每個 start hook 有 **10 秒 timeout**，throw 或逾時會標記 failed 並維持 inactive，單一外掛不會卡住或拖垮 gateway。`stop()` 仍會對 failed plugin 做 best-effort cleanup，處理部分初始化資源。
-- **時機**：`gateway.ts` 在初始化 SQLite 後、`loadAndScheduleAll()`（cron/reminder/journal/Discord 這些背景服務接流量）之前 `await loadPlugins()` + `await startPlugins()`。shutdown（SIGINT / SIGTERM）走共用的 `shutdown()`：先 `stopPlugins()`、再 `cleanup()` 清 PID、`process.exit(0)`；並設 5 秒硬性 timeout，任何外掛 stop 卡住都保證程序仍退出，**不 wedge systemd**。
-- `/restart`（`bot.ts` 的 `selfRestart()`）是刻意的立即 `process.exit(0)`，由 systemd（`Restart=always`）拉起，新 process 開機時重新 `loadPlugins()`；這條路徑不接 `stopPlugins`，維持既有 `/restart` 行為不變。
+- `loadPlugins()`：驗證 manifest、tools、schedules 與 events；任一能力無效就整個外掛不載入。schedule ID／event ID 必須是穩定安全字串，cron expression 先用 `node-cron.validate()` 檢查。目前事件白名單只有 `journal:completed`。
+- `startPlugins(runtime)`：先執行可選的 `manifest.start()`；成功後才啟用工具並註冊外掛 schedules。無 `start()` 的外掛也要等 gateway 呼叫 `startPlugins()` 才會真正開始背景排程，確保服務尚未準備好時不會提早觸發。
+- **Schedule ownership**：外掛 schedule 不寫入 `workspace/config/crons.json`，也不受 `cron_*` 工具修改；它跟著外掛設定與程序生命週期，自動啟動、自動停止。`/status` 以 `Plugin Jobs` 顯示已註冊數與正在執行數，並列出 plugin state。
+- **不重疊**：同一個 plugin job 上一輪尚未結束時，新 tick 會略過並記 warning。預設 10 分鐘後記 timeout warning；JavaScript callback 無法安全強殺，因此仍保持 running 狀態直到實際 settle，避免 timeout 後下一 tick 反而重疊。
+- `emitPluginEvent()`：只派送給 `started` plugin，handler 彼此並行、失敗互相隔離。內建 journal 的 `ask()` 成功 resolve 後才發出 `journal:completed`，payload 帶固定日期與 agent 最終文字；handler 的失敗不會把已完成的內建 journal 改判失敗。
+- `stopPlugins()`：先停止所有 plugin schedules，再 best-effort 執行每個 `manifest.stop()`。SIGINT／SIGTERM 仍有 gateway 5 秒總硬限；`/restart` 維持立即 exit、由 systemd 拉起。
+- 外掛載入與啟動依舊 fail-soft：單一外掛 import、驗證、start 或 schedule registration 失敗只把該 plugin 標成 failed，工具保持 inactive，其他服務照常啟動。
 
 ### 避免循環 import
 

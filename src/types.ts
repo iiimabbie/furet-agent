@@ -76,7 +76,7 @@ export type ProgressEvent =
    */
   | { type: "text"; text: string };
 
-export type TriggerSource = "cli" | "discord-owner" | "discord-other" | "cron" | "reminder" | "journal" | "unknown";
+export type TriggerSource = "cli" | "discord-owner" | "discord-other" | "cron" | "reminder" | "journal" | "plugin" | "unknown";
 
 export interface AgentOptions {
   systemPrompt?: string;
