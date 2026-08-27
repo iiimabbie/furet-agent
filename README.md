@@ -224,9 +224,21 @@ To enable Calendar, Gmail, Drive, and Tasks:
 
 ## Private plugins
 
-Private plugins can register deployment-specific tools, recurring background jobs, and lifecycle event handlers without editing the built-in registry or committing private integrations to this repository. Plugins are loaded from `config.plugins`; tool permissions still flow through the central registry, plugin schedules follow plugin startup/shutdown automatically, and all plugin code runs inside the Furet process without a sandbox.
+Private plugins can register deployment-specific tools, recurring background jobs, and lifecycle event handlers without editing the built-in registry or committing private integrations to this repository. Managed plugins are installed into `workspace/plugins/` and registered in `config.yaml`:
 
-See [docs/PLUGINS.md](docs/PLUGINS.md) for the API contract, a working module example, configuration, security guidance, lifecycle behavior, and troubleshooting.
+```bash
+furet plugin install <git-url>
+furet plugin install <git-url> --workspace <package-name-or-path>
+furet plugin list
+furet plugin enable <name>
+furet plugin disable <name>
+furet plugin update [name]
+furet plugin remove <name>
+```
+
+A plugin package declares its entry as `"furet": { "plugin": "./dist/index.js" }` in `package.json`. The installer runs dependency installation and an optional `build` script, but deliberately does not restart the gateway. Tool permissions still flow through the central registry, plugin schedules follow plugin startup/shutdown automatically, and all plugin code runs inside the Furet process without a sandbox.
+
+See [docs/PLUGINS.md](docs/PLUGINS.md) for packaging, monorepo installation, the API contract, configuration, security guidance, lifecycle behavior, and troubleshooting.
 
 ## Development
 

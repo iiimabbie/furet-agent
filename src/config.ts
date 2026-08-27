@@ -329,3 +329,37 @@ export function setRespondToBots(enabled: boolean): void {
   writeFileSync(CONFIG_PATH, stringify(raw, { lineWidth: 0 }));
   cached = null;
 }
+
+function mutatePluginConfig(mutator: (plugins: PluginConfig[]) => PluginConfig[]): void {
+  let raw: Record<string, unknown> = {};
+  try { raw = (parse(readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) ?? {}; } catch {}
+  raw.plugins = mutator(mergePluginsConfig(raw.plugins));
+  writeFileSync(CONFIG_PATH, stringify(raw, { lineWidth: 0 }));
+  cached = null;
+}
+
+/** Register a plugin module path, or update its enabled state if already present. */
+export function upsertPluginConfig(path: string, enabled = true): void {
+  mutatePluginConfig((plugins) => {
+    const existing = plugins.find((plugin) => plugin.path === path);
+    if (existing) existing.enabled = enabled;
+    else plugins.push({ path, enabled });
+    return plugins;
+  });
+}
+
+/** Toggle a registered plugin. Returns false when the path was not registered. */
+export function setPluginConfigEnabled(path: string, enabled: boolean): boolean {
+  let found = false;
+  mutatePluginConfig((plugins) => plugins.map((plugin) => {
+    if (plugin.path !== path) return plugin;
+    found = true;
+    return { ...plugin, enabled };
+  }));
+  return found;
+}
+
+/** Remove a plugin path from config.yaml. */
+export function removePluginConfig(path: string): void {
+  mutatePluginConfig((plugins) => plugins.filter((plugin) => plugin.path !== path));
+}

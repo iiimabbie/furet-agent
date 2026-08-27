@@ -13,6 +13,9 @@ switch (command) {
   case "install":
     await import(resolve(import.meta.dirname!, "../src/install.ts"));
     break;
+  case "plugin":
+    await import(resolve(import.meta.dirname!, "../src/plugin-cli.ts"));
+    break;
   default:
     await import(resolve(import.meta.dirname!, "../src/cli.ts"));
     break;

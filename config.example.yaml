@@ -75,7 +75,8 @@ image_generation:
 
 skills: []                              # enabled skill names (must exist in workspace/skills/<name>/)
 
-plugins: []                             # private plugin modules loaded from local paths.
+plugins: []                             # plugin modules loaded from local paths. Managed entries are
+                                        # written here by `furet plugin install`; manual entries also work.
                                         # Each entry: { path: <abs or relative-to-root>, enabled: true }.
                                         # A plugin exports a manifest plus optional tools, schedules, and
                                         # event handlers. Schedules follow plugin startup/shutdown and are

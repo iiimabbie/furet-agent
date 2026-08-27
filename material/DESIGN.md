@@ -627,6 +627,25 @@ request-scoped `enabledTools`，後續回合可直接暴露其 schema；進度�
 livly-mumu 外掛）從 `config.yaml` 指定的本機路徑載入並註冊額外工具，**不需修改
 `src/tools/registry.ts`**，也不把私人連線資料寫進 repo。
 
+### 安裝與管理
+
+`src/plugin-manager.ts` + `src/plugin-cli.ts` 提供正式的 host-side 管理介面：
+
+```bash
+furet plugin install <git-url-or-local-path> [--workspace <package-name-or-path>]
+furet plugin list
+furet plugin enable|disable <name>
+furet plugin update [name]
+furet plugin remove <name>
+```
+
+- Managed checkout 固定放在 `workspace/plugins/`，安裝來源與 package 對應記在 mode `0600` 的 `workspace/config/plugins.json`；真正決定 runtime 是否載入的仍是 `config.yaml` 的 `plugins`，避免 loader 同時讀兩套啟用狀態。
+- plugin package 必須在 `package.json` 宣告 `furet.plugin`（package 內的相對 entry path）；可選 `furet.name`，否則用去掉 npm scope 的 package name。安裝器拒絕絕對路徑與 `..` 逃逸。
+- Git 來源 shallow clone；本機目錄則複製進 managed area。安裝／更新會執行 `npm install`，並在 package 有 `build` script 時執行；npm workspace monorepo 可用 package name 或相對路徑選定。這些 scripts 等同執行受信任程式碼，不能把 installer 當 sandbox。
+- 同一 monorepo 的多個 plugin 共用 checkout。`update` 對 source 做 `git pull --ff-only` 後重裝 dependencies、重建已註冊 packages；若 package identity 或 entry 改變則拒絕靜默搬移，要求 remove + install。local copy 不做 in-place update。
+- enable／disable／install／remove 只改持久設定，**不自動重啟 gateway**。remove 最後一個引用某 source 的 plugin 時，把 checkout 移到 `workspace/.trash/`，不直接永久刪除。
+- 仍保留手動 `config.plugins` path，方便開發中的單檔 module；installer 是正式 UX，不是 loader 的必要依賴。
+
 ### 設定
 
 `config.plugins`（預設空陣列）每筆 `{ path, enabled }`：
@@ -833,6 +852,7 @@ furet/
 │   ├── memory/               # 每日記憶
 │   ├── sessions/             # session 持久化 + archive/
 │   ├── skills/               # 技能（每個有 SKILL.md）
+│   ├── plugins/              # managed private plugin source checkouts
 │   ├── attachments/          # agent 產出／下載的檔案（唯一落點）
 │   └── .trash/               # 全域唯一回收桶（刪除一律 mv 到這）
 ├── templates/                # workspace 初始模板（進 git）

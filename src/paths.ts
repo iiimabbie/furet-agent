@@ -17,6 +17,8 @@ export const REMINDERS_FILE = resolve(WORKSPACE_CONFIG_DIR, "reminders.json");
 export const DISCORD_BUTTONS_FILE = resolve(WORKSPACE_CONFIG_DIR, "discord-buttons.json");
 export const GOOGLE_TOKEN_PATH = resolve(WORKSPACE_CONFIG_DIR, "google-token.json");
 export const SKILLS_DIR = resolve(WORKSPACE_DIR, "skills");
+export const PLUGINS_DIR = resolve(WORKSPACE_DIR, "plugins");
+export const PLUGIN_REGISTRY_FILE = resolve(WORKSPACE_CONFIG_DIR, "plugins.json");
 
 /**
  * agent 產生或抓下來的檔案一律落在這裡：下載的圖片、Discord 附件、

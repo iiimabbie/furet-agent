@@ -4,9 +4,45 @@ Furet plugins are trusted local ECMAScript modules that can contribute private t
 
 > Plugins run inside the Furet process with the same operating-system privileges as Furet. They are not sandboxed. Only load code you trust.
 
-## Quick start
+## Installation
 
-Create a module outside the repository, for example `~/furet-plugins/hello/index.mjs`:
+Furet has a managed plugin CLI. A plugin package declares its runtime entry in `package.json`:
+
+```json
+{
+  "name": "@example/private-hello",
+  "type": "module",
+  "furet": {
+    "name": "private-hello",
+    "plugin": "./dist/index.js"
+  }
+}
+```
+
+`furet.name` is optional and defaults to the unscoped npm package name. `furet.plugin` is required and must point to a file inside the package. The installer runs `npm install`, runs the selected package's `build` script when present, verifies that the entry exists, records the checkout under `workspace/plugins/`, and registers the entry in `config.yaml`. It never restarts the gateway automatically.
+
+```bash
+# Single-package repository
+furet plugin install ssh://git@example.invalid/owner/private-hello.git
+
+# npm workspace monorepo; accepts a package name or relative package path
+furet plugin install ssh://git@example.invalid/owner/furet-plugins.git \
+  --workspace private-hello
+
+furet plugin list
+furet plugin disable private-hello
+furet plugin enable private-hello
+furet plugin update private-hello   # omit the name to update every managed source
+furet plugin remove private-hello
+```
+
+Managed source metadata is stored in `workspace/config/plugins.json`; activation remains in `config.yaml`, so the runtime loader has one source of truth. Removing the final plugin that uses a checkout moves that checkout to `workspace/.trash/` rather than deleting it permanently. Local-directory installs are copied into the managed area and cannot be updated in place; remove and reinstall them to refresh the copy.
+
+The installer executes trusted package scripts and the loaded plugin later runs inside the Furet process. Review third-party code before installing it. A restart is required after install, enable, disable, update, or remove.
+
+## Manual quick start
+
+For development, or for a module that is not packaged for the installer, create it outside the repository and register it manually. For example `~/furet-plugins/hello/index.mjs`:
 
 ```javascript
 const helloTool = {
@@ -247,6 +283,25 @@ Plugin loading is fail-soft and all-or-nothing:
 - Tool names may be reserved during loading, but tools and background capabilities remain inactive until startup succeeds.
 - Loading is idempotent within one process. Editing a plugin file requires a process restart.
 - Disabled config entries are skipped.
+
+## Managed monorepo structure
+
+A private npm-workspaces repository can expose several independently installable plugins:
+
+```text
+furet-plugins/
+├── package.json
+├── package-lock.json
+└── packages/
+    ├── dream-journal/
+    │   ├── package.json   # contains furet.plugin
+    │   └── src/
+    └── private-service/
+        ├── package.json   # contains furet.plugin
+        └── src/
+```
+
+Install each package with the same repository URL and a different `--workspace`. Furet reuses one managed checkout and removes it only after the final installed plugin from that source is removed.
 
 ## Recommended plugin structure
 
