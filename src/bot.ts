@@ -18,6 +18,7 @@ import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
 import { estimateCost } from "./utils/pricing.js";
 import { stamp } from "./utils/time.js";
 import { isNoReplySentinel } from "./utils/no-reply.js";
+import { KeyedSerialQueue } from "./utils/keyed-serial-queue.js";
 import { shouldOnboard, buildOnboardingContext, isWorkspaceUnconfigured } from "./onboarding.js";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -102,6 +103,11 @@ const SLASH_COMMANDS = [
 ];
 
 const OWNER_ONLY_MSG = "只有 owner 能用這個指令！";
+
+// Discord.js does not await async MessageCreate listeners. Serialize all work that
+// touches the same session so a later message cannot enter the session or start an
+// agent request before the previous reply has been fully delivered.
+const discordSessionQueue = new KeyedSerialQueue();
 
 interface PendingRestart {
   applicationId: string;
@@ -264,48 +270,54 @@ export async function startBot(token: string): Promise<void> {
       const sessionId = interaction.guild
         ? `discord-channel-${interaction.channelId}`
         : `discord-dm-${interaction.user.id}`;
-      const session = new Session(sessionId);
 
+      // Defer before waiting behind an in-flight reply so the interaction token
+      // remains valid, then mutate/archive the session inside the same FIFO queue.
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const channelContext = buildChannelContext(interaction.channelId, sessionId, getChannelTypeInfo(interaction.channel));
-      const ts = stamp();
+      await discordSessionQueue.enqueue(sessionId, async () => {
+        const session = new Session(sessionId);
+        const channelContext = buildChannelContext(interaction.channelId, sessionId, getChannelTypeInfo(interaction.channel));
+        const ts = stamp();
 
-      // 歸檔前：silent memory flush — 讓 agent 自由整理記憶
-      if (session.length > 0) {
-        const flushContext = `${channelContext}\n\n[System] ${SESSION_SUMMARIZE_PROMPT}`;
-        session.append({ role: "user", content: "[System] Session ending — flush memory now.", time: ts });
-        await ask(null, { session, systemPrompt: flushContext, trigger: "discord-owner" }).catch(err =>
-          logger.error({ err: (err as Error).message }, "memory flush before /new failed")
-        );
-      }
-
-      session.archive();
-      logger.info({ sessionId }, "session archived via /new");
-
-      if (shouldOnboard(session.getMessages())) {
-        session.append({
-          role: "user",
-          content: buildOnboardingContext(interaction.user.id, interaction.user.username),
-          time: ts,
-          isOnboarding: true,
-        });
-      }
-      const newSessionContent = `[System] <@${interaction.user.id}>(${interaction.user.username}) started a new session via /new. Follow the Session Initialization steps in your instructions (MEMORY.md and PEOPLE.md are already in your prompt — read only the recent daily memory), then greet them in character.`;
-      session.append({ role: "user", content: newSessionContent, time: ts });
-
-      try {
-        const response = await ask(null, { session, systemPrompt: channelContext, trigger: "discord-owner" });
-        const text = response.text || "（新對話開始）";
-        const formatted = fixMarkdownLinks(text);
-        const chunks = chunkMessage(formatted, 2000);
-        await interaction.editReply(chunks[0]);
-        for (let i = 1; i < chunks.length; i++) {
-          await interaction.followUp(chunks[i]);
+        // 歸檔前：silent memory flush — 讓 agent 自由整理記憶
+        if (session.length > 0) {
+          const flushContext = `${channelContext}\n\n[System] ${SESSION_SUMMARIZE_PROMPT}`;
+          session.append({ role: "user", content: "[System] Session ending — flush memory now.", time: ts });
+          await ask(null, { session, systemPrompt: flushContext, trigger: "discord-owner" }).catch(err =>
+            logger.error({ err: (err as Error).message }, "memory flush before /new failed")
+          );
         }
-      } catch (err) {
-        logger.error({ err: (err as Error).message }, "/new failed");
-        await interaction.deleteReply().catch(() => {});
-      }
+
+        session.archive();
+        logger.info({ sessionId }, "session archived via /new");
+
+        if (shouldOnboard(session.getMessages())) {
+          session.append({
+            role: "user",
+            content: buildOnboardingContext(interaction.user.id, interaction.user.username),
+            time: ts,
+            isOnboarding: true,
+          });
+        }
+        const newSessionContent = `[System] <@${interaction.user.id}>(${interaction.user.username}) started a new session via /new. Follow the Session Initialization steps in your instructions (MEMORY.md and PEOPLE.md are already in your prompt — read only the recent daily memory), then greet them in character.`;
+        session.append({ role: "user", content: newSessionContent, time: ts });
+
+        try {
+          const response = await ask(null, { session, systemPrompt: channelContext, trigger: "discord-owner" });
+          const text = response.text || "（新對話開始）";
+          const formatted = fixMarkdownLinks(text);
+          const chunks = chunkMessage(formatted, 2000);
+          await interaction.editReply(chunks[0]);
+          for (let i = 1; i < chunks.length; i++) {
+            await interaction.followUp(chunks[i]);
+          }
+        } catch (err) {
+          logger.error({ err: (err as Error).message }, "/new failed");
+          await interaction.deleteReply().catch(() => {});
+        }
+      }).catch(err => {
+        logger.error({ err, sessionId }, "queued /new handling failed");
+      });
     }
 
     if (interaction.commandName === "status") {
@@ -451,18 +463,23 @@ export async function startBot(token: string): Promise<void> {
       const sessionId = interaction.guild
         ? `discord-channel-${interaction.channelId}`
         : `discord-dm-${interaction.user.id}`;
-      const session = new Session(sessionId);
-      if (session.length === 0) {
-        await interaction.reply({ content: "Session 是空的，不需要壓縮。", flags: MessageFlags.Ephemeral });
-        return;
-      }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const summary = await compactSession(session);
-      if (summary) {
-        await interaction.editReply(`Session 已壓縮（${session.length} 則訊息保留）。`);
-      } else {
-        await interaction.editReply("Session 太短，不需要壓縮。");
-      }
+      await discordSessionQueue.enqueue(sessionId, async () => {
+        const session = new Session(sessionId);
+        if (session.length === 0) {
+          await interaction.editReply("Session 是空的，不需要壓縮。");
+          return;
+        }
+        const summary = await compactSession(session);
+        if (summary) {
+          await interaction.editReply(`Session 已壓縮（${session.length} 則訊息保留）。`);
+        } else {
+          await interaction.editReply("Session 太短，不需要壓縮。");
+        }
+      }).catch(async err => {
+        logger.error({ err, sessionId }, "queued /compact handling failed");
+        await interaction.editReply("Session 壓縮失敗，請查看日誌。").catch(() => {});
+      });
     }
   });
 
@@ -502,52 +519,58 @@ export async function startBot(token: string): Promise<void> {
 
     // （只有 bot 被 @mention / reply / DM 後才會開啟這個 channel 的 session；
     //   之後該 channel 的所有訊息才會納入記錄，作為 reply chain 的上下文）
-    if (!isTrigger && !Session.exists(sessionId)) return;
+    // A context message arriving behind a queued trigger must not be dropped merely
+    // because that trigger has not created the session file yet.
+    if (!isTrigger && !Session.exists(sessionId) && !discordSessionQueue.has(sessionId)) return;
 
-    const session = new Session(sessionId);
-    // 檔名帶上頻道名，方便在 sessions/ 裡辨識；頻道改名會自動 rename
-    const channelName = (message.channel as { name?: string }).name;
-    if (channelName) session.setChannelName(channelName);
+    await discordSessionQueue.enqueue(sessionId, async () => {
+      const session = new Session(sessionId);
+      // 檔名帶上頻道名，方便在 sessions/ 裡辨識；頻道改名會自動 rename
+      const channelName = (message.channel as { name?: string }).name;
+      if (channelName) session.setChannelName(channelName);
 
-    // Setup context remains resumable until OWNER.md is completed.
-    const needsOnboarding = isTrigger && shouldOnboard(session.getMessages());
+      // Setup context remains resumable until OWNER.md is completed.
+      const needsOnboarding = isTrigger && shouldOnboard(session.getMessages());
 
-    // Thread/論壇貼文的第一次進入：抓初始訊息作為 context
-    if (session.length === 0 && message.channel.isThread()) {
-      try {
-        const starter = await message.channel.fetchStarterMessage();
-        if (starter) {
-          const ts = stamp(new Date(starter.createdTimestamp));
-          const authorName = formatName(starter.author.username, starter.member?.displayName);
-          const threadName = message.channel.name;
-          session.append({
-            role: "user",
-            content: `[System] This is the initial message of forum post "${threadName}" (by ${authorName}) [thread_id: ${message.channelId}]:\n${starter.content}`,
-            time: ts,
-            msgId: starter.id,
-          });
-        }
-      } catch { /* starter message not available */ }
-    }
+      // Thread/論壇貼文的第一次進入：抓初始訊息作為 context
+      if (session.length === 0 && message.channel.isThread()) {
+        try {
+          const starter = await message.channel.fetchStarterMessage();
+          if (starter) {
+            const ts = stamp(new Date(starter.createdTimestamp));
+            const authorName = formatName(starter.author.username, starter.member?.displayName);
+            const threadName = message.channel.name;
+            session.append({
+              role: "user",
+              content: `[System] This is the initial message of forum post "${threadName}" (by ${authorName}) [thread_id: ${message.channelId}]:\n${starter.content}`,
+              time: ts,
+              msgId: starter.id,
+            });
+          }
+        } catch { /* starter message not available */ }
+      }
 
-    // Inject one-time onboarding context before the user's actual message
-    if (needsOnboarding) {
-      const onboardingCtx = buildOnboardingContext(
-        message.author.id,
-        message.author.username,
-        message.member?.displayName,
-      );
-      session.append({ role: "user", content: onboardingCtx, time: stamp(), isOnboarding: true });
-      logger.info({ sessionId, userId: message.author.id }, "onboarding context injected");
-    }
+      // Inject one-time onboarding context before the user's actual message
+      if (needsOnboarding) {
+        const onboardingCtx = buildOnboardingContext(
+          message.author.id,
+          message.author.username,
+          message.member?.displayName,
+        );
+        session.append({ role: "user", content: onboardingCtx, time: stamp(), isOnboarding: true });
+        logger.info({ sessionId, userId: message.author.id }, "onboarding context injected");
+      }
 
-    const fmt = await formatIncomingMessage(message);
-    const content = isTrigger ? fmt.content : `[context] ${fmt.content}`;
-    session.append({ role: "user", content, time: fmt.time, msgId: fmt.msgId, ...(fmt.replyTo ? { replyTo: fmt.replyTo } : {}) });
+      const fmt = await formatIncomingMessage(message);
+      const content = isTrigger ? fmt.content : `[context] ${fmt.content}`;
+      session.append({ role: "user", content, time: fmt.time, msgId: fmt.msgId, ...(fmt.replyTo ? { replyTo: fmt.replyTo } : {}) });
 
-    if (!isTrigger) return;
+      if (!isTrigger) return;
 
-    await handleTrigger(message, session, fmt.images);
+      await handleTrigger(message, session, fmt.images);
+    }).catch(err => {
+      logger.error({ err, sessionId, messageId: message.id }, "queued Discord message handling failed");
+    });
   });
 
   await client.login(token);
