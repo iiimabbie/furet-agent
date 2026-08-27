@@ -380,6 +380,7 @@ Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 
 所以 AGENT.md 只保留 `[context]` 前綴的旁聽訊息不要回這一條。
 
 ### 訊息處理
+- **同 session 串行化**：Discord.js 不會等待 async `MessageCreate` listener；若同頻道短時間連續進訊息，原本會各自載入 `Session` 並同時跑 `ask()`，造成檔案互相覆寫、後一則提早混入前一輪 context、回覆順序顛倒。`bot.ts` 因此用 process-local keyed Promise queue，以 session ID 為 key，把 session 建立、starter/onboarding、訊息格式化與 append、agent 執行、進度及最終 Discord 送出包在同一個 task；上一個 task 完整結束後下一個才開始。不同頻道／DM 的 key 不同，仍可並行。task 失敗只拒絕該 caller，queue tail 會吸收錯誤讓後續繼續；清理時以 Promise identity 比對，避免舊 task 的 finally 誤刪已有新工作接上的 chain。排在既有 trigger 後方的 context 訊息即使 session 檔尚未建立，也會因 queue 已存在而保留；會讀寫／歸檔 session 的 `/new`、`/compact` 也先 defer interaction，再進同一條 queue。
 - **Session 隔離**：未被觸發且 session 不存在 → 不記錄。一旦 bot 被觸發，該頻道的所有訊息才會 append
 - Content 格式：`<@userId>(帳號名｜暱稱): 內容`
 - Mention 正規化：`<@userId>` → `<@userId>(帳號名｜暱稱)` 進 prompt，輸出時 strip 括號。
