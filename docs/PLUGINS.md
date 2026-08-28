@@ -49,10 +49,11 @@ The installer executes trusted package scripts and the loaded plugin later runs 
 The configured owner invokes a single command:
 
 ```text
-/plugin
+/plugin action:Install
+/plugin action:Remove
 ```
 
-Furet replies ephemerally with **Install** and **Remove** buttons. Install opens a modal containing a required GitHub repository link and an optional npm workspace field. Remove opens a select menu backed by the managed plugin registry, so the owner chooses from currently installed plugins instead of typing a name from memory.
+The required `action` slash option provides **Install** and **Remove** choices. Install opens a modal containing a required GitHub repository link and an optional npm workspace field. Remove opens a select menu backed by the managed plugin registry, so the owner chooses from currently installed plugins instead of typing a name from memory.
 
 Every `/plugin` invocation compares the caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and installation defers the interaction before cloning, installing dependencies, or building. Discord installation accepts public HTTPS `github.com` repository links only and rejects embedded credentials. Private sources, local directories, SSH URLs, list, enable, disable, and update remain host-side CLI operations.
 

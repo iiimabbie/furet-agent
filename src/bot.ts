@@ -1,7 +1,7 @@
 import {
   Client, GatewayIntentBits, Events, REST, Routes,
   SlashCommandBuilder, MessageFlags, EmbedBuilder, ActivityType, PresenceStatusData,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, StringSelectMenuBuilder,
+  ActionRowBuilder, ModalBuilder, StringSelectMenuBuilder,
   TextInputBuilder, TextInputStyle,
   type Message, type Interaction, type TextBasedChannel,
 } from "discord.js";
@@ -111,35 +111,62 @@ const SLASH_COMMANDS = [
   new SlashCommandBuilder()
     .setName("plugin")
     .setDescription("安裝或卸載 Furet 外掛（owner only）")
+    .addStringOption(opt =>
+      opt.setName("action")
+        .setDescription("要執行的操作")
+        .setRequired(true)
+        .addChoices(
+          { name: "安裝", value: "install" },
+          { name: "卸載", value: "remove" },
+        )
+    )
     .toJSON(),
 ];
 
 const OWNER_ONLY_MSG = "只有 owner 能用這個指令！";
-const PLUGIN_INSTALL_BUTTON_ID = "plugin:install";
-const PLUGIN_REMOVE_BUTTON_ID = "plugin:remove";
 const PLUGIN_INSTALL_MODAL_ID = "plugin:install:submit";
 const PLUGIN_REMOVE_SELECT_ID = "plugin:remove:select";
 const PLUGIN_SOURCE_INPUT_ID = "source";
 const PLUGIN_WORKSPACE_INPUT_ID = "workspace";
 
-function pluginMenuComponents() {
-  return [
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId(PLUGIN_INSTALL_BUTTON_ID)
-        .setLabel("安裝")
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId(PLUGIN_REMOVE_BUTTON_ID)
-        .setLabel("卸載")
-        .setStyle(ButtonStyle.Danger),
-    ),
-  ];
+function buildPluginInstallModal(): ModalBuilder {
+  const modal = new ModalBuilder()
+    .setCustomId(PLUGIN_INSTALL_MODAL_ID)
+    .setTitle("安裝外掛");
+  const source = new TextInputBuilder()
+    .setCustomId(PLUGIN_SOURCE_INPUT_ID)
+    .setLabel("GitHub repository 連結")
+    .setStyle(TextInputStyle.Short)
+    .setPlaceholder("https://github.com/owner/repository")
+    .setRequired(true);
+  const workspace = new TextInputBuilder()
+    .setCustomId(PLUGIN_WORKSPACE_INPUT_ID)
+    .setLabel("Workspace（選填）")
+    .setStyle(TextInputStyle.Short)
+    .setPlaceholder("例如 packages/dream-journal")
+    .setRequired(false);
+  modal.addComponents(
+    new ActionRowBuilder<TextInputBuilder>().addComponents(source),
+    new ActionRowBuilder<TextInputBuilder>().addComponents(workspace),
+  );
+  return modal;
+}
+
+function buildPluginRemoveSelect() {
+  const names = listManagedPluginNames();
+  if (names.length === 0) return undefined;
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(PLUGIN_REMOVE_SELECT_ID)
+    .setPlaceholder("選擇要卸載的外掛")
+    .addOptions(names.slice(0, 25).map((name, index) => ({ label: name.slice(0, 100), value: String(index) })));
+  return {
+    content: names.length > 25 ? "選擇要卸載的外掛（僅顯示前 25 個）：" : "選擇要卸載的外掛：",
+    components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],
+  };
 }
 
 async function handlePluginManagementInteraction(interaction: Interaction): Promise<boolean> {
-  const isPluginInteraction = (interaction.isButton() && [PLUGIN_INSTALL_BUTTON_ID, PLUGIN_REMOVE_BUTTON_ID].includes(interaction.customId))
-    || (interaction.isModalSubmit() && interaction.customId === PLUGIN_INSTALL_MODAL_ID)
+  const isPluginInteraction = (interaction.isModalSubmit() && interaction.customId === PLUGIN_INSTALL_MODAL_ID)
     || (interaction.isStringSelectMenu() && interaction.customId === PLUGIN_REMOVE_SELECT_ID);
   if (!isPluginInteraction) return false;
 
@@ -147,48 +174,6 @@ async function handlePluginManagementInteraction(interaction: Interaction): Prom
     if (interaction.isRepliable()) {
       await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral }).catch(() => {});
     }
-    return true;
-  }
-
-  if (interaction.isButton() && interaction.customId === PLUGIN_INSTALL_BUTTON_ID) {
-    const modal = new ModalBuilder()
-      .setCustomId(PLUGIN_INSTALL_MODAL_ID)
-      .setTitle("安裝外掛");
-    const source = new TextInputBuilder()
-      .setCustomId(PLUGIN_SOURCE_INPUT_ID)
-      .setLabel("GitHub repository 連結")
-      .setStyle(TextInputStyle.Short)
-      .setPlaceholder("https://github.com/owner/repository")
-      .setRequired(true);
-    const workspace = new TextInputBuilder()
-      .setCustomId(PLUGIN_WORKSPACE_INPUT_ID)
-      .setLabel("Workspace（選填）")
-      .setStyle(TextInputStyle.Short)
-      .setPlaceholder("例如 packages/dream-journal")
-      .setRequired(false);
-    modal.addComponents(
-      new ActionRowBuilder<TextInputBuilder>().addComponents(source),
-      new ActionRowBuilder<TextInputBuilder>().addComponents(workspace),
-    );
-    await interaction.showModal(modal);
-    return true;
-  }
-
-  if (interaction.isButton() && interaction.customId === PLUGIN_REMOVE_BUTTON_ID) {
-    const names = listManagedPluginNames();
-    if (names.length === 0) {
-      await interaction.reply({ content: "目前沒有已安裝的外掛。", flags: MessageFlags.Ephemeral });
-      return true;
-    }
-    const select = new StringSelectMenuBuilder()
-      .setCustomId(PLUGIN_REMOVE_SELECT_ID)
-      .setPlaceholder("選擇要卸載的外掛")
-      .addOptions(names.slice(0, 25).map((name, index) => ({ label: name.slice(0, 100), value: String(index) })));
-    await interaction.reply({
-      content: names.length > 25 ? "選擇要卸載的外掛（僅顯示前 25 個）：" : "選擇要卸載的外掛：",
-      components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],
-      flags: MessageFlags.Ephemeral,
-    });
     return true;
   }
 
@@ -637,11 +622,19 @@ export async function startBot(token: string): Promise<void> {
         await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral });
         return;
       }
-      await interaction.reply({
-        content: "選擇要執行的外掛操作：",
-        components: pluginMenuComponents(),
-        flags: MessageFlags.Ephemeral,
-      });
+      const action = interaction.options.getString("action", true);
+      if (action === "install") {
+        await interaction.showModal(buildPluginInstallModal());
+        return;
+      }
+      if (action === "remove") {
+        const removeSelect = buildPluginRemoveSelect();
+        if (!removeSelect) {
+          await interaction.reply({ content: "目前沒有已安裝的外掛。", flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await interaction.reply({ ...removeSelect, flags: MessageFlags.Ephemeral });
+      }
     }
   });
 
