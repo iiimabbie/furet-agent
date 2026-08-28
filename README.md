@@ -226,7 +226,7 @@ To enable Calendar, Gmail, Drive, and Tasks:
 
 ## Private plugins
 
-Private plugins can register deployment-specific tools, recurring background jobs, and lifecycle event handlers without editing the built-in registry or committing private integrations to this repository. Managed plugins are installed into `workspace/plugins/` and registered in `config.yaml`:
+Private plugins can register deployment-specific tools, recurring background jobs, and lifecycle event handlers without editing the built-in registry or committing private integrations to this repository. Managed plugins are installed into `workspace/plugins/` and registered in `workspace/config/plugins.json`:
 
 ```bash
 furet plugin install <git-url>

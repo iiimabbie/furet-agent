@@ -18,7 +18,7 @@ function usage(): never {
 A plugin package must declare this in package.json:
   "furet": { "plugin": "./dist/index.js" }
 
-Commands update config.yaml but never restart the gateway automatically.`);
+Managed commands update workspace/config/plugins.json but never restart the gateway automatically.`);
   process.exit(1);
 }
 

@@ -23,7 +23,7 @@ A plugin package declares its runtime entry in `package.json`:
 }
 ```
 
-`furet.name` is optional and defaults to the unscoped npm package name. `furet.plugin` is required and must point to a file inside the package. The installer runs `npm install`, runs the selected package's `build` script when present, verifies that the entry exists, records the checkout under `workspace/plugins/`, and registers the entry in `config.yaml`. It never restarts the gateway automatically.
+`furet.name` is optional and defaults to the unscoped npm package name. `furet.plugin` is required and must point to a file inside the package. The installer runs `npm install`, runs the selected package's `build` script when present, verifies that the entry exists, records the checkout under `workspace/plugins/`, and registers the entry in `workspace/config/plugins.json`. It never restarts the gateway automatically.
 
 ```bash
 # Single-package repository
@@ -40,7 +40,7 @@ furet plugin update private-hello   # omit the name to update every managed sour
 furet plugin remove private-hello
 ```
 
-Managed source metadata is stored in `workspace/config/plugins.json`; activation remains in `config.yaml`, so the runtime loader has one source of truth. Removing the final plugin that uses a checkout moves that checkout to `workspace/.trash/` rather than deleting it permanently. Local-directory installs are copied into the managed area and cannot be updated in place; remove and reinstall them to refresh the copy.
+Managed source metadata and activation state are stored in `workspace/config/plugins.json`. The runtime loader merges these managed entries with manually configured `config.yaml` plugins, so managed installation works even when `config.yaml` is mounted read-only. Removing the final plugin that uses a checkout moves that checkout to `workspace/.trash/` rather than deleting it permanently. Local-directory installs are copied into the managed area and cannot be updated in place; remove and reinstall them to refresh the copy.
 
 The installer executes trusted package scripts and the loaded plugin later runs inside the Furet process. Review third-party code before installing it. A restart is required after install, enable, disable, update, or remove.
 

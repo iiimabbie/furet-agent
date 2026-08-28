@@ -11,12 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
-import {
-  loadConfig,
-  removePluginConfig,
-  setPluginConfigEnabled,
-  upsertPluginConfig,
-} from "./config.js";
+import { loadConfig, type PluginConfig } from "./config.js";
 import { PLUGINS_DIR, PLUGIN_REGISTRY_FILE, ROOT, TRASH_DIR } from "./paths.js";
 
 interface PackageJson {
@@ -38,6 +33,7 @@ interface ManagedPluginSource {
 
 interface ManagedPlugin {
   name: string;
+  enabled: boolean;
   sourceId: string;
   workspace: string;
   packageName: string;
@@ -71,7 +67,9 @@ function readRegistry(): PluginRegistry {
     if (parsed.version !== 1 || !Array.isArray(parsed.sources) || !Array.isArray(parsed.plugins)) {
       throw new Error("unsupported registry format");
     }
-    return parsed as PluginRegistry;
+    const registry = parsed as PluginRegistry;
+    registry.plugins = registry.plugins.map((plugin) => ({ ...plugin, enabled: plugin.enabled !== false }));
+    return registry;
   } catch (error) {
     if (!existsSync(PLUGIN_REGISTRY_FILE)) return structuredClone(EMPTY_REGISTRY);
     throw new Error(`Cannot read plugin registry: ${(error as Error).message}`);
@@ -262,6 +260,7 @@ export async function installPlugin(source: string, options: InstallPluginOption
     const entry = displayPath(metadata.entryPath);
     registry.plugins.push({
       name: metadata.name,
+      enabled: true,
       sourceId: sourceRecord.id,
       workspace: displayPath(packageRoot).replace(`${sourceRecord.directory}${sep}`, ""),
       packageName: metadata.packageName,
@@ -269,7 +268,6 @@ export async function installPlugin(source: string, options: InstallPluginOption
       installedAt: now,
       updatedAt: now,
     });
-    upsertPluginConfig(entry, true);
     writeRegistry(registry);
     return `Installed ${metadata.name} from ${sourceRecord.id}. Restart Furet to load it.`;
   } catch (error) {
@@ -290,17 +288,18 @@ export function listManagedPluginNames(): string[] {
   return readRegistry().plugins.map(plugin => plugin.name).sort();
 }
 
+/** Runtime plugin entries managed by workspace/config/plugins.json. */
+export function getManagedPluginConfigs(): PluginConfig[] {
+  return readRegistry().plugins.map((plugin) => ({ path: plugin.entry, enabled: plugin.enabled }));
+}
+
 export function listPlugins(): string {
   const registry = readRegistry();
   const configured = loadConfig().plugins;
-  const configuredMap = new Map(configured.map((plugin) => [plugin.path, plugin.enabled]));
   const managedPaths = new Set(registry.plugins.map((plugin) => plugin.entry));
   const lines = registry.plugins.map((plugin) => {
     const source = registry.sources.find((item) => item.id === plugin.sourceId);
-    const state = configuredMap.has(plugin.entry)
-      ? (configuredMap.get(plugin.entry) ? "enabled" : "disabled")
-      : "unregistered";
-    return `${plugin.name} [${state}] — ${plugin.entry} — ${source?.source ?? plugin.sourceId}`;
+    return `${plugin.name} [${plugin.enabled ? "enabled" : "disabled"}] — ${plugin.entry} — ${source?.source ?? plugin.sourceId}`;
   });
   for (const plugin of configured) {
     if (!managedPaths.has(plugin.path)) {
@@ -314,9 +313,8 @@ export function setManagedPluginEnabled(name: string, enabled: boolean): string 
   const registry = readRegistry();
   const plugin = registry.plugins.find((item) => item.name === name);
   if (!plugin) throw new Error(`Managed plugin ${name} is not installed`);
-  if (!setPluginConfigEnabled(plugin.entry, enabled)) {
-    upsertPluginConfig(plugin.entry, enabled);
-  }
+  plugin.enabled = enabled;
+  writeRegistry(registry);
   return `${enabled ? "Enabled" : "Disabled"} ${name}. Restart Furet to apply the change.`;
 }
 
@@ -358,7 +356,6 @@ export function removeManagedPlugin(name: string): string {
   const index = registry.plugins.findIndex((item) => item.name === name);
   if (index < 0) throw new Error(`Managed plugin ${name} is not installed`);
   const [plugin] = registry.plugins.splice(index, 1);
-  removePluginConfig(plugin.entry);
 
   const sourceStillUsed = registry.plugins.some((item) => item.sourceId === plugin.sourceId);
   if (!sourceStillUsed) {

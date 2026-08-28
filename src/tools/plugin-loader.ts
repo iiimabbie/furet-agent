@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { schedule, validate as validateCron, type ScheduledTask } from "node-cron";
 import { loadConfig, type PluginConfig } from "../config.js";
 import { logger } from "../logger.js";
+import { getManagedPluginConfigs } from "../plugin-manager.js";
 import { ROOT } from "../paths.js";
 import type { Tool } from "../types.js";
 import type { ExposureLevel, MatchSignalName } from "./metadata.js";
@@ -284,7 +285,17 @@ async function loadOne(entry: PluginConfig): Promise<void> {
 export async function loadPlugins(): Promise<void> {
   if (didLoad) return;
   didLoad = true;
-  const enabled = loadConfig().plugins.filter(p => p.enabled);
+  const configured = loadConfig().plugins;
+  let managed: PluginConfig[] = [];
+  try {
+    managed = getManagedPluginConfigs();
+  } catch (err) {
+    logger.error({ err }, "managed plugin registry could not be read; continuing with config.yaml plugins only");
+  }
+  const merged = new Map<string, PluginConfig>();
+  for (const entry of managed) merged.set(entry.path, entry);
+  for (const entry of configured) merged.set(entry.path, entry);
+  const enabled = [...merged.values()].filter(p => p.enabled);
   if (enabled.length === 0) {
     logger.info("no plugins enabled");
     return;

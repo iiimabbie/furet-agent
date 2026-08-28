@@ -645,7 +645,7 @@ furet plugin remove <name>
 - Discord 只暴露一個 owner-only `/plugin` 指令，內含 **安裝**與**卸載**兩個 subcommand。安裝直接接收公開 HTTPS GitHub 連結；若連結是 `/tree/<branch>/<path>` package URL，介面層自動拆出 repository 與 workspace path，再委派 managed plugin service。卸載的 `外掛` 參數使用 autocomplete，資料來自 managed plugin registry，操作體驗與 `/model` 一致。每次互動都直接比對 caller ID 與 `config.discord.owner_id`，不接受 guild role 或 channel allowlist 代替 owner 身分；安裝在 clone、dependency install 與 build 前先 defer interaction。
 - CLI 保留 list／enable／disable／update，以及本機目錄、SSH 或其他 Git URL 等維運功能；Discord UX 不暴露這些低頻操作，也不提供 auth 流程。私有 repository 由主機既有 Git 認證或 SSH 設定處理。
 - CLI 與 Discord 只負責解析輸入、授權與呈現結果，install/remove 都委派同一組 `plugin-manager.ts` 函式，避免兩套管理邏輯分岔。
-- Managed checkout 固定放在 `workspace/plugins/`，安裝來源與 package 對應記在 mode `0600` 的 `workspace/config/plugins.json`；真正決定 runtime 是否載入的仍是 `config.yaml` 的 `plugins`，避免 loader 同時讀兩套啟用狀態。
+- Managed checkout 固定放在 `workspace/plugins/`，安裝來源、package 對應與啟用狀態都記在 mode `0600` 的 `workspace/config/plugins.json`；runtime loader 會把 managed registry 與 `config.yaml` 的手動外掛合併，重複路徑以手動設定為準。這讓容器可維持唯讀掛載 `config.yaml`，Discord 安裝仍只需寫入 workspace。
 - plugin package 必須在 `package.json` 宣告 `furet.plugin`（package 內的相對 entry path）；可選 `furet.name`，否則用去掉 npm scope 的 package name。安裝器拒絕絕對路徑與 `..` 逃逸。
 - Git 來源 shallow clone；本機目錄則複製進 managed area。安裝／更新會執行 `npm install`，並在 package 有 `build` script 時執行；npm workspace monorepo 可用 package name 或相對路徑選定。這些 scripts 等同執行受信任程式碼，不能把 installer 當 sandbox。
 - 同一 monorepo 的多個 plugin 共用 checkout。`update` 對 source 做 `git pull --ff-only` 後重裝 dependencies、重建已註冊 packages；若 package identity 或 entry 改變則拒絕靜默搬移，要求 remove + install。local copy 不做 in-place update。
