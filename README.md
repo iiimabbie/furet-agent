@@ -179,7 +179,7 @@ Available slash commands:
 - `/model` — switch models; owner only.
 - `/google-auth` — finish Google OAuth authorization; owner only.
 - `/restart` — exit the gateway so its process manager can restart it; owner only.
-- `/plugin action:<Install|Remove>` — owner-only plugin management.
+- `/plugin 安裝 連結:<GitHub URL>` / `/plugin 卸載 外掛:<installed plugin>` — owner-only plugin management.
 
 ## Workspace and data
 
@@ -238,7 +238,7 @@ furet plugin update [name]
 furet plugin remove <name>
 ```
 
-Discord exposes one owner-only `/plugin` command with a required `action` choice: **Install** or **Remove**. Install opens a modal for the GitHub repository link and optional workspace; Remove opens a select menu populated from the currently installed managed plugins. The caller is compared directly with `discord.owner_id`, because installing a plugin executes trusted code on the host. Discord installation accepts public HTTPS GitHub repository links; host-side CLI commands remain available for local paths, SSH sources, updates, and enable/disable maintenance.
+Discord exposes one owner-only `/plugin` command with two subcommands. `/plugin 安裝` accepts a GitHub repository URL or a package URL such as `https://github.com/owner/repository/tree/main/packages/example-plugin`; package URLs automatically select the workspace path. `/plugin 卸載` uses autocomplete populated from the currently installed managed plugins, matching the `/model` selection experience. The caller is compared directly with `discord.owner_id`, because installing a plugin executes trusted code on the host. Discord installation accepts public HTTPS GitHub links; host-side CLI commands remain available for local paths, SSH sources, updates, and enable/disable maintenance.
 
 A plugin package declares its entry as `"furet": { "plugin": "./dist/index.js" }` in `package.json`. The installer runs dependency installation and an optional `build` script, but deliberately does not restart the gateway. Tool permissions still flow through the central registry, plugin schedules follow plugin startup/shutdown automatically, and all plugin code runs inside the Furet process without a sandbox.
 

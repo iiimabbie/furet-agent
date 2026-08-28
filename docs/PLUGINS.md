@@ -49,13 +49,13 @@ The installer executes trusted package scripts and the loaded plugin later runs 
 The configured owner invokes a single command:
 
 ```text
-/plugin action:Install
-/plugin action:Remove
+/plugin 安裝 連結:https://github.com/owner/repository/tree/main/packages/example-plugin
+/plugin 卸載 外掛:<choose an installed plugin>
 ```
 
-The required `action` slash option provides **Install** and **Remove** choices. Install opens a modal containing a required GitHub repository link and an optional npm workspace field. Remove opens a select menu backed by the managed plugin registry, so the owner chooses from currently installed plugins instead of typing a name from memory.
+`/plugin 安裝` accepts either a repository URL or a GitHub package URL in `/tree/<branch>/<path>` form. A package URL automatically derives the repository checkout and npm workspace path, so monorepo users do not enter them separately. `/plugin 卸載` exposes the managed plugin registry through Discord autocomplete, like `/model`, so the owner chooses from currently installed plugins instead of typing a name from memory.
 
-Every `/plugin` invocation compares the caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and installation defers the interaction before cloning, installing dependencies, or building. Discord installation accepts public HTTPS `github.com` repository links only and rejects embedded credentials. Private sources, local directories, SSH URLs, list, enable, disable, and update remain host-side CLI operations.
+Every `/plugin` invocation compares the caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and installation defers the interaction before cloning, installing dependencies, or building. Discord installation accepts public HTTPS `github.com` links only and rejects embedded credentials. Private sources, local directories, SSH URLs, list, enable, disable, and update remain host-side CLI operations.
 
 A restart is still required after installation or removal. The command reports the completed persistent change but does not restart Furet automatically.
 

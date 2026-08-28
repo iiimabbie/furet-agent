@@ -33,6 +33,7 @@ interface ManagedPluginSource {
   source: string;
   directory: string;
   local: boolean;
+  ref?: string;
 }
 
 interface ManagedPlugin {
@@ -53,6 +54,7 @@ interface PluginRegistry {
 
 export interface InstallPluginOptions {
   workspace?: string;
+  ref?: string;
 }
 
 const EMPTY_REGISTRY: PluginRegistry = { version: 1, sources: [], plugins: [] };
@@ -204,12 +206,15 @@ function buildPackage(sourceRoot: string, packageRoot: string, packageName: stri
   }
 }
 
-async function checkoutSource(source: string, destination: string): Promise<boolean> {
+async function checkoutSource(source: string, destination: string, ref?: string): Promise<boolean> {
   const local = isLocalDirectory(source);
   if (local) {
     cpSync(realpathSync(resolve(source)), destination, { recursive: true });
   } else {
-    run("git", ["clone", "--depth", "1", source, destination], ROOT);
+    const args = ["clone", "--depth", "1"];
+    if (ref) args.push("--branch", ref);
+    args.push(source, destination);
+    run("git", args, ROOT);
   }
   return local;
 }
@@ -223,7 +228,8 @@ export async function installPlugin(source: string, options: InstallPluginOption
   ensureManagedDirs();
   const registry = readRegistry();
   const normalizedSource = isLocalDirectory(source) ? realpathSync(resolve(source)) : source;
-  let sourceRecord = registry.sources.find((item) => item.source === normalizedSource);
+  const requestedRef = options.ref?.trim() || undefined;
+  let sourceRecord = registry.sources.find((item) => item.source === normalizedSource && item.ref === requestedRef);
   let createdSource = false;
 
   if (!sourceRecord) {
@@ -234,8 +240,8 @@ export async function installPlugin(source: string, options: InstallPluginOption
       id = `${base}-${suffix++}`;
     }
     const directory = resolve(PLUGINS_DIR, id);
-    const local = await checkoutSource(source, directory);
-    sourceRecord = { id, source: normalizedSource, directory: displayPath(directory), local };
+    const local = await checkoutSource(source, directory, requestedRef);
+    sourceRecord = { id, source: normalizedSource, directory: displayPath(directory), local, ...(requestedRef ? { ref: requestedRef } : {}) };
     registry.sources.push(sourceRecord);
     createdSource = true;
   }
