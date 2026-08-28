@@ -178,6 +178,7 @@ Available slash commands:
 - `/model` — switch models; owner only.
 - `/google-auth` — finish Google OAuth authorization; owner only.
 - `/restart` — exit the gateway so its process manager can restart it; owner only.
+- `/plugin install|list|enable|disable|update|remove` — manage trusted plugins; restricted to the configured `discord.owner_id`.
 
 ## Workspace and data
 
@@ -235,6 +236,8 @@ furet plugin disable <name>
 furet plugin update [name]
 furet plugin remove <name>
 ```
+
+The same operations are available through the owner-only Discord `/plugin` command. Install accepts `source` and an optional `workspace`; all responses are ephemeral. Discord authorization compares the caller directly with `discord.owner_id`, because installing or updating a plugin executes trusted code on the host.
 
 A plugin package declares its entry as `"furet": { "plugin": "./dist/index.js" }` in `package.json`. The installer runs dependency installation and an optional `build` script, but deliberately does not restart the gateway. Tool permissions still flow through the central registry, plugin schedules follow plugin startup/shutdown automatically, and all plugin code runs inside the Furet process without a sandbox.
 

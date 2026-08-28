@@ -6,7 +6,11 @@ Furet plugins are trusted local ECMAScript modules that can contribute private t
 
 ## Installation
 
-Furet has a managed plugin CLI. A plugin package declares its runtime entry in `package.json`:
+Furet exposes the same managed plugin operations through the host CLI and an owner-only Discord slash command. Both paths call the same plugin manager; neither path restarts the gateway automatically.
+
+### Host CLI
+
+A plugin package declares its runtime entry in `package.json`:
 
 ```json
 {
@@ -39,6 +43,21 @@ furet plugin remove private-hello
 Managed source metadata is stored in `workspace/config/plugins.json`; activation remains in `config.yaml`, so the runtime loader has one source of truth. Removing the final plugin that uses a checkout moves that checkout to `workspace/.trash/` rather than deleting it permanently. Local-directory installs are copied into the managed area and cannot be updated in place; remove and reinstall them to refresh the copy.
 
 The installer executes trusted package scripts and the loaded plugin later runs inside the Furet process. Review third-party code before installing it. A restart is required after install, enable, disable, update, or remove.
+
+### Discord slash command
+
+The configured owner can manage plugins without logging into the host:
+
+```text
+/plugin install source:<git-url-or-local-path> workspace:<optional>
+/plugin list
+/plugin enable name:<plugin>
+/plugin disable name:<plugin>
+/plugin update name:<optional>
+/plugin remove name:<plugin>
+```
+
+Every `/plugin` subcommand compares the Discord caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and install/update defer the interaction before running dependency installation or builds. Do not put passwords or tokens in an HTTPS source URL—use the host's existing SSH credentials for private repositories.
 
 ## Manual quick start
 

@@ -628,7 +628,7 @@ request-scoped `enabledTools`，後續回合可直接暴露其 schema；進度�
 
 ### 安裝與管理
 
-`src/plugin-manager.ts` + `src/plugin-cli.ts` 提供正式的 host-side 管理介面：
+`src/plugin-manager.ts` 是 CLI 與 Discord 共用的 managed plugin service；`src/plugin-cli.ts` 提供 host-side 入口，`src/bot.ts` 的 owner-only `/plugin` 提供日常 Discord 入口：
 
 ```bash
 furet plugin install <git-url-or-local-path> [--workspace <package-name-or-path>]
@@ -636,8 +636,16 @@ furet plugin list
 furet plugin enable|disable <name>
 furet plugin update [name]
 furet plugin remove <name>
+
+/plugin install source:<git-url-or-local-path> workspace:<optional>
+/plugin list
+/plugin enable|disable name:<name>
+/plugin update name:<optional>
+/plugin remove name:<name>
 ```
 
+- `/plugin` 每個 subcommand 都直接比對 caller ID 與 `config.discord.owner_id`，不接受 guild role 或 channel allowlist 代替 owner 身分。所有回覆用 ephemeral；耗時操作先 defer interaction。Discord HTTPS source 禁止內嵌 username/password/token，私有來源使用主機既有 SSH credential。
+- CLI 與 Discord 只負責解析輸入、授權與呈現結果，install/list/enable/disable/update/remove 全部委派同一組 `plugin-manager.ts` 函式，避免兩套管理邏輯分岔。
 - Managed checkout 固定放在 `workspace/plugins/`，安裝來源與 package 對應記在 mode `0600` 的 `workspace/config/plugins.json`；真正決定 runtime 是否載入的仍是 `config.yaml` 的 `plugins`，避免 loader 同時讀兩套啟用狀態。
 - plugin package 必須在 `package.json` 宣告 `furet.plugin`（package 內的相對 entry path）；可選 `furet.name`，否則用去掉 npm scope 的 package name。安裝器拒絕絕對路徑與 `..` 逃逸。
 - Git 來源 shallow clone；本機目錄則複製進 managed area。安裝／更新會執行 `npm install`，並在 package 有 `build` script 時執行；npm workspace monorepo 可用 package name 或相對路徑選定。這些 scripts 等同執行受信任程式碼，不能把 installer 當 sandbox。

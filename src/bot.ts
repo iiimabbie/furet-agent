@@ -19,6 +19,13 @@ import { estimateCost } from "./utils/pricing.js";
 import { stamp } from "./utils/time.js";
 import { isNoReplySentinel } from "./utils/no-reply.js";
 import { getPluginRuntimeStatus } from "./tools/plugin-loader.js";
+import {
+  installPlugin,
+  listPlugins,
+  removeManagedPlugin,
+  setManagedPluginEnabled,
+  updatePlugins,
+} from "./plugin-manager.js";
 import { KeyedSerialQueue } from "./utils/keyed-serial-queue.js";
 import { shouldOnboard, buildOnboardingContext, isWorkspaceUnconfigured } from "./onboarding.js";
 import { readFile, unlink, writeFile } from "node:fs/promises";
@@ -101,6 +108,51 @@ const SLASH_COMMANDS = [
     .setName("compact")
     .setDescription("壓縮當前 session（摘要舊對話，保留最近訊息）")
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName("plugin")
+    .setDescription("管理 Furet 外掛（owner only）")
+    .addSubcommand(sub =>
+      sub.setName("install")
+        .setDescription("從 Git URL 或主機本機路徑安裝外掛")
+        .addStringOption(opt =>
+          opt.setName("source").setDescription("Git URL 或本機目錄路徑").setRequired(true)
+        )
+        .addStringOption(opt =>
+          opt.setName("workspace").setDescription("npm workspace 名稱或相對路徑").setRequired(false)
+        )
+    )
+    .addSubcommand(sub =>
+      sub.setName("list").setDescription("列出已安裝與已設定的外掛")
+    )
+    .addSubcommand(sub =>
+      sub.setName("enable")
+        .setDescription("啟用 managed 外掛")
+        .addStringOption(opt =>
+          opt.setName("name").setDescription("外掛名稱").setRequired(true)
+        )
+    )
+    .addSubcommand(sub =>
+      sub.setName("disable")
+        .setDescription("停用 managed 外掛")
+        .addStringOption(opt =>
+          opt.setName("name").setDescription("外掛名稱").setRequired(true)
+        )
+    )
+    .addSubcommand(sub =>
+      sub.setName("update")
+        .setDescription("更新一個外掛；省略名稱時更新全部 managed sources")
+        .addStringOption(opt =>
+          opt.setName("name").setDescription("外掛名稱（省略時更新全部）").setRequired(false)
+        )
+    )
+    .addSubcommand(sub =>
+      sub.setName("remove")
+        .setDescription("移除 managed 外掛並回收未使用的 checkout")
+        .addStringOption(opt =>
+          opt.setName("name").setDescription("外掛名稱").setRequired(true)
+        )
+    )
+    .toJSON(),
 ];
 
 const OWNER_ONLY_MSG = "只有 owner 能用這個指令！";
@@ -175,6 +227,22 @@ async function registerSlashCommands(token: string, clientId: string, guildIds: 
   } catch (err) {
     logger.error({ err: (err as Error).message }, "slash command registration failed");
   }
+}
+
+function assertSafeDiscordPluginSource(source: string): void {
+  const trimmed = source.trim();
+  if (!trimmed) throw new Error("Plugin source cannot be empty");
+  if (/^https?:\/\//i.test(trimmed)) {
+    const url = new URL(trimmed);
+    if (url.username || url.password) {
+      throw new Error("Do not put credentials or tokens in a plugin URL; use the host's existing SSH credentials");
+    }
+  }
+}
+
+function truncateInteractionReply(content: string): string {
+  const limit = 1_900;
+  return content.length <= limit ? content : `${content.slice(0, limit)}\n…output truncated`;
 }
 
 function sessionIdForMessage(msg: Message): string {
@@ -486,6 +554,52 @@ export async function startBot(token: string): Promise<void> {
         logger.error({ err, sessionId }, "queued /compact handling failed");
         await interaction.editReply("Session 壓縮失敗，請查看日誌。").catch(() => {});
       });
+    }
+
+    if (interaction.commandName === "plugin") {
+      const config = loadConfig();
+      if (interaction.user.id !== config.discord.owner_id) {
+        await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const action = interaction.options.getSubcommand(true);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        let result: string;
+        switch (action) {
+          case "install": {
+            const source = interaction.options.getString("source", true);
+            const workspace = interaction.options.getString("workspace") ?? undefined;
+            assertSafeDiscordPluginSource(source);
+            result = installPlugin(source, { workspace });
+            break;
+          }
+          case "list":
+            result = listPlugins();
+            break;
+          case "enable":
+            result = setManagedPluginEnabled(interaction.options.getString("name", true), true);
+            break;
+          case "disable":
+            result = setManagedPluginEnabled(interaction.options.getString("name", true), false);
+            break;
+          case "update":
+            result = updatePlugins(interaction.options.getString("name") ?? undefined);
+            break;
+          case "remove":
+            result = removeManagedPlugin(interaction.options.getString("name", true));
+            break;
+          default:
+            throw new Error(`Unsupported plugin action: ${action}`);
+        }
+        logger.info({ action, user: interaction.user.id }, "/plugin command completed");
+        await interaction.editReply(truncateInteractionReply(result));
+      } catch (err) {
+        const message = (err as Error).message;
+        logger.error({ err: message, action, user: interaction.user.id }, "/plugin command failed");
+        await interaction.editReply(truncateInteractionReply(`Plugin command failed: ${message}`));
+      }
     }
   });
 
