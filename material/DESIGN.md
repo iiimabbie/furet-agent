@@ -456,7 +456,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 - `/model` — 切換 AI 模型與思考等級（模型名稱 autocomplete from modelList；effort 省略時為 default）
 - `/google-auth` — Google OAuth 授權流程
 - `/task` — 列出 Google Tasks
-- `/plugin install`、`/plugin remove` — owner-only 外掛安裝／卸載入口；卸載名稱由目前 managed plugins autocomplete
+- `/plugin` — owner-only 外掛管理入口；ephemeral 選單提供安裝與卸載兩個獨立流程
 
 ## Gateway
 
@@ -638,11 +638,10 @@ furet plugin enable|disable <name>
 furet plugin update [name]
 furet plugin remove <name>
 
-/plugin install source:<github-url> workspace:<optional>
-/plugin remove name:<installed-plugin>
+/plugin
 ```
 
-- Discord 只暴露 **安裝**與**卸載**兩個 owner-only subcommand。安裝接受公開的 HTTPS GitHub repository 連結；卸載欄位從 managed plugin registry 即時 autocomplete 目前已安裝項目，不要求 owner 記住名稱。每次呼叫都直接比對 caller ID 與 `config.discord.owner_id`，不接受 guild role 或 channel allowlist 代替 owner 身分；回覆使用 ephemeral，安裝先 defer interaction。
+- Discord 只暴露一個 owner-only `/plugin` 指令。執行後回覆 ephemeral 操作選單：**安裝**按鈕開啟 Modal，填寫公開 HTTPS GitHub repository 連結與選填 workspace；**卸載**按鈕則開啟由 managed plugin registry 產生的目前外掛選單。兩條流程的輸入與處理互不混用。每次互動都直接比對 caller ID 與 `config.discord.owner_id`，不接受 guild role 或 channel allowlist 代替 owner 身分；安裝送出 Modal 後先 defer interaction。
 - CLI 保留 list／enable／disable／update，以及本機目錄、SSH 或其他 Git URL 等維運功能；Discord UX 不暴露這些低頻操作，也不提供 auth 流程。私有 repository 由主機既有 Git 認證或 SSH 設定處理。
 - CLI 與 Discord 只負責解析輸入、授權與呈現結果，install/remove 都委派同一組 `plugin-manager.ts` 函式，避免兩套管理邏輯分岔。
 - Managed checkout 固定放在 `workspace/plugins/`，安裝來源與 package 對應記在 mode `0600` 的 `workspace/config/plugins.json`；真正決定 runtime 是否載入的仍是 `config.yaml` 的 `plugins`，避免 loader 同時讀兩套啟用狀態。

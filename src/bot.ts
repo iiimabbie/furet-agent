@@ -1,6 +1,8 @@
 import {
   Client, GatewayIntentBits, Events, REST, Routes,
   SlashCommandBuilder, MessageFlags, EmbedBuilder, ActivityType, PresenceStatusData,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, StringSelectMenuBuilder,
+  TextInputBuilder, TextInputStyle,
   type Message, type Interaction, type TextBasedChannel,
 } from "discord.js";
 import { ask, compactSession } from "./agent.js";
@@ -109,29 +111,123 @@ const SLASH_COMMANDS = [
   new SlashCommandBuilder()
     .setName("plugin")
     .setDescription("安裝或卸載 Furet 外掛（owner only）")
-    .addSubcommand(sub =>
-      sub.setName("install")
-        .setNameLocalization("zh-TW", "安裝")
-        .setDescription("從 GitHub 連結安裝外掛")
-        .addStringOption(opt =>
-          opt.setName("source").setDescription("GitHub repository 連結").setRequired(true)
-        )
-        .addStringOption(opt =>
-          opt.setName("workspace").setDescription("npm workspace 名稱或相對路徑").setRequired(false)
-        )
-    )
-    .addSubcommand(sub =>
-      sub.setName("remove")
-        .setNameLocalization("zh-TW", "卸載")
-        .setDescription("卸載已安裝的外掛")
-        .addStringOption(opt =>
-          opt.setName("name").setDescription("要卸載的外掛").setRequired(true).setAutocomplete(true)
-        )
-    )
     .toJSON(),
 ];
 
 const OWNER_ONLY_MSG = "只有 owner 能用這個指令！";
+const PLUGIN_INSTALL_BUTTON_ID = "plugin:install";
+const PLUGIN_REMOVE_BUTTON_ID = "plugin:remove";
+const PLUGIN_INSTALL_MODAL_ID = "plugin:install:submit";
+const PLUGIN_REMOVE_SELECT_ID = "plugin:remove:select";
+const PLUGIN_SOURCE_INPUT_ID = "source";
+const PLUGIN_WORKSPACE_INPUT_ID = "workspace";
+
+function pluginMenuComponents() {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(PLUGIN_INSTALL_BUTTON_ID)
+        .setLabel("安裝")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(PLUGIN_REMOVE_BUTTON_ID)
+        .setLabel("卸載")
+        .setStyle(ButtonStyle.Danger),
+    ),
+  ];
+}
+
+async function handlePluginManagementInteraction(interaction: Interaction): Promise<boolean> {
+  const isPluginInteraction = (interaction.isButton() && [PLUGIN_INSTALL_BUTTON_ID, PLUGIN_REMOVE_BUTTON_ID].includes(interaction.customId))
+    || (interaction.isModalSubmit() && interaction.customId === PLUGIN_INSTALL_MODAL_ID)
+    || (interaction.isStringSelectMenu() && interaction.customId === PLUGIN_REMOVE_SELECT_ID);
+  if (!isPluginInteraction) return false;
+
+  if (interaction.user.id !== loadConfig().discord.owner_id) {
+    if (interaction.isRepliable()) {
+      await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral }).catch(() => {});
+    }
+    return true;
+  }
+
+  if (interaction.isButton() && interaction.customId === PLUGIN_INSTALL_BUTTON_ID) {
+    const modal = new ModalBuilder()
+      .setCustomId(PLUGIN_INSTALL_MODAL_ID)
+      .setTitle("安裝外掛");
+    const source = new TextInputBuilder()
+      .setCustomId(PLUGIN_SOURCE_INPUT_ID)
+      .setLabel("GitHub repository 連結")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("https://github.com/owner/repository")
+      .setRequired(true);
+    const workspace = new TextInputBuilder()
+      .setCustomId(PLUGIN_WORKSPACE_INPUT_ID)
+      .setLabel("Workspace（選填）")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("例如 packages/dream-journal")
+      .setRequired(false);
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(source),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(workspace),
+    );
+    await interaction.showModal(modal);
+    return true;
+  }
+
+  if (interaction.isButton() && interaction.customId === PLUGIN_REMOVE_BUTTON_ID) {
+    const names = listManagedPluginNames();
+    if (names.length === 0) {
+      await interaction.reply({ content: "目前沒有已安裝的外掛。", flags: MessageFlags.Ephemeral });
+      return true;
+    }
+    const select = new StringSelectMenuBuilder()
+      .setCustomId(PLUGIN_REMOVE_SELECT_ID)
+      .setPlaceholder("選擇要卸載的外掛")
+      .addOptions(names.slice(0, 25).map((name, index) => ({ label: name.slice(0, 100), value: String(index) })));
+    await interaction.reply({
+      content: names.length > 25 ? "選擇要卸載的外掛（僅顯示前 25 個）：" : "選擇要卸載的外掛：",
+      components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  if (interaction.isModalSubmit() && interaction.customId === PLUGIN_INSTALL_MODAL_ID) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      const source = interaction.fields.getTextInputValue(PLUGIN_SOURCE_INPUT_ID).trim();
+      const workspace = interaction.fields.getTextInputValue(PLUGIN_WORKSPACE_INPUT_ID).trim() || undefined;
+      assertGitHubPluginSource(source);
+      const result = await installPlugin(source, { workspace });
+      logger.info({ operation: "install", user: interaction.user.id }, "/plugin interaction completed");
+      await interaction.editReply(truncateInteractionReply(result));
+    } catch (err) {
+      const message = (err as Error).message;
+      logger.error({ err: message, operation: "install", user: interaction.user.id }, "/plugin interaction failed");
+      await interaction.editReply(truncateInteractionReply(`Plugin installation failed: ${message}`));
+    }
+    return true;
+  }
+
+  if (interaction.isStringSelectMenu() && interaction.customId === PLUGIN_REMOVE_SELECT_ID) {
+    await interaction.deferUpdate();
+    try {
+      const selectedIndex = Number.parseInt(interaction.values[0] ?? "", 10);
+      const name = listManagedPluginNames()[selectedIndex];
+      if (!name) throw new Error("Selected plugin is no longer installed");
+      const result = removeManagedPlugin(name);
+      logger.info({ operation: "remove", plugin: name, user: interaction.user.id }, "/plugin interaction completed");
+      await interaction.editReply({ content: truncateInteractionReply(result), components: [] });
+    } catch (err) {
+      const message = (err as Error).message;
+      logger.error({ err: message, operation: "remove", user: interaction.user.id }, "/plugin interaction failed");
+      await interaction.editReply({ content: truncateInteractionReply(`Plugin removal failed: ${message}`), components: [] });
+    }
+    return true;
+  }
+
+  return true;
+}
 // Discord.js does not await async MessageCreate listeners. Serialize all work that
 // touches the same session so a later message cannot enter the session or start an
 // agent request before the previous reply has been fully delivered.
@@ -264,6 +360,7 @@ export async function startBot(token: string): Promise<void> {
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     try {
+      if (await handlePluginManagementInteraction(interaction)) return;
       const handled = await handleDiscordButtonInteraction(
         interaction,
         client,
@@ -297,19 +394,6 @@ export async function startBot(token: string): Promise<void> {
         return;
       }
 
-      if (interaction.commandName === "plugin") {
-        const config = loadConfig();
-        if (interaction.user.id !== config.discord.owner_id) {
-          await interaction.respond([]);
-          return;
-        }
-        const focused = interaction.options.getFocused().toLowerCase();
-        const names = listManagedPluginNames()
-          .filter(name => name.toLowerCase().includes(focused))
-          .slice(0, 25);
-        await interaction.respond(names.map(name => ({ name, value: name })));
-        return;
-      }
     }
 
     if (!interaction.isChatInputCommand()) return;
@@ -553,29 +637,11 @@ export async function startBot(token: string): Promise<void> {
         await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral });
         return;
       }
-
-      const operation = interaction.options.getSubcommand(true);
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      try {
-        let result: string;
-        if (operation === "install") {
-          const source = interaction.options.getString("source", true).trim();
-          const workspace = interaction.options.getString("workspace")?.trim() || undefined;
-          assertGitHubPluginSource(source);
-          result = await installPlugin(source, { workspace });
-        } else if (operation === "remove") {
-          const name = interaction.options.getString("name", true).trim();
-          result = removeManagedPlugin(name);
-        } else {
-          throw new Error(`Unsupported plugin operation: ${operation}`);
-        }
-        logger.info({ operation, user: interaction.user.id }, "/plugin command completed");
-        await interaction.editReply(truncateInteractionReply(result));
-      } catch (err) {
-        const message = (err as Error).message;
-        logger.error({ err: message, operation, user: interaction.user.id }, "/plugin command failed");
-        await interaction.editReply(truncateInteractionReply(`Plugin command failed: ${message}`));
-      }
+      await interaction.reply({
+        content: "選擇要執行的外掛操作：",
+        components: pluginMenuComponents(),
+        flags: MessageFlags.Ephemeral,
+      });
     }
   });
 
