@@ -472,6 +472,8 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 
 日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日記憶檔的 memory_save 筆記只當輔助。只讀每日檔會漏掉未被 memory_save 的對話（例如純聊天的社群互動）——flush 那步用的是「長期記憶」的門檻，而日記要的是連續性。兩道門檻因此分開：MEMORY.md 留 30 天長期濾網，每日檔／日記照收社群互動。
 
+`memory_save` 的格式刻意維持原子化、可檢索的一事一筆，因此不能直接成為日記骨架。Daily Journal prompt 會先把它視為事實索引與防遺漏清單，再從 transcript 找出整天的主線，把相關的起因、行動、反應與結果融合成有脈絡的第一人稱段落。標題仍用於 Obsidian 導覽，但正文以連續散文為主；只有真正的清單才用 bullet。實作命令、檔名與中間步驟只保留足以理解事件意義的部分，避免成品退化成 changelog、工作報告或分類後的流水帳。這項 prompt 規則必須同時維護 `workspace/JOURNAL.md` 與 `templates/JOURNAL.md`，確保正式環境和新 workspace 初始化結果一致。
+
 ### Reminder 用輪詢而不是 setTimeout
 
 `tickReminders()` 每 15 秒讀一次 `reminders.json`，把 `triggerAt <= now` 的撈出來執行。
