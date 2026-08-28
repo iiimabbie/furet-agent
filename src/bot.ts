@@ -1,7 +1,7 @@
 import {
   Client, GatewayIntentBits, Events, REST, Routes,
   SlashCommandBuilder, MessageFlags, EmbedBuilder, ActivityType, PresenceStatusData,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle,
   type Message, type Interaction, type TextBasedChannel,
 } from "discord.js";
 import { ask, compactSession } from "./agent.js";
@@ -28,8 +28,8 @@ import {
   updatePlugins,
 } from "./plugin-manager.js";
 import {
-  beginGiteaPluginAuth,
-  completeGiteaPluginAuth,
+  beginGitHubPluginAuth,
+  completeGitHubPluginAuth,
   listPluginGitAuth,
   removePluginGitAuth,
 } from "./plugin-git-auth.js";
@@ -125,20 +125,18 @@ const SLASH_COMMANDS = [
       opt.setName("workspace").setDescription("npm workspace 名稱或相對路徑").setRequired(false)
     )
     .addStringOption(opt =>
-      opt.setName("auth").setDescription("要連結 OAuth 的 Gitea 根網址").setRequired(false)
-    )
-    .addStringOption(opt =>
       opt.setName("action")
         .setDescription("其他管理操作；不填任何選項時列出外掛")
         .setRequired(false)
         .addChoices(
           { name: "list", value: "list" },
+          { name: "連結 GitHub", value: "auth" },
           { name: "enable", value: "enable" },
           { name: "disable", value: "disable" },
           { name: "update", value: "update" },
           { name: "remove", value: "remove" },
-          { name: "auth-status", value: "auth-status" },
-          { name: "auth-logout", value: "auth-logout" },
+          { name: "GitHub 授權狀態", value: "auth-status" },
+          { name: "解除 GitHub 連結", value: "auth-logout" },
         )
     )
     .addStringOption(opt =>
@@ -148,14 +146,10 @@ const SLASH_COMMANDS = [
 ];
 
 const OWNER_ONLY_MSG = "只有 owner 能用這個指令！";
-const PLUGIN_AUTH_CALLBACK_BUTTON_ID = "plugin-auth:callback";
-const PLUGIN_AUTH_CALLBACK_MODAL_ID = "plugin-auth:callback-modal";
-const PLUGIN_AUTH_CALLBACK_INPUT_ID = "callback-url";
+const PLUGIN_AUTH_COMPLETE_BUTTON_ID = "plugin-auth:github-complete";
 
 async function handlePluginAuthInteraction(interaction: Interaction): Promise<boolean> {
-  if (!interaction.isButton() && !interaction.isModalSubmit()) return false;
-  if (interaction.customId !== PLUGIN_AUTH_CALLBACK_BUTTON_ID
-      && interaction.customId !== PLUGIN_AUTH_CALLBACK_MODAL_ID) return false;
+  if (!interaction.isButton() || interaction.customId !== PLUGIN_AUTH_COMPLETE_BUTTON_ID) return false;
 
   const ownerId = loadConfig().discord.owner_id;
   if (!ownerId || interaction.user.id !== ownerId) {
@@ -163,31 +157,14 @@ async function handlePluginAuthInteraction(interaction: Interaction): Promise<bo
     return true;
   }
 
-  if (interaction.isButton()) {
-    const modal = new ModalBuilder()
-      .setCustomId(PLUGIN_AUTH_CALLBACK_MODAL_ID)
-      .setTitle("完成 Gitea 授權");
-    const input = new TextInputBuilder()
-      .setCustomId(PLUGIN_AUTH_CALLBACK_INPUT_ID)
-      .setLabel("貼上瀏覽器網址列的完整回調 URL")
-      .setPlaceholder("http://127.0.0.1/?code=...&state=...")
-      .setStyle(TextInputStyle.Paragraph)
-      .setRequired(true)
-      .setMaxLength(4000);
-    modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
-    await interaction.showModal(modal);
-    return true;
-  }
-
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   try {
-    const callbackUrl = interaction.fields.getTextInputValue(PLUGIN_AUTH_CALLBACK_INPUT_ID).trim();
-    const result = await completeGiteaPluginAuth(callbackUrl, interaction.user.id);
-    logger.info({ user: interaction.user.id }, "plugin Git OAuth completed via modal");
+    const result = await completeGitHubPluginAuth(interaction.user.id);
+    logger.info({ user: interaction.user.id }, "plugin GitHub OAuth completed via button");
     await interaction.editReply(truncateInteractionReply(result));
   } catch (err) {
     const message = (err as Error).message;
-    logger.error({ err: message, user: interaction.user.id }, "plugin Git OAuth modal failed");
+    logger.error({ err: message, user: interaction.user.id }, "plugin GitHub OAuth completion failed");
     await interaction.editReply(truncateInteractionReply(`Plugin authorization failed: ${message}`));
   }
   return true;
@@ -271,7 +248,7 @@ function assertSafeDiscordPluginSource(source: string): void {
   if (/^https?:\/\//i.test(trimmed)) {
     const url = new URL(trimmed);
     if (url.username || url.password) {
-      throw new Error("Do not put credentials or tokens in a plugin URL; connect the Git host with `/plugin auth:<host>`");
+      throw new Error("Do not put credentials or tokens in a plugin URL; connect GitHub with `/plugin action:auth`");
     }
   }
 }
@@ -602,14 +579,13 @@ export async function startBot(token: string): Promise<void> {
 
       const source = interaction.options.getString("source")?.trim();
       const workspace = interaction.options.getString("workspace")?.trim() || undefined;
-      const authHost = interaction.options.getString("auth")?.trim();
       const action = interaction.options.getString("action") ?? undefined;
       const name = interaction.options.getString("name")?.trim();
-      const modes = [Boolean(source), Boolean(authHost), Boolean(action)].filter(Boolean).length;
+      const modes = [Boolean(source), Boolean(action)].filter(Boolean).length;
 
       if (modes > 1) {
         await interaction.reply({
-          content: "一次只能執行一種操作：安裝 `source`、OAuth `auth`，或選擇 `action`。",
+          content: "一次只能執行一種操作：安裝 `source` 或選擇 `action`。",
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -623,7 +599,7 @@ export async function startBot(token: string): Promise<void> {
         return;
       }
 
-      const operation = source ? "install" : authHost ? "auth-login" : action ?? "list";
+      const operation = source ? "install" : action ?? "list";
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
         let result: string;
@@ -632,25 +608,33 @@ export async function startBot(token: string): Promise<void> {
             assertSafeDiscordPluginSource(source!);
             result = await installPlugin(source!, { workspace });
             break;
-          case "auth-login": {
-            const auth = beginGiteaPluginAuth(authHost!, interaction.user.id);
-            const components = [
-              new ActionRowBuilder<ButtonBuilder>().addComponents(
+          case "auth": {
+            const auth = await beginGitHubPluginAuth(interaction.user.id);
+            const buttons = [];
+            if (auth.installationUrl) {
+              buttons.push(
                 new ButtonBuilder()
-                  .setLabel("前往 Gitea 授權")
+                  .setLabel("安裝 GitHub App")
                   .setStyle(ButtonStyle.Link)
-                  .setURL(auth.authorizationUrl),
-                new ButtonBuilder()
-                  .setCustomId(PLUGIN_AUTH_CALLBACK_BUTTON_ID)
-                  .setLabel("貼上回調 URL")
-                  .setStyle(ButtonStyle.Primary),
-              ),
-            ];
+                  .setURL(auth.installationUrl),
+              );
+            }
+            buttons.push(
+              new ButtonBuilder()
+                .setLabel("前往 GitHub 授權")
+                .setStyle(ButtonStyle.Link)
+                .setURL(auth.verificationUri),
+              new ButtonBuilder()
+                .setCustomId(PLUGIN_AUTH_COMPLETE_BUTTON_ID)
+                .setLabel("我已完成授權")
+                .setStyle(ButtonStyle.Primary),
+            );
+            const components = [new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons)];
             await interaction.editReply({
-              content: `請先按「前往 Gitea 授權」。授權後即使瀏覽器顯示無法連線也沒關係，回到這則訊息按「貼上回調 URL」完成連結。\n\n授權請求會在 10 分鐘後過期。`,
+              content: `${auth.installationUrl ? "先按「安裝 GitHub App」選擇允許讀取的 repository。\n" : ""}按「前往 GitHub 授權」，輸入驗證碼 **${auth.userCode}** 並允許存取。完成後回來按「我已完成授權」。\n\n授權請求會在 ${new Date(auth.expiresAt).toLocaleTimeString("zh-TW")} 過期。`,
               components,
             });
-            logger.info({ operation, user: interaction.user.id }, "/plugin auth started");
+            logger.info({ operation, user: interaction.user.id }, "/plugin GitHub auth started");
             return;
           }
           case "list":
@@ -675,8 +659,7 @@ export async function startBot(token: string): Promise<void> {
             result = listPluginGitAuth();
             break;
           case "auth-logout":
-            if (!name) throw new Error("auth-logout requires the Gitea host in the name option");
-            result = removePluginGitAuth(name);
+            result = removePluginGitAuth();
             break;
           default:
             throw new Error(`Unsupported plugin operation: ${operation}`);

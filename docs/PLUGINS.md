@@ -59,47 +59,48 @@ The configured owner can manage plugins without logging into the host:
 
 Discord registers only one `/plugin` command. Supplying `source` installs a plugin; invoking it without options lists plugins. Less common management operations use the `action` option instead of separate subcommands, so Discord autocomplete does not expand into a wall of plugin commands.
 
-Every `/plugin` invocation compares the Discord caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and install/update defer the interaction before running dependency installation or builds. Do not put passwords or tokens in an HTTPS source URL. For a private Gitea repository, connect the host through the OAuth flow below; SSH remains available as a manual fallback.
+Every `/plugin` invocation compares the Discord caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and install/update defer the interaction before running dependency installation or builds. Do not put passwords or tokens in an HTTPS source URL. For a private GitHub repository, connect GitHub through the Device Flow below; SSH remains available as a manual fallback.
 
-## Private Gitea OAuth without a public callback server
+## Private GitHub repositories with Device Flow
 
-Furet supports Gitea Authorization Code + PKCE through a manual callback-URL handoff. The Furet host does not need a public domain, HTTPS listener, or reverse proxy.
+Set `GITHUB_APP_CLIENT_ID` to the client ID of a GitHub App with **Device Flow** enabled and repository **Contents: read-only** permission. A client ID is public application metadata; no callback server, public domain, or reverse proxy is required. Set the app repository permission to **Contents: read-only** and install it only on repositories that may provide plugins. Set `GITHUB_APP_SLUG` as well to show an installation button in Discord. If expiring user access tokens are enabled for the app, set `GITHUB_APP_CLIENT_SECRET` so Furet can refresh them; otherwise an expired token requires authorization again.
 
 ```text
-/plugin auth:https://git.example.com
+/plugin action:auth
 ```
 
-Furet stores a short-lived `state` and PKCE verifier, then returns an ephemeral message with two buttons:
+Furet requests a short-lived device code and returns an ephemeral message with:
 
-- **Open Gitea authorization** opens the provider authorization page.
-- **Paste callback URL** opens a Discord modal.
+- **Install GitHub App** — when `GITHUB_APP_SLUG` is configured, opens GitHub’s repository-selection page.
+- **Open GitHub authorization** — opens GitHub's fixed device authorization page.
+- A short verification code to enter on that page.
+- **I have authorized** — asks Furet to complete the pending authorization after approval.
 
-Approve access and let the browser redirect to `http://127.0.0.1`. The page may fail to load; that is expected. Copy the complete URL from the browser address bar, return to the ephemeral message, press **Paste callback URL**, and submit it in the modal. No second slash command is needed.
+The pending request is bound to the configured Discord owner and expires at the time returned by GitHub. GitHub enforces a minimum polling interval; pressing the completion button too quickly returns a wait message without discarding the pending request.
 
-OAuth connection status and logout remain low-frequency management actions:
+Connection status and local logout remain low-frequency management actions:
 
 ```text
 /plugin action:auth-status
-/plugin action:auth-logout name:https://git.example.com
+/plugin action:auth-logout
 ```
 
-The default client ID is Gitea's pre-configured `git-credential-oauth` public client, and the requested scope is `read:repository`. Instances that disable the default application can register their own public OAuth application with a loopback redirect URI, then use the host CLI to pass a custom client ID or redirect URI.
+Furet verifies the token against GitHub's `/user` API, stores the account name plus access/refresh tokens in mode `0600` at `workspace/config/plugin-git-auth.json`, refreshes expiring tokens when GitHub supplies refresh metadata, and injects credentials into Git only through the child process environment. Tokens are not written into repository URLs, `config.yaml`, command arguments, or logs. Logout removes Furet's local credential; the owner can separately revoke or uninstall the GitHub App from GitHub settings.
 
-The callback code is single-use, bound to the configured Discord owner and PKCE verifier, and expires after 10 minutes. Furet parses `code` and `state` from the pasted URL; it does not request the loopback callback URL. The Furet server exchanges the code directly with Gitea, stores access and refresh tokens in mode `0600` at `workspace/config/plugin-git-auth.json`, refreshes expiring tokens, and injects credentials into Git only through the child process environment. Tokens are not written into repository URLs, `config.yaml`, command arguments, or logs.
-
-After connection, HTTPS install and update automatically use OAuth for repositories under that Gitea base URL:
+After connection, HTTPS install and update automatically use OAuth for `https://github.com/...` repositories:
 
 ```text
-/plugin source:https://git.example.com/owner/furet-plugins.git workspace:dream-journal
+/plugin source:https://github.com/owner/furet-plugins.git workspace:dream-journal
 ```
 
 The same flow is available from the host CLI:
 
 ```bash
-furet plugin auth login https://git.example.com
-furet plugin auth callback 'http://127.0.0.1/?code=...&state=...'
+furet plugin auth login
+# Complete approval in the browser, then:
+furet plugin auth complete
 furet plugin auth status
-furet plugin auth logout https://git.example.com
+furet plugin auth logout
 ```
 
 ## Manual quick start

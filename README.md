@@ -69,6 +69,11 @@ GOOGLE_API_KEY=
 # Optional: enables Google Calendar, Gmail, Drive, and Tasks tools
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+
+# Optional: enables private GitHub plugin repositories through Device Flow
+GITHUB_APP_CLIENT_ID=
+GITHUB_APP_CLIENT_SECRET=
+GITHUB_APP_SLUG=
 ```
 
 Never commit `.env`, `config.yaml`, or `workspace/`. They are ignored by default because they can contain secrets and private assistant data.
@@ -178,7 +183,7 @@ Available slash commands:
 - `/model` — switch models; owner only.
 - `/google-auth` — finish Google OAuth authorization; owner only.
 - `/restart` — exit the gateway so its process manager can restart it; owner only.
-- `/plugin` — install or manage trusted plugins through one owner-only command. Pass `source` to install, `auth` to start private Gitea OAuth, or use the optional `action` field for less common management operations.
+- `/plugin` — install or manage trusted plugins through one owner-only command. Pass `source` to install, or use `action` for GitHub authorization and less common management operations.
 
 ## Workspace and data
 
@@ -237,7 +242,7 @@ furet plugin update [name]
 furet plugin remove <name>
 ```
 
-The same operations are available through one owner-only Discord `/plugin` command. `/plugin source:<url>` installs, `/plugin` lists, and the optional `action` field handles enable, disable, update, and remove without registering many visible subcommands. All responses are ephemeral. Discord authorization compares the caller directly with `discord.owner_id`, because installing or updating a plugin executes trusted code on the host. Private Gitea HTTPS repositories can be connected with `/plugin auth:<host>`. The ephemeral response provides an authorization link and a **Paste callback URL** button; that button opens a modal for the complete loopback URL. Furet exchanges the code server-side, so the host does not need a public callback endpoint.
+The same operations are available through one owner-only Discord `/plugin` command. `/plugin source:<url>` installs, `/plugin` lists, and the optional `action` field handles GitHub authorization, enable, disable, update, and remove without registering many visible subcommands. All responses are ephemeral. Discord authorization compares the caller directly with `discord.owner_id`, because installing or updating a plugin executes trusted code on the host. Private GitHub HTTPS repositories use `/plugin action:auth`: Furet shows GitHub’s device page, a short verification code, and an **I have authorized** button. This Device Flow needs no callback URL or public domain. Configure a GitHub App with Device Flow and Contents read-only permission, then set `GITHUB_APP_CLIENT_ID`; set `GITHUB_APP_SLUG` to show the repository-install button. If the app issues expiring user tokens, also set `GITHUB_APP_CLIENT_SECRET` for refresh.
 
 A plugin package declares its entry as `"furet": { "plugin": "./dist/index.js" }` in `package.json`. The installer runs dependency installation and an optional `build` script, but deliberately does not restart the gateway. Tool permissions still flow through the central registry, plugin schedules follow plugin startup/shutdown automatically, and all plugin code runs inside the Furet process without a sandbox.
 
