@@ -623,8 +623,7 @@ request-scoped `enabledTools`，後續回合可直接暴露其 schema；進度�
 
 對外掛作者的完整規格、可執行範例、安全檢查表與疑難排解見 [`docs/PLUGINS.md`](../docs/PLUGINS.md)。本節保留核心內部設計與不變量。
 
-`src/tools/plugin-loader.ts` + `src/tools/plugin-types.ts` — 讓私有外掛（如私人的
-livly-mumu 外掛）從 `config.yaml` 指定的本機路徑載入並註冊額外工具，**不需修改
+`src/tools/plugin-loader.ts` + `src/tools/plugin-types.ts` — 讓受信任的本機外掛從 `config.yaml` 指定的路徑載入並註冊額外能力，**不需修改
 `src/tools/registry.ts`**，也不把私人連線資料寫進 repo。
 
 ### 安裝與管理

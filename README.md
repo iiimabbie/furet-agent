@@ -146,7 +146,7 @@ without restarting the gateway. Existing daily files are appended to, never
 overwritten. Log entries use local time and a human-readable format:
 
 ```text
-[2026-08-21 09:04:52] INFO: discord trigger {"sessionId":"...","author":"yubbae"}
+[2026-08-21 09:04:52] INFO: discord trigger {"sessionId":"...","author":"owner"}
 ```
 
 Set `LOG_LEVEL` before launching the gateway to control verbosity. The default is `debug`; use `info` in routine operation if you do not need tool-level diagnostic logs.

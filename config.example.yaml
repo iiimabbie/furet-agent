@@ -85,5 +85,5 @@ plugins: []                             # plugin modules loaded from local paths
                                         # Do NOT put private connection data here — the plugin
                                         # module reads its own secrets from .env / its own config.
                                         # Example:
-                                        #   - path: ../furet-plugins/livly-mumu/index.ts
+                                        #   - path: ../furet-plugins/example-plugin/index.ts
                                         #     enabled: true
