@@ -1,7 +1,6 @@
 import {
   Client, GatewayIntentBits, Events, REST, Routes,
   SlashCommandBuilder, MessageFlags, EmbedBuilder, ActivityType, PresenceStatusData,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle,
   type Message, type Interaction, type TextBasedChannel,
 } from "discord.js";
 import { ask, compactSession } from "./agent.js";
@@ -22,17 +21,9 @@ import { isNoReplySentinel } from "./utils/no-reply.js";
 import { getPluginRuntimeStatus } from "./tools/plugin-loader.js";
 import {
   installPlugin,
-  listPlugins,
+  listManagedPluginNames,
   removeManagedPlugin,
-  setManagedPluginEnabled,
-  updatePlugins,
 } from "./plugin-manager.js";
-import {
-  beginGitHubPluginAuth,
-  completeGitHubPluginAuth,
-  listPluginGitAuth,
-  removePluginGitAuth,
-} from "./plugin-git-auth.js";
 import { KeyedSerialQueue } from "./utils/keyed-serial-queue.js";
 import { shouldOnboard, buildOnboardingContext, isWorkspaceUnconfigured } from "./onboarding.js";
 import { readFile, unlink, writeFile } from "node:fs/promises";
@@ -117,59 +108,30 @@ const SLASH_COMMANDS = [
     .toJSON(),
   new SlashCommandBuilder()
     .setName("plugin")
-    .setDescription("安裝或管理 Furet 外掛（owner only）")
-    .addStringOption(opt =>
-      opt.setName("source").setDescription("Git URL 或本機目錄；填入即安裝").setRequired(false)
-    )
-    .addStringOption(opt =>
-      opt.setName("workspace").setDescription("npm workspace 名稱或相對路徑").setRequired(false)
-    )
-    .addStringOption(opt =>
-      opt.setName("action")
-        .setDescription("其他管理操作；不填任何選項時列出外掛")
-        .setRequired(false)
-        .addChoices(
-          { name: "list", value: "list" },
-          { name: "連結 GitHub", value: "auth" },
-          { name: "enable", value: "enable" },
-          { name: "disable", value: "disable" },
-          { name: "update", value: "update" },
-          { name: "remove", value: "remove" },
-          { name: "GitHub 授權狀態", value: "auth-status" },
-          { name: "解除 GitHub 連結", value: "auth-logout" },
+    .setDescription("安裝或卸載 Furet 外掛（owner only）")
+    .addSubcommand(sub =>
+      sub.setName("install")
+        .setNameLocalization("zh-TW", "安裝")
+        .setDescription("從 GitHub 連結安裝外掛")
+        .addStringOption(opt =>
+          opt.setName("source").setDescription("GitHub repository 連結").setRequired(true)
+        )
+        .addStringOption(opt =>
+          opt.setName("workspace").setDescription("npm workspace 名稱或相對路徑").setRequired(false)
         )
     )
-    .addStringOption(opt =>
-      opt.setName("name").setDescription("enable、disable、update 或 remove 的外掛名稱").setRequired(false)
+    .addSubcommand(sub =>
+      sub.setName("remove")
+        .setNameLocalization("zh-TW", "卸載")
+        .setDescription("卸載已安裝的外掛")
+        .addStringOption(opt =>
+          opt.setName("name").setDescription("要卸載的外掛").setRequired(true).setAutocomplete(true)
+        )
     )
     .toJSON(),
 ];
 
 const OWNER_ONLY_MSG = "只有 owner 能用這個指令！";
-const PLUGIN_AUTH_COMPLETE_BUTTON_ID = "plugin-auth:github-complete";
-
-async function handlePluginAuthInteraction(interaction: Interaction): Promise<boolean> {
-  if (!interaction.isButton() || interaction.customId !== PLUGIN_AUTH_COMPLETE_BUTTON_ID) return false;
-
-  const ownerId = loadConfig().discord.owner_id;
-  if (!ownerId || interaction.user.id !== ownerId) {
-    await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral });
-    return true;
-  }
-
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  try {
-    const result = await completeGitHubPluginAuth(interaction.user.id);
-    logger.info({ user: interaction.user.id }, "plugin GitHub OAuth completed via button");
-    await interaction.editReply(truncateInteractionReply(result));
-  } catch (err) {
-    const message = (err as Error).message;
-    logger.error({ err: message, user: interaction.user.id }, "plugin GitHub OAuth completion failed");
-    await interaction.editReply(truncateInteractionReply(`Plugin authorization failed: ${message}`));
-  }
-  return true;
-}
-
 // Discord.js does not await async MessageCreate listeners. Serialize all work that
 // touches the same session so a later message cannot enter the session or start an
 // agent request before the previous reply has been fully delivered.
@@ -242,15 +204,16 @@ async function registerSlashCommands(token: string, clientId: string, guildIds: 
   }
 }
 
-function assertSafeDiscordPluginSource(source: string): void {
-  const trimmed = source.trim();
-  if (!trimmed) throw new Error("Plugin source cannot be empty");
-  if (/^https?:\/\//i.test(trimmed)) {
-    const url = new URL(trimmed);
-    if (url.username || url.password) {
-      throw new Error("Do not put credentials or tokens in a plugin URL; connect GitHub with `/plugin action:auth`");
-    }
+function assertGitHubPluginSource(source: string): void {
+  const url = new URL(source);
+  if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "github.com") {
+    throw new Error("Discord installation only accepts an HTTPS GitHub repository link");
   }
+  if (url.username || url.password) {
+    throw new Error("Do not put credentials or tokens in the GitHub link");
+  }
+  const segments = url.pathname.split("/").filter(Boolean);
+  if (segments.length < 2) throw new Error("Enter a complete GitHub repository link");
 }
 
 function truncateInteractionReply(content: string): string {
@@ -301,7 +264,6 @@ export async function startBot(token: string): Promise<void> {
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     try {
-      if (await handlePluginAuthInteraction(interaction)) return;
       const handled = await handleDiscordButtonInteraction(
         interaction,
         client,
@@ -324,15 +286,30 @@ export async function startBot(token: string): Promise<void> {
       return;
     }
 
-    // autocomplete for /model
-    if (interaction.isAutocomplete() && interaction.commandName === "model") {
-      const focused = interaction.options.getFocused();
-      const { llm } = loadConfig();
-      const filtered = llm.modelList
-        .filter(m => m.includes(focused))
-        .slice(0, 25);
-      await interaction.respond(filtered.map(m => ({ name: m, value: m })));
-      return;
+    if (interaction.isAutocomplete()) {
+      if (interaction.commandName === "model") {
+        const focused = interaction.options.getFocused();
+        const { llm } = loadConfig();
+        const filtered = llm.modelList
+          .filter(m => m.includes(focused))
+          .slice(0, 25);
+        await interaction.respond(filtered.map(m => ({ name: m, value: m })));
+        return;
+      }
+
+      if (interaction.commandName === "plugin") {
+        const config = loadConfig();
+        if (interaction.user.id !== config.discord.owner_id) {
+          await interaction.respond([]);
+          return;
+        }
+        const focused = interaction.options.getFocused().toLowerCase();
+        const names = listManagedPluginNames()
+          .filter(name => name.toLowerCase().includes(focused))
+          .slice(0, 25);
+        await interaction.respond(names.map(name => ({ name, value: name })));
+        return;
+      }
     }
 
     if (!interaction.isChatInputCommand()) return;
@@ -577,92 +554,20 @@ export async function startBot(token: string): Promise<void> {
         return;
       }
 
-      const source = interaction.options.getString("source")?.trim();
-      const workspace = interaction.options.getString("workspace")?.trim() || undefined;
-      const action = interaction.options.getString("action") ?? undefined;
-      const name = interaction.options.getString("name")?.trim();
-      const modes = [Boolean(source), Boolean(action)].filter(Boolean).length;
-
-      if (modes > 1) {
-        await interaction.reply({
-          content: "一次只能執行一種操作：安裝 `source` 或選擇 `action`。",
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-      if (workspace && !source) {
-        await interaction.reply({ content: "`workspace` 只能和 `source` 一起使用。", flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (name && !action) {
-        await interaction.reply({ content: "`name` 只能和 `action` 一起使用。", flags: MessageFlags.Ephemeral });
-        return;
-      }
-
-      const operation = source ? "install" : action ?? "list";
+      const operation = interaction.options.getSubcommand(true);
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
         let result: string;
-        switch (operation) {
-          case "install":
-            assertSafeDiscordPluginSource(source!);
-            result = await installPlugin(source!, { workspace });
-            break;
-          case "auth": {
-            const auth = await beginGitHubPluginAuth(interaction.user.id);
-            const buttons = [];
-            if (auth.installationUrl) {
-              buttons.push(
-                new ButtonBuilder()
-                  .setLabel("安裝 GitHub App")
-                  .setStyle(ButtonStyle.Link)
-                  .setURL(auth.installationUrl),
-              );
-            }
-            buttons.push(
-              new ButtonBuilder()
-                .setLabel("前往 GitHub 授權")
-                .setStyle(ButtonStyle.Link)
-                .setURL(auth.verificationUri),
-              new ButtonBuilder()
-                .setCustomId(PLUGIN_AUTH_COMPLETE_BUTTON_ID)
-                .setLabel("我已完成授權")
-                .setStyle(ButtonStyle.Primary),
-            );
-            const components = [new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons)];
-            await interaction.editReply({
-              content: `${auth.installationUrl ? "先按「安裝 GitHub App」選擇允許讀取的 repository。\n" : ""}按「前往 GitHub 授權」，輸入驗證碼 **${auth.userCode}** 並允許存取。完成後回來按「我已完成授權」。\n\n授權請求會在 ${new Date(auth.expiresAt).toLocaleTimeString("zh-TW")} 過期。`,
-              components,
-            });
-            logger.info({ operation, user: interaction.user.id }, "/plugin GitHub auth started");
-            return;
-          }
-          case "list":
-            result = listPlugins();
-            break;
-          case "enable":
-            if (!name) throw new Error("enable requires the name option");
-            result = setManagedPluginEnabled(name, true);
-            break;
-          case "disable":
-            if (!name) throw new Error("disable requires the name option");
-            result = setManagedPluginEnabled(name, false);
-            break;
-          case "update":
-            result = await updatePlugins(name || undefined);
-            break;
-          case "remove":
-            if (!name) throw new Error("remove requires the name option");
-            result = removeManagedPlugin(name);
-            break;
-          case "auth-status":
-            result = listPluginGitAuth();
-            break;
-          case "auth-logout":
-            result = removePluginGitAuth();
-            break;
-          default:
-            throw new Error(`Unsupported plugin operation: ${operation}`);
+        if (operation === "install") {
+          const source = interaction.options.getString("source", true).trim();
+          const workspace = interaction.options.getString("workspace")?.trim() || undefined;
+          assertGitHubPluginSource(source);
+          result = await installPlugin(source, { workspace });
+        } else if (operation === "remove") {
+          const name = interaction.options.getString("name", true).trim();
+          result = removeManagedPlugin(name);
+        } else {
+          throw new Error(`Unsupported plugin operation: ${operation}`);
         }
         logger.info({ operation, user: interaction.user.id }, "/plugin command completed");
         await interaction.editReply(truncateInteractionReply(result));

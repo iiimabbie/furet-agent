@@ -19,7 +19,6 @@ export const GOOGLE_TOKEN_PATH = resolve(WORKSPACE_CONFIG_DIR, "google-token.jso
 export const SKILLS_DIR = resolve(WORKSPACE_DIR, "skills");
 export const PLUGINS_DIR = resolve(WORKSPACE_DIR, "plugins");
 export const PLUGIN_REGISTRY_FILE = resolve(WORKSPACE_CONFIG_DIR, "plugins.json");
-export const PLUGIN_GIT_AUTH_FILE = resolve(WORKSPACE_CONFIG_DIR, "plugin-git-auth.json");
 
 /**
  * agent 產生或抓下來的檔案一律落在這裡：下載的圖片、Discord 附件、

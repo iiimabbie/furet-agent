@@ -5,13 +5,6 @@ import {
   setManagedPluginEnabled,
   updatePlugins,
 } from "./plugin-manager.js";
-import {
-  beginGitHubPluginAuth,
-  completeGitHubPluginAuth,
-  listPluginGitAuth,
-  removePluginGitAuth,
-} from "./plugin-git-auth.js";
-import { loadConfig } from "./config.js";
 
 function usage(): never {
   console.error(`Usage:
@@ -21,10 +14,6 @@ function usage(): never {
   furet plugin disable <name>
   furet plugin update [name]
   furet plugin remove <name>
-  furet plugin auth login [--client-id <id>]
-  furet plugin auth complete
-  furet plugin auth status
-  furet plugin auth logout
 
 A plugin package must declare this in package.json:
   "furet": { "plugin": "./dist/index.js" }
@@ -75,33 +64,6 @@ try {
       const name = args.shift();
       if (!name || args.length) usage();
       console.log(removeManagedPlugin(name));
-      break;
-    }
-    case "auth": {
-      const authAction = args.shift();
-      const ownerId = loadConfig().discord.owner_id || "cli-owner";
-      switch (authAction) {
-        case "login": {
-          const clientId = option(args, "--client-id");
-          if (args.length) usage();
-          console.log((await beginGitHubPluginAuth(ownerId, { clientId })).instructions);
-          break;
-        }
-        case "complete":
-          if (args.length) usage();
-          console.log(await completeGitHubPluginAuth(ownerId));
-          break;
-        case "status":
-          if (args.length) usage();
-          console.log(listPluginGitAuth());
-          break;
-        case "logout":
-          if (args.length) usage();
-          console.log(removePluginGitAuth());
-          break;
-        default:
-          usage();
-      }
       break;
     }
     default:

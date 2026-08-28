@@ -46,62 +46,18 @@ The installer executes trusted package scripts and the loaded plugin later runs 
 
 ### Discord slash command
 
-The configured owner can manage plugins without logging into the host:
+The configured owner gets two focused operations:
 
 ```text
-/plugin source:<git-url-or-local-path> workspace:<optional>
-/plugin
-/plugin action:enable name:<plugin>
-/plugin action:disable name:<plugin>
-/plugin action:update name:<optional>
-/plugin action:remove name:<plugin>
+/plugin install source:<github-url> workspace:<optional>
+/plugin remove name:<installed-plugin>
 ```
 
-Discord registers only one `/plugin` command. Supplying `source` installs a plugin; invoking it without options lists plugins. Less common management operations use the `action` option instead of separate subcommands, so Discord autocomplete does not expand into a wall of plugin commands.
+Discord renders these as the localized **安裝** and **卸載** subcommands. The uninstall `name` field uses autocomplete backed by the managed plugin registry, so the owner selects from currently installed plugins instead of typing a name from memory.
 
-Every `/plugin` invocation compares the Discord caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and install/update defer the interaction before running dependency installation or builds. Do not put passwords or tokens in an HTTPS source URL. For a private GitHub repository, connect GitHub through the Device Flow below; SSH remains available as a manual fallback.
+Every `/plugin` invocation compares the caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and installation defers the interaction before cloning, installing dependencies, or building. Discord installation accepts public HTTPS `github.com` repository links only and rejects embedded credentials. Private sources, local directories, SSH URLs, list, enable, disable, and update remain host-side CLI operations.
 
-## Private GitHub repositories with Device Flow
-
-Set `GITHUB_APP_CLIENT_ID` to the client ID of a GitHub App with **Device Flow** enabled and repository **Contents: read-only** permission. A client ID is public application metadata; no callback server, public domain, or reverse proxy is required. Set the app repository permission to **Contents: read-only** and install it only on repositories that may provide plugins. Set `GITHUB_APP_SLUG` as well to show an installation button in Discord. If expiring user access tokens are enabled for the app, set `GITHUB_APP_CLIENT_SECRET` so Furet can refresh them; otherwise an expired token requires authorization again.
-
-```text
-/plugin action:auth
-```
-
-Furet requests a short-lived device code and returns an ephemeral message with:
-
-- **Install GitHub App** — when `GITHUB_APP_SLUG` is configured, opens GitHub’s repository-selection page.
-- **Open GitHub authorization** — opens GitHub's fixed device authorization page.
-- A short verification code to enter on that page.
-- **I have authorized** — asks Furet to complete the pending authorization after approval.
-
-The pending request is bound to the configured Discord owner and expires at the time returned by GitHub. GitHub enforces a minimum polling interval; pressing the completion button too quickly returns a wait message without discarding the pending request.
-
-Connection status and local logout remain low-frequency management actions:
-
-```text
-/plugin action:auth-status
-/plugin action:auth-logout
-```
-
-Furet verifies the token against GitHub's `/user` API, stores the account name plus access/refresh tokens in mode `0600` at `workspace/config/plugin-git-auth.json`, refreshes expiring tokens when GitHub supplies refresh metadata, and injects credentials into Git only through the child process environment. Tokens are not written into repository URLs, `config.yaml`, command arguments, or logs. Logout removes Furet's local credential; the owner can separately revoke or uninstall the GitHub App from GitHub settings.
-
-After connection, HTTPS install and update automatically use OAuth for `https://github.com/...` repositories:
-
-```text
-/plugin source:https://github.com/owner/furet-plugins.git workspace:dream-journal
-```
-
-The same flow is available from the host CLI:
-
-```bash
-furet plugin auth login
-# Complete approval in the browser, then:
-furet plugin auth complete
-furet plugin auth status
-furet plugin auth logout
-```
+A restart is still required after installation or removal. The command reports the completed persistent change but does not restart Furet automatically.
 
 ## Manual quick start
 

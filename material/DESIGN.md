@@ -456,7 +456,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 - `/model` — 切換 AI 模型與思考等級（模型名稱 autocomplete from modelList；effort 省略時為 default）
 - `/google-auth` — Google OAuth 授權流程
 - `/task` — 列出 Google Tasks
-- `/plugin` — owner-only 單一入口；`source` 安裝、無參數列出、`action:auth` 啟動 GitHub Device Flow，低頻管理同樣走 `action` option
+- `/plugin install`、`/plugin remove` — owner-only 外掛安裝／卸載入口；卸載名稱由目前 managed plugins autocomplete
 
 ## Gateway
 
@@ -638,23 +638,19 @@ furet plugin enable|disable <name>
 furet plugin update [name]
 furet plugin remove <name>
 
-/plugin source:<git-url-or-local-path> workspace:<optional>
-/plugin                                      # list
-/plugin action:auth                          # GitHub Device Flow
-/plugin action:<enable|disable|update|remove|auth-status|auth-logout> name:<optional>
+/plugin install source:<github-url> workspace:<optional>
+/plugin remove name:<installed-plugin>
 ```
 
-- Discord 只註冊一個 `/plugin` command，不把 install/list/auth/enable 等操作展開成大量 subcommand。`source` 直接安裝、無參數直接 list、`action:auth` 啟動 GitHub Device Flow；回覆以 ephemeral message 顯示 GitHub 固定授權頁、短驗證碼與「我已完成授權」按鈕。每次呼叫與完成按鈕都直接比對 caller ID 與 `config.discord.owner_id`，不接受 guild role 或 channel allowlist 代替 owner 身分。所有回覆用 ephemeral；耗時操作先 defer interaction。Discord HTTPS source 禁止內嵌 username/password/token；SSH 只保留為手動 fallback。
-- CLI 與 Discord 只負責解析輸入、授權與呈現結果，install/list/enable/disable/update/remove 全部委派同一組 `plugin-manager.ts` 函式，避免兩套管理邏輯分岔。
+- Discord 只暴露 **安裝**與**卸載**兩個 owner-only subcommand。安裝接受公開的 HTTPS GitHub repository 連結；卸載欄位從 managed plugin registry 即時 autocomplete 目前已安裝項目，不要求 owner 記住名稱。每次呼叫都直接比對 caller ID 與 `config.discord.owner_id`，不接受 guild role 或 channel allowlist 代替 owner 身分；回覆使用 ephemeral，安裝先 defer interaction。
+- CLI 保留 list／enable／disable／update，以及本機目錄、SSH 或其他 Git URL 等維運功能；Discord UX 不暴露這些低頻操作，也不提供 auth 流程。私有 repository 由主機既有 Git 認證或 SSH 設定處理。
+- CLI 與 Discord 只負責解析輸入、授權與呈現結果，install/remove 都委派同一組 `plugin-manager.ts` 函式，避免兩套管理邏輯分岔。
 - Managed checkout 固定放在 `workspace/plugins/`，安裝來源與 package 對應記在 mode `0600` 的 `workspace/config/plugins.json`；真正決定 runtime 是否載入的仍是 `config.yaml` 的 `plugins`，避免 loader 同時讀兩套啟用狀態。
 - plugin package 必須在 `package.json` 宣告 `furet.plugin`（package 內的相對 entry path）；可選 `furet.name`，否則用去掉 npm scope 的 package name。安裝器拒絕絕對路徑與 `..` 逃逸。
 - Git 來源 shallow clone；本機目錄則複製進 managed area。安裝／更新會執行 `npm install`，並在 package 有 `build` script 時執行；npm workspace monorepo 可用 package name 或相對路徑選定。這些 scripts 等同執行受信任程式碼，不能把 installer 當 sandbox。
 - 同一 monorepo 的多個 plugin 共用 checkout。`update` 對 source 做 `git pull --ff-only` 後重裝 dependencies、重建已註冊 packages；若 package identity 或 entry 改變則拒絕靜默搬移，要求 remove + install。local copy 不做 in-place update。
 - enable／disable／install／remove 只改持久設定，**不自動重啟 gateway**。remove 最後一個引用某 source 的 plugin 時，把 checkout 移到 `workspace/.trash/`，不直接永久刪除。
 - 仍保留手動 `config.plugins` path，方便開發中的單檔 module；installer 是正式 UX，不是 loader 的必要依賴。
-- 私有 GitHub repository 使用 OAuth Device Flow，不要求 Furet 對外提供 callback server。`GITHUB_APP_CLIENT_ID` 指向已啟用 Device Flow、repository Contents 僅 read-only 的 GitHub App；client ID 是公開應用識別。`GITHUB_APP_SLUG` 可讓 Discord 額外顯示安裝按鈕，由 owner 選擇允許的 repositories。`/plugin action:auth` 向 GitHub 取得短效 device code，在 ephemeral message 顯示固定授權頁、user code 與完成按鈕。
-- Pending authorization 綁定 Discord owner，依 GitHub 回傳的期限與 polling interval 管理；`authorization_pending`／`slow_down` 不會破壞 pending 狀態。成功後先呼叫 GitHub `/user` 驗證身分，再把帳號與 token／refresh token 存於 mode `0600` 的 `workspace/config/plugin-git-auth.json`，不寫進 URL、`config.yaml`、command arguments 或 log。
-- HTTPS clone／pull 只對 `https://github.com/...` 自動套用已連結的 GitHub credential；access token 將到期時依 provider 回傳的 refresh metadata 更新；若 GitHub App 啟用 expiring user tokens，refresh 另需 `GITHUB_APP_CLIENT_SECRET`。Git credential 再透過 child-process environment 注入一次性 Git credential helper。CLI 與 Discord 共用同一 auth store 與交換邏輯。
 
 ### 設定
 

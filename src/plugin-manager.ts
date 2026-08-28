@@ -18,7 +18,6 @@ import {
   upsertPluginConfig,
 } from "./config.js";
 import { PLUGINS_DIR, PLUGIN_REGISTRY_FILE, ROOT, TRASH_DIR } from "./paths.js";
-import { gitOAuthEnvironment } from "./plugin-git-auth.js";
 
 interface PackageJson {
   name?: string;
@@ -210,7 +209,7 @@ async function checkoutSource(source: string, destination: string): Promise<bool
   if (local) {
     cpSync(realpathSync(resolve(source)), destination, { recursive: true });
   } else {
-    run("git", ["clone", "--depth", "1", source, destination], ROOT, await gitOAuthEnvironment(source));
+    run("git", ["clone", "--depth", "1", source, destination], ROOT);
   }
   return local;
 }
@@ -281,6 +280,10 @@ export async function installPlugin(source: string, options: InstallPluginOption
   }
 }
 
+export function listManagedPluginNames(): string[] {
+  return readRegistry().plugins.map(plugin => plugin.name).sort();
+}
+
 export function listPlugins(): string {
   const registry = readRegistry();
   const configured = loadConfig().plugins;
@@ -315,7 +318,7 @@ async function updateSource(registry: PluginRegistry, source: ManagedPluginSourc
   const sourceRoot = resolve(ROOT, source.directory);
   if (!existsSync(sourceRoot)) throw new Error(`Plugin source directory is missing: ${source.directory}`);
   if (source.local) throw new Error(`Cannot update copied local source ${source.id}; remove and install it again`);
-  run("git", ["pull", "--ff-only"], sourceRoot, await gitOAuthEnvironment(source.source));
+  run("git", ["pull", "--ff-only"], sourceRoot);
   installDependencies(sourceRoot);
   for (const plugin of registry.plugins.filter((item) => item.sourceId === source.id)) {
     const packageRoot = resolve(sourceRoot, plugin.workspace === source.directory ? "." : plugin.workspace);
