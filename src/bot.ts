@@ -116,81 +116,35 @@ const SLASH_COMMANDS = [
     .toJSON(),
   new SlashCommandBuilder()
     .setName("plugin")
-    .setDescription("管理 Furet 外掛（owner only）")
-    .addSubcommand(sub =>
-      sub.setName("install")
-        .setDescription("從 Git URL 或主機本機路徑安裝外掛")
-        .addStringOption(opt =>
-          opt.setName("source").setDescription("Git URL 或本機目錄路徑").setRequired(true)
-        )
-        .addStringOption(opt =>
-          opt.setName("workspace").setDescription("npm workspace 名稱或相對路徑").setRequired(false)
+    .setDescription("安裝或管理 Furet 外掛（owner only）")
+    .addStringOption(opt =>
+      opt.setName("source").setDescription("Git URL 或本機目錄；填入即安裝").setRequired(false)
+    )
+    .addStringOption(opt =>
+      opt.setName("workspace").setDescription("npm workspace 名稱或相對路徑").setRequired(false)
+    )
+    .addStringOption(opt =>
+      opt.setName("auth").setDescription("要連結 OAuth 的 Gitea 根網址").setRequired(false)
+    )
+    .addStringOption(opt =>
+      opt.setName("callback").setDescription("授權後瀏覽器網址列的完整 callback URL").setRequired(false)
+    )
+    .addStringOption(opt =>
+      opt.setName("action")
+        .setDescription("其他管理操作；不填任何選項時列出外掛")
+        .setRequired(false)
+        .addChoices(
+          { name: "list", value: "list" },
+          { name: "enable", value: "enable" },
+          { name: "disable", value: "disable" },
+          { name: "update", value: "update" },
+          { name: "remove", value: "remove" },
+          { name: "auth-status", value: "auth-status" },
+          { name: "auth-logout", value: "auth-logout" },
         )
     )
-    .addSubcommand(sub =>
-      sub.setName("list").setDescription("列出已安裝與已設定的外掛")
-    )
-    .addSubcommand(sub =>
-      sub.setName("enable")
-        .setDescription("啟用 managed 外掛")
-        .addStringOption(opt =>
-          opt.setName("name").setDescription("外掛名稱").setRequired(true)
-        )
-    )
-    .addSubcommand(sub =>
-      sub.setName("disable")
-        .setDescription("停用 managed 外掛")
-        .addStringOption(opt =>
-          opt.setName("name").setDescription("外掛名稱").setRequired(true)
-        )
-    )
-    .addSubcommand(sub =>
-      sub.setName("update")
-        .setDescription("更新一個外掛；省略名稱時更新全部 managed sources")
-        .addStringOption(opt =>
-          opt.setName("name").setDescription("外掛名稱（省略時更新全部）").setRequired(false)
-        )
-    )
-    .addSubcommand(sub =>
-      sub.setName("remove")
-        .setDescription("移除 managed 外掛並回收未使用的 checkout")
-        .addStringOption(opt =>
-          opt.setName("name").setDescription("外掛名稱").setRequired(true)
-        )
-    )
-    .addSubcommandGroup(group =>
-      group.setName("auth")
-        .setDescription("管理私有 Git OAuth 授權")
-        .addSubcommand(sub =>
-          sub.setName("login")
-            .setDescription("產生 Gitea OAuth 授權網址")
-            .addStringOption(opt =>
-              opt.setName("host").setDescription("Gitea 根網址，例如 https://git.example.com").setRequired(true)
-            )
-            .addStringOption(opt =>
-              opt.setName("client-id").setDescription("OAuth client ID；省略時使用 Gitea 內建 git-credential-oauth client").setRequired(false)
-            )
-            .addStringOption(opt =>
-              opt.setName("redirect-uri").setDescription("已註冊的 redirect URI；預設 http://127.0.0.1").setRequired(false)
-            )
-        )
-        .addSubcommand(sub =>
-          sub.setName("callback")
-            .setDescription("貼回瀏覽器網址列中的完整 OAuth callback URL")
-            .addStringOption(opt =>
-              opt.setName("url").setDescription("包含 code 與 state 的完整 callback URL").setRequired(true)
-            )
-        )
-        .addSubcommand(sub =>
-          sub.setName("status").setDescription("列出已連結的私有 Git OAuth")
-        )
-        .addSubcommand(sub =>
-          sub.setName("logout")
-            .setDescription("移除指定 Gitea host 的 OAuth 授權")
-            .addStringOption(opt =>
-              opt.setName("host").setDescription("Gitea 根網址").setRequired(true)
-            )
-        )
+    .addStringOption(opt =>
+      opt.setName("name").setDescription("enable、disable、update 或 remove 的外掛名稱").setRequired(false)
     )
     .toJSON(),
 ];
@@ -275,7 +229,7 @@ function assertSafeDiscordPluginSource(source: string): void {
   if (/^https?:\/\//i.test(trimmed)) {
     const url = new URL(trimmed);
     if (url.username || url.password) {
-      throw new Error("Do not put credentials or tokens in a plugin URL; connect the Git host with /plugin auth login");
+      throw new Error("Do not put credentials or tokens in a plugin URL; connect the Git host with `/plugin auth:<host>`");
     }
   }
 }
@@ -603,69 +557,78 @@ export async function startBot(token: string): Promise<void> {
         return;
       }
 
-      const group = interaction.options.getSubcommandGroup(false);
-      const action = interaction.options.getSubcommand(true);
+      const source = interaction.options.getString("source")?.trim();
+      const workspace = interaction.options.getString("workspace")?.trim() || undefined;
+      const authHost = interaction.options.getString("auth")?.trim();
+      const callback = interaction.options.getString("callback")?.trim();
+      const action = interaction.options.getString("action") ?? undefined;
+      const name = interaction.options.getString("name")?.trim();
+      const modes = [Boolean(source), Boolean(authHost), Boolean(callback), Boolean(action)].filter(Boolean).length;
+
+      if (modes > 1) {
+        await interaction.reply({
+          content: "一次只能執行一種操作：安裝 `source`、OAuth `auth`、貼回 `callback`，或選擇 `action`。",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      if (workspace && !source) {
+        await interaction.reply({ content: "`workspace` 只能和 `source` 一起使用。", flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (name && !action) {
+        await interaction.reply({ content: "`name` 只能和 `action` 一起使用。", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const operation = source ? "install" : authHost ? "auth-login" : callback ? "auth-callback" : action ?? "list";
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
         let result: string;
-        if (group === "auth") {
-          switch (action) {
-            case "login":
-              result = beginGiteaPluginAuth(
-                interaction.options.getString("host", true),
-                interaction.user.id,
-                {
-                  clientId: interaction.options.getString("client-id") ?? undefined,
-                  redirectUri: interaction.options.getString("redirect-uri") ?? undefined,
-                },
-              );
-              break;
-            case "callback":
-              result = await completeGiteaPluginAuth(
-                interaction.options.getString("url", true),
-                interaction.user.id,
-              );
-              break;
-            case "status":
-              result = listPluginGitAuth();
-              break;
-            case "logout":
-              result = removePluginGitAuth(interaction.options.getString("host", true));
-              break;
-            default:
-              throw new Error(`Unsupported plugin auth action: ${action}`);
-          }
-        } else switch (action) {
-          case "install": {
-            const source = interaction.options.getString("source", true);
-            const workspace = interaction.options.getString("workspace") ?? undefined;
-            assertSafeDiscordPluginSource(source);
-            result = await installPlugin(source, { workspace });
+        switch (operation) {
+          case "install":
+            assertSafeDiscordPluginSource(source!);
+            result = await installPlugin(source!, { workspace });
             break;
-          }
+          case "auth-login":
+            result = beginGiteaPluginAuth(authHost!, interaction.user.id);
+            break;
+          case "auth-callback":
+            result = await completeGiteaPluginAuth(callback!, interaction.user.id);
+            break;
           case "list":
             result = listPlugins();
             break;
           case "enable":
-            result = setManagedPluginEnabled(interaction.options.getString("name", true), true);
+            if (!name) throw new Error("enable requires the name option");
+            result = setManagedPluginEnabled(name, true);
             break;
           case "disable":
-            result = setManagedPluginEnabled(interaction.options.getString("name", true), false);
+            if (!name) throw new Error("disable requires the name option");
+            result = setManagedPluginEnabled(name, false);
             break;
           case "update":
-            result = await updatePlugins(interaction.options.getString("name") ?? undefined);
+            result = await updatePlugins(name || undefined);
             break;
           case "remove":
-            result = removeManagedPlugin(interaction.options.getString("name", true));
+            if (!name) throw new Error("remove requires the name option");
+            result = removeManagedPlugin(name);
+            break;
+          case "auth-status":
+            result = listPluginGitAuth();
+            break;
+          case "auth-logout":
+            if (!name) throw new Error("auth-logout requires the Gitea host in the name option");
+            result = removePluginGitAuth(name);
             break;
           default:
-            throw new Error(`Unsupported plugin action: ${action}`);
+            throw new Error(`Unsupported plugin operation: ${operation}`);
         }
-        logger.info({ group, action, user: interaction.user.id }, "/plugin command completed");
+        logger.info({ operation, user: interaction.user.id }, "/plugin command completed");
         await interaction.editReply(truncateInteractionReply(result));
       } catch (err) {
         const message = (err as Error).message;
-        logger.error({ err: message, group, action, user: interaction.user.id }, "/plugin command failed");
+        logger.error({ err: message, operation, user: interaction.user.id }, "/plugin command failed");
         await interaction.editReply(truncateInteractionReply(`Plugin command failed: ${message}`));
       }
     }

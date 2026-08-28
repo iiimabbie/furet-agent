@@ -49,40 +49,42 @@ The installer executes trusted package scripts and the loaded plugin later runs 
 The configured owner can manage plugins without logging into the host:
 
 ```text
-/plugin install source:<git-url-or-local-path> workspace:<optional>
-/plugin list
-/plugin enable name:<plugin>
-/plugin disable name:<plugin>
-/plugin update name:<optional>
-/plugin remove name:<plugin>
+/plugin source:<git-url-or-local-path> workspace:<optional>
+/plugin
+/plugin action:enable name:<plugin>
+/plugin action:disable name:<plugin>
+/plugin action:update name:<optional>
+/plugin action:remove name:<plugin>
 ```
 
-Every `/plugin` subcommand compares the Discord caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and install/update defer the interaction before running dependency installation or builds. Do not put passwords or tokens in an HTTPS source URL. For a private Gitea repository, connect the host through the OAuth flow below; SSH remains available as a manual fallback.
+Discord registers only one `/plugin` command. Supplying `source` installs a plugin; invoking it without options lists plugins. Less common management operations use the `action` option instead of separate subcommands, so Discord autocomplete does not expand into a wall of plugin commands.
+
+Every `/plugin` invocation compares the Discord caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and install/update defer the interaction before running dependency installation or builds. Do not put passwords or tokens in an HTTPS source URL. For a private Gitea repository, connect the host through the OAuth flow below; SSH remains available as a manual fallback.
 
 ## Private Gitea OAuth without a public callback server
 
 Furet supports Gitea Authorization Code + PKCE through a manual callback-URL handoff. The Furet host does not need a public domain, HTTPS listener, or reverse proxy.
 
 ```text
-/plugin auth login host:https://git.example.com
+/plugin auth:https://git.example.com
 ```
 
 Furet stores a short-lived `state` and PKCE verifier, then returns an ephemeral Gitea authorization URL. Open it, approve access, and let the browser redirect to `http://127.0.0.1`. The page may fail to load; that is expected. Copy the complete URL from the browser address bar and submit it:
 
 ```text
-/plugin auth callback url:<complete callback URL>
-/plugin auth status
-/plugin auth logout host:https://git.example.com
+/plugin callback:<complete callback URL>
+/plugin action:auth-status
+/plugin action:auth-logout name:https://git.example.com
 ```
 
-The default client ID is Gitea's pre-configured `git-credential-oauth` public client, and the requested scope is `read:repository`. Instances that disable the default application can register their own public OAuth application with a loopback redirect URI, then pass `client-id` and (when needed) `redirect-uri` to `/plugin auth login`.
+The default client ID is Gitea's pre-configured `git-credential-oauth` public client, and the requested scope is `read:repository`. Instances that disable the default application can register their own public OAuth application with a loopback redirect URI, then use the host CLI to pass a custom client ID or redirect URI.
 
 The callback code is single-use, bound to the configured Discord owner and PKCE verifier, and expires after 10 minutes. Furet parses `code` and `state` from the pasted URL; it does not request the loopback callback URL. The Furet server exchanges the code directly with Gitea, stores access and refresh tokens in mode `0600` at `workspace/config/plugin-git-auth.json`, refreshes expiring tokens, and injects credentials into Git only through the child process environment. Tokens are not written into repository URLs, `config.yaml`, command arguments, or logs.
 
 After connection, HTTPS install and update automatically use OAuth for repositories under that Gitea base URL:
 
 ```text
-/plugin install source:https://git.example.com/owner/furet-plugins.git workspace:dream-journal
+/plugin source:https://git.example.com/owner/furet-plugins.git workspace:dream-journal
 ```
 
 The same flow is available from the host CLI:

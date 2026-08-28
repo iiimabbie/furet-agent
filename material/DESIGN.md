@@ -456,6 +456,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 - `/model` — 切換 AI 模型與思考等級（模型名稱 autocomplete from modelList；effort 省略時為 default）
 - `/google-auth` — Google OAuth 授權流程
 - `/task` — 列出 Google Tasks
+- `/plugin` — owner-only 單一入口；`source` 安裝、無參數列出、`auth`／`callback` 授權，低頻管理走 `action` option
 
 ## Gateway
 
@@ -637,15 +638,14 @@ furet plugin enable|disable <name>
 furet plugin update [name]
 furet plugin remove <name>
 
-/plugin install source:<git-url-or-local-path> workspace:<optional>
-/plugin list
-/plugin enable|disable name:<name>
-/plugin update name:<optional>
-/plugin remove name:<name>
-/plugin auth login|callback|status|logout ...
+/plugin source:<git-url-or-local-path> workspace:<optional>
+/plugin                                      # list
+/plugin auth:<gitea-base-url>
+/plugin callback:<complete-callback-url>
+/plugin action:<enable|disable|update|remove|auth-status|auth-logout> name:<optional>
 ```
 
-- `/plugin` 每個 subcommand 都直接比對 caller ID 與 `config.discord.owner_id`，不接受 guild role 或 channel allowlist 代替 owner 身分。所有回覆用 ephemeral；耗時操作先 defer interaction。Discord HTTPS source 禁止內嵌 username/password/token；私有 Gitea 預設走 `/plugin auth login` + 手動 callback URL 回填的 OAuth PKCE 流程，SSH 只保留為手動 fallback。
+- Discord 只註冊一個 `/plugin` command，不把 install/list/auth/enable 等操作展開成大量 subcommand。`source` 直接安裝、無參數直接 list、`auth`／`callback` 處理 OAuth，低頻管理工作放在 `action` choice。每次呼叫都直接比對 caller ID 與 `config.discord.owner_id`，不接受 guild role 或 channel allowlist 代替 owner 身分。所有回覆用 ephemeral；耗時操作先 defer interaction。Discord HTTPS source 禁止內嵌 username/password/token；私有 Gitea 預設走手動 callback URL 回填的 OAuth PKCE 流程，SSH 只保留為手動 fallback。
 - CLI 與 Discord 只負責解析輸入、授權與呈現結果，install/list/enable/disable/update/remove 全部委派同一組 `plugin-manager.ts` 函式，避免兩套管理邏輯分岔。
 - Managed checkout 固定放在 `workspace/plugins/`，安裝來源與 package 對應記在 mode `0600` 的 `workspace/config/plugins.json`；真正決定 runtime 是否載入的仍是 `config.yaml` 的 `plugins`，避免 loader 同時讀兩套啟用狀態。
 - plugin package 必須在 `package.json` 宣告 `furet.plugin`（package 內的相對 entry path）；可選 `furet.name`，否則用去掉 npm scope 的 package name。安裝器拒絕絕對路徑與 `..` 逃逸。
@@ -653,7 +653,7 @@ furet plugin remove <name>
 - 同一 monorepo 的多個 plugin 共用 checkout。`update` 對 source 做 `git pull --ff-only` 後重裝 dependencies、重建已註冊 packages；若 package identity 或 entry 改變則拒絕靜默搬移，要求 remove + install。local copy 不做 in-place update。
 - enable／disable／install／remove 只改持久設定，**不自動重啟 gateway**。remove 最後一個引用某 source 的 plugin 時，把 checkout 移到 `workspace/.trash/`，不直接永久刪除。
 - 仍保留手動 `config.plugins` path，方便開發中的單檔 module；installer 是正式 UX，不是 loader 的必要依賴。
-- 私有 Gitea OAuth 不要求 Furet 對外提供 callback server：`/plugin auth login` 產生 `state`、PKCE verifier 與授權 URL；瀏覽器授權後即使 loopback redirect 顯示連線失敗，使用者仍可把網址列中的完整 callback URL 貼回 `/plugin auth callback`。Furet 只解析其中的 `code`／`state`，再由 server 呼叫 token endpoint，不會 GET 該 loopback URL。
+- 私有 Gitea OAuth 不要求 Furet 對外提供 callback server：`/plugin auth:<host>` 產生 `state`、PKCE verifier 與授權 URL；瀏覽器授權後即使 loopback redirect 顯示連線失敗，使用者仍可把網址列中的完整 callback URL 貼回 `/plugin callback:<url>`。Furet 只解析其中的 `code`／`state`，再由 server 呼叫 token endpoint，不會 GET 該 loopback URL。
 - 預設使用 Gitea 內建的 `git-credential-oauth` public client 與 `read:repository` scope；也可指定自建 public client ID／redirect URI。Pending authorization 綁定 Discord owner、10 分鐘失效且 state 單次使用；token／refresh token 存於 mode `0600` 的 `workspace/config/plugin-git-auth.json`，不寫進 URL、`config.yaml`、command arguments 或 log。
 - HTTPS clone／pull 依 repository URL 自動匹配已連結的 Gitea base URL；access token 將到期時先用 refresh token 更新，再透過 child-process environment 注入一次性 Git credential helper。CLI 與 Discord 共用同一 auth store 與交換邏輯。
 
