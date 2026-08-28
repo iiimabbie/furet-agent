@@ -179,6 +179,7 @@ Available slash commands:
 - `/google-auth` — finish Google OAuth authorization; owner only.
 - `/restart` — exit the gateway so its process manager can restart it; owner only.
 - `/plugin install|list|enable|disable|update|remove` — manage trusted plugins; restricted to the configured `discord.owner_id`.
+- `/plugin auth login|callback|status|logout` — connect private Gitea repositories through OAuth PKCE with a manually pasted callback URL; owner only and no public callback server required.
 
 ## Workspace and data
 
@@ -193,7 +194,7 @@ workspace/
 ├── MEMORY.md           # Curated long-term memory
 ├── JOURNAL.md          # Daily-memory and journal prompts
 ├── attachments/        # Generated and downloaded files
-├── config/             # SQLite DB, cron/reminder data, Google token
+├── config/             # SQLite DB, cron/reminder data, OAuth tokens
 ├── memory/             # Daily memory files
 ├── sessions/           # Active sessions and archived conversations
 └── skills/             # Installed skills
@@ -237,7 +238,7 @@ furet plugin update [name]
 furet plugin remove <name>
 ```
 
-The same operations are available through the owner-only Discord `/plugin` command. Install accepts `source` and an optional `workspace`; all responses are ephemeral. Discord authorization compares the caller directly with `discord.owner_id`, because installing or updating a plugin executes trusted code on the host.
+The same operations are available through the owner-only Discord `/plugin` command. Install accepts `source` and an optional `workspace`; all responses are ephemeral. Discord authorization compares the caller directly with `discord.owner_id`, because installing or updating a plugin executes trusted code on the host. Private Gitea HTTPS repositories can be connected with `/plugin auth login`; after browser approval, paste the complete loopback callback URL into `/plugin auth callback`. Furet exchanges the code server-side, so the host does not need a public callback endpoint.
 
 A plugin package declares its entry as `"furet": { "plugin": "./dist/index.js" }` in `package.json`. The installer runs dependency installation and an optional `build` script, but deliberately does not restart the gateway. Tool permissions still flow through the central registry, plugin schedules follow plugin startup/shutdown automatically, and all plugin code runs inside the Furet process without a sandbox.
 

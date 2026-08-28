@@ -5,6 +5,13 @@ import {
   setManagedPluginEnabled,
   updatePlugins,
 } from "./plugin-manager.js";
+import {
+  beginGiteaPluginAuth,
+  completeGiteaPluginAuth,
+  listPluginGitAuth,
+  removePluginGitAuth,
+} from "./plugin-git-auth.js";
+import { loadConfig } from "./config.js";
 
 function usage(): never {
   console.error(`Usage:
@@ -14,6 +21,10 @@ function usage(): never {
   furet plugin disable <name>
   furet plugin update [name]
   furet plugin remove <name>
+  furet plugin auth login <gitea-url> [--client-id <id>] [--redirect-uri <uri>]
+  furet plugin auth callback <complete-callback-url>
+  furet plugin auth status
+  furet plugin auth logout <gitea-url>
 
 A plugin package must declare this in package.json:
   "furet": { "plugin": "./dist/index.js" }
@@ -40,7 +51,7 @@ try {
       const workspace = option(args, "--workspace");
       const source = args.shift();
       if (!source || args.length) usage();
-      console.log(installPlugin(source, { workspace }));
+      console.log(await installPlugin(source, { workspace }));
       break;
     }
     case "list":
@@ -57,13 +68,46 @@ try {
     case "update": {
       const name = args.shift();
       if (args.length) usage();
-      console.log(updatePlugins(name));
+      console.log(await updatePlugins(name));
       break;
     }
     case "remove": {
       const name = args.shift();
       if (!name || args.length) usage();
       console.log(removeManagedPlugin(name));
+      break;
+    }
+    case "auth": {
+      const authAction = args.shift();
+      const ownerId = loadConfig().discord.owner_id || "cli-owner";
+      switch (authAction) {
+        case "login": {
+          const clientId = option(args, "--client-id");
+          const redirectUri = option(args, "--redirect-uri");
+          const host = args.shift();
+          if (!host || args.length) usage();
+          console.log(beginGiteaPluginAuth(host, ownerId, { clientId, redirectUri }));
+          break;
+        }
+        case "callback": {
+          const callback = args.shift();
+          if (!callback || args.length) usage();
+          console.log(await completeGiteaPluginAuth(callback, ownerId));
+          break;
+        }
+        case "status":
+          if (args.length) usage();
+          console.log(listPluginGitAuth());
+          break;
+        case "logout": {
+          const host = args.shift();
+          if (!host || args.length) usage();
+          console.log(removePluginGitAuth(host));
+          break;
+        }
+        default:
+          usage();
+      }
       break;
     }
     default:

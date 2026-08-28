@@ -26,6 +26,12 @@ import {
   setManagedPluginEnabled,
   updatePlugins,
 } from "./plugin-manager.js";
+import {
+  beginGiteaPluginAuth,
+  completeGiteaPluginAuth,
+  listPluginGitAuth,
+  removePluginGitAuth,
+} from "./plugin-git-auth.js";
 import { KeyedSerialQueue } from "./utils/keyed-serial-queue.js";
 import { shouldOnboard, buildOnboardingContext, isWorkspaceUnconfigured } from "./onboarding.js";
 import { readFile, unlink, writeFile } from "node:fs/promises";
@@ -152,6 +158,40 @@ const SLASH_COMMANDS = [
           opt.setName("name").setDescription("外掛名稱").setRequired(true)
         )
     )
+    .addSubcommandGroup(group =>
+      group.setName("auth")
+        .setDescription("管理私有 Git OAuth 授權")
+        .addSubcommand(sub =>
+          sub.setName("login")
+            .setDescription("產生 Gitea OAuth 授權網址")
+            .addStringOption(opt =>
+              opt.setName("host").setDescription("Gitea 根網址，例如 https://git.example.com").setRequired(true)
+            )
+            .addStringOption(opt =>
+              opt.setName("client-id").setDescription("OAuth client ID；省略時使用 Gitea 內建 git-credential-oauth client").setRequired(false)
+            )
+            .addStringOption(opt =>
+              opt.setName("redirect-uri").setDescription("已註冊的 redirect URI；預設 http://127.0.0.1").setRequired(false)
+            )
+        )
+        .addSubcommand(sub =>
+          sub.setName("callback")
+            .setDescription("貼回瀏覽器網址列中的完整 OAuth callback URL")
+            .addStringOption(opt =>
+              opt.setName("url").setDescription("包含 code 與 state 的完整 callback URL").setRequired(true)
+            )
+        )
+        .addSubcommand(sub =>
+          sub.setName("status").setDescription("列出已連結的私有 Git OAuth")
+        )
+        .addSubcommand(sub =>
+          sub.setName("logout")
+            .setDescription("移除指定 Gitea host 的 OAuth 授權")
+            .addStringOption(opt =>
+              opt.setName("host").setDescription("Gitea 根網址").setRequired(true)
+            )
+        )
+    )
     .toJSON(),
 ];
 
@@ -235,7 +275,7 @@ function assertSafeDiscordPluginSource(source: string): void {
   if (/^https?:\/\//i.test(trimmed)) {
     const url = new URL(trimmed);
     if (url.username || url.password) {
-      throw new Error("Do not put credentials or tokens in a plugin URL; use the host's existing SSH credentials");
+      throw new Error("Do not put credentials or tokens in a plugin URL; connect the Git host with /plugin auth login");
     }
   }
 }
@@ -563,16 +603,44 @@ export async function startBot(token: string): Promise<void> {
         return;
       }
 
+      const group = interaction.options.getSubcommandGroup(false);
       const action = interaction.options.getSubcommand(true);
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
         let result: string;
-        switch (action) {
+        if (group === "auth") {
+          switch (action) {
+            case "login":
+              result = beginGiteaPluginAuth(
+                interaction.options.getString("host", true),
+                interaction.user.id,
+                {
+                  clientId: interaction.options.getString("client-id") ?? undefined,
+                  redirectUri: interaction.options.getString("redirect-uri") ?? undefined,
+                },
+              );
+              break;
+            case "callback":
+              result = await completeGiteaPluginAuth(
+                interaction.options.getString("url", true),
+                interaction.user.id,
+              );
+              break;
+            case "status":
+              result = listPluginGitAuth();
+              break;
+            case "logout":
+              result = removePluginGitAuth(interaction.options.getString("host", true));
+              break;
+            default:
+              throw new Error(`Unsupported plugin auth action: ${action}`);
+          }
+        } else switch (action) {
           case "install": {
             const source = interaction.options.getString("source", true);
             const workspace = interaction.options.getString("workspace") ?? undefined;
             assertSafeDiscordPluginSource(source);
-            result = installPlugin(source, { workspace });
+            result = await installPlugin(source, { workspace });
             break;
           }
           case "list":
@@ -585,7 +653,7 @@ export async function startBot(token: string): Promise<void> {
             result = setManagedPluginEnabled(interaction.options.getString("name", true), false);
             break;
           case "update":
-            result = updatePlugins(interaction.options.getString("name") ?? undefined);
+            result = await updatePlugins(interaction.options.getString("name") ?? undefined);
             break;
           case "remove":
             result = removeManagedPlugin(interaction.options.getString("name", true));
@@ -593,11 +661,11 @@ export async function startBot(token: string): Promise<void> {
           default:
             throw new Error(`Unsupported plugin action: ${action}`);
         }
-        logger.info({ action, user: interaction.user.id }, "/plugin command completed");
+        logger.info({ group, action, user: interaction.user.id }, "/plugin command completed");
         await interaction.editReply(truncateInteractionReply(result));
       } catch (err) {
         const message = (err as Error).message;
-        logger.error({ err: message, action, user: interaction.user.id }, "/plugin command failed");
+        logger.error({ err: message, group, action, user: interaction.user.id }, "/plugin command failed");
         await interaction.editReply(truncateInteractionReply(`Plugin command failed: ${message}`));
       }
     }

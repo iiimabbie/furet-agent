@@ -18,6 +18,7 @@ import {
   upsertPluginConfig,
 } from "./config.js";
 import { PLUGINS_DIR, PLUGIN_REGISTRY_FILE, ROOT, TRASH_DIR } from "./paths.js";
+import { gitOAuthEnvironment } from "./plugin-git-auth.js";
 
 interface PackageJson {
   name?: string;
@@ -83,12 +84,12 @@ function writeRegistry(registry: PluginRegistry): void {
   renameSync(temp, PLUGIN_REGISTRY_FILE);
 }
 
-function run(command: string, args: string[], cwd: string): void {
+function run(command: string, args: string[], cwd: string, extraEnv: NodeJS.ProcessEnv = {}): void {
   execFileSync(command, args, {
     cwd,
     stdio: "inherit",
     timeout: 120_000,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", npm_config_yes: "true" },
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", npm_config_yes: "true", ...extraEnv },
   });
 }
 
@@ -204,12 +205,12 @@ function buildPackage(sourceRoot: string, packageRoot: string, packageName: stri
   }
 }
 
-function checkoutSource(source: string, destination: string): boolean {
+async function checkoutSource(source: string, destination: string): Promise<boolean> {
   const local = isLocalDirectory(source);
   if (local) {
     cpSync(realpathSync(resolve(source)), destination, { recursive: true });
   } else {
-    run("git", ["clone", "--depth", "1", source, destination], ROOT);
+    run("git", ["clone", "--depth", "1", source, destination], ROOT, await gitOAuthEnvironment(source));
   }
   return local;
 }
@@ -219,7 +220,7 @@ function displayPath(absolutePath: string): string {
   return rel && !rel.startsWith("..") ? rel : absolutePath;
 }
 
-export function installPlugin(source: string, options: InstallPluginOptions = {}): string {
+export async function installPlugin(source: string, options: InstallPluginOptions = {}): Promise<string> {
   ensureManagedDirs();
   const registry = readRegistry();
   const normalizedSource = isLocalDirectory(source) ? realpathSync(resolve(source)) : source;
@@ -234,7 +235,7 @@ export function installPlugin(source: string, options: InstallPluginOptions = {}
       id = `${base}-${suffix++}`;
     }
     const directory = resolve(PLUGINS_DIR, id);
-    const local = checkoutSource(source, directory);
+    const local = await checkoutSource(source, directory);
     sourceRecord = { id, source: normalizedSource, directory: displayPath(directory), local };
     registry.sources.push(sourceRecord);
     createdSource = true;
@@ -310,11 +311,11 @@ export function setManagedPluginEnabled(name: string, enabled: boolean): string 
   return `${enabled ? "Enabled" : "Disabled"} ${name}. Restart Furet to apply the change.`;
 }
 
-function updateSource(registry: PluginRegistry, source: ManagedPluginSource): void {
+async function updateSource(registry: PluginRegistry, source: ManagedPluginSource): Promise<void> {
   const sourceRoot = resolve(ROOT, source.directory);
   if (!existsSync(sourceRoot)) throw new Error(`Plugin source directory is missing: ${source.directory}`);
   if (source.local) throw new Error(`Cannot update copied local source ${source.id}; remove and install it again`);
-  run("git", ["pull", "--ff-only"], sourceRoot);
+  run("git", ["pull", "--ff-only"], sourceRoot, await gitOAuthEnvironment(source.source));
   installDependencies(sourceRoot);
   for (const plugin of registry.plugins.filter((item) => item.sourceId === source.id)) {
     const packageRoot = resolve(sourceRoot, plugin.workspace === source.directory ? "." : plugin.workspace);
@@ -328,7 +329,7 @@ function updateSource(registry: PluginRegistry, source: ManagedPluginSource): vo
   }
 }
 
-export function updatePlugins(name?: string): string {
+export async function updatePlugins(name?: string): Promise<string> {
   const registry = readRegistry();
   if (!registry.plugins.length) return "No managed plugins installed.";
   const sources = name
@@ -338,7 +339,7 @@ export function updatePlugins(name?: string): string {
         return registry.sources.filter((item) => item.id === plugin.sourceId);
       })()
     : registry.sources;
-  for (const source of sources) updateSource(registry, source);
+  for (const source of sources) await updateSource(registry, source);
   writeRegistry(registry);
   return `Updated ${name ?? `${sources.length} plugin source${sources.length === 1 ? "" : "s"}`}. Restart Furet to load the new code.`;
 }
