@@ -86,7 +86,7 @@ try {
           const redirectUri = option(args, "--redirect-uri");
           const host = args.shift();
           if (!host || args.length) usage();
-          console.log(beginGiteaPluginAuth(host, ownerId, { clientId, redirectUri }));
+          console.log(beginGiteaPluginAuth(host, ownerId, { clientId, redirectUri }).instructions);
           break;
         }
         case "callback": {

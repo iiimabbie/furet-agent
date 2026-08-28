@@ -69,10 +69,16 @@ Furet supports Gitea Authorization Code + PKCE through a manual callback-URL han
 /plugin auth:https://git.example.com
 ```
 
-Furet stores a short-lived `state` and PKCE verifier, then returns an ephemeral Gitea authorization URL. Open it, approve access, and let the browser redirect to `http://127.0.0.1`. The page may fail to load; that is expected. Copy the complete URL from the browser address bar and submit it:
+Furet stores a short-lived `state` and PKCE verifier, then returns an ephemeral message with two buttons:
+
+- **Open Gitea authorization** opens the provider authorization page.
+- **Paste callback URL** opens a Discord modal.
+
+Approve access and let the browser redirect to `http://127.0.0.1`. The page may fail to load; that is expected. Copy the complete URL from the browser address bar, return to the ephemeral message, press **Paste callback URL**, and submit it in the modal. No second slash command is needed.
+
+OAuth connection status and logout remain low-frequency management actions:
 
 ```text
-/plugin callback:<complete callback URL>
 /plugin action:auth-status
 /plugin action:auth-logout name:https://git.example.com
 ```

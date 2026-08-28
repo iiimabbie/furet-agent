@@ -1,6 +1,7 @@
 import {
   Client, GatewayIntentBits, Events, REST, Routes,
   SlashCommandBuilder, MessageFlags, EmbedBuilder, ActivityType, PresenceStatusData,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle,
   type Message, type Interaction, type TextBasedChannel,
 } from "discord.js";
 import { ask, compactSession } from "./agent.js";
@@ -127,9 +128,6 @@ const SLASH_COMMANDS = [
       opt.setName("auth").setDescription("要連結 OAuth 的 Gitea 根網址").setRequired(false)
     )
     .addStringOption(opt =>
-      opt.setName("callback").setDescription("授權後瀏覽器網址列的完整 callback URL").setRequired(false)
-    )
-    .addStringOption(opt =>
       opt.setName("action")
         .setDescription("其他管理操作；不填任何選項時列出外掛")
         .setRequired(false)
@@ -150,6 +148,50 @@ const SLASH_COMMANDS = [
 ];
 
 const OWNER_ONLY_MSG = "只有 owner 能用這個指令！";
+const PLUGIN_AUTH_CALLBACK_BUTTON_ID = "plugin-auth:callback";
+const PLUGIN_AUTH_CALLBACK_MODAL_ID = "plugin-auth:callback-modal";
+const PLUGIN_AUTH_CALLBACK_INPUT_ID = "callback-url";
+
+async function handlePluginAuthInteraction(interaction: Interaction): Promise<boolean> {
+  if (!interaction.isButton() && !interaction.isModalSubmit()) return false;
+  if (interaction.customId !== PLUGIN_AUTH_CALLBACK_BUTTON_ID
+      && interaction.customId !== PLUGIN_AUTH_CALLBACK_MODAL_ID) return false;
+
+  const ownerId = loadConfig().discord.owner_id;
+  if (!ownerId || interaction.user.id !== ownerId) {
+    await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral });
+    return true;
+  }
+
+  if (interaction.isButton()) {
+    const modal = new ModalBuilder()
+      .setCustomId(PLUGIN_AUTH_CALLBACK_MODAL_ID)
+      .setTitle("完成 Gitea 授權");
+    const input = new TextInputBuilder()
+      .setCustomId(PLUGIN_AUTH_CALLBACK_INPUT_ID)
+      .setLabel("貼上瀏覽器網址列的完整回調 URL")
+      .setPlaceholder("http://127.0.0.1/?code=...&state=...")
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(true)
+      .setMaxLength(4000);
+    modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+    await interaction.showModal(modal);
+    return true;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const callbackUrl = interaction.fields.getTextInputValue(PLUGIN_AUTH_CALLBACK_INPUT_ID).trim();
+    const result = await completeGiteaPluginAuth(callbackUrl, interaction.user.id);
+    logger.info({ user: interaction.user.id }, "plugin Git OAuth completed via modal");
+    await interaction.editReply(truncateInteractionReply(result));
+  } catch (err) {
+    const message = (err as Error).message;
+    logger.error({ err: message, user: interaction.user.id }, "plugin Git OAuth modal failed");
+    await interaction.editReply(truncateInteractionReply(`Plugin authorization failed: ${message}`));
+  }
+  return true;
+}
 
 // Discord.js does not await async MessageCreate listeners. Serialize all work that
 // touches the same session so a later message cannot enter the session or start an
@@ -282,6 +324,7 @@ export async function startBot(token: string): Promise<void> {
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     try {
+      if (await handlePluginAuthInteraction(interaction)) return;
       const handled = await handleDiscordButtonInteraction(
         interaction,
         client,
@@ -560,14 +603,13 @@ export async function startBot(token: string): Promise<void> {
       const source = interaction.options.getString("source")?.trim();
       const workspace = interaction.options.getString("workspace")?.trim() || undefined;
       const authHost = interaction.options.getString("auth")?.trim();
-      const callback = interaction.options.getString("callback")?.trim();
       const action = interaction.options.getString("action") ?? undefined;
       const name = interaction.options.getString("name")?.trim();
-      const modes = [Boolean(source), Boolean(authHost), Boolean(callback), Boolean(action)].filter(Boolean).length;
+      const modes = [Boolean(source), Boolean(authHost), Boolean(action)].filter(Boolean).length;
 
       if (modes > 1) {
         await interaction.reply({
-          content: "一次只能執行一種操作：安裝 `source`、OAuth `auth`、貼回 `callback`，或選擇 `action`。",
+          content: "一次只能執行一種操作：安裝 `source`、OAuth `auth`，或選擇 `action`。",
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -581,7 +623,7 @@ export async function startBot(token: string): Promise<void> {
         return;
       }
 
-      const operation = source ? "install" : authHost ? "auth-login" : callback ? "auth-callback" : action ?? "list";
+      const operation = source ? "install" : authHost ? "auth-login" : action ?? "list";
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
         let result: string;
@@ -590,12 +632,27 @@ export async function startBot(token: string): Promise<void> {
             assertSafeDiscordPluginSource(source!);
             result = await installPlugin(source!, { workspace });
             break;
-          case "auth-login":
-            result = beginGiteaPluginAuth(authHost!, interaction.user.id);
-            break;
-          case "auth-callback":
-            result = await completeGiteaPluginAuth(callback!, interaction.user.id);
-            break;
+          case "auth-login": {
+            const auth = beginGiteaPluginAuth(authHost!, interaction.user.id);
+            const components = [
+              new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                  .setLabel("前往 Gitea 授權")
+                  .setStyle(ButtonStyle.Link)
+                  .setURL(auth.authorizationUrl),
+                new ButtonBuilder()
+                  .setCustomId(PLUGIN_AUTH_CALLBACK_BUTTON_ID)
+                  .setLabel("貼上回調 URL")
+                  .setStyle(ButtonStyle.Primary),
+              ),
+            ];
+            await interaction.editReply({
+              content: `請先按「前往 Gitea 授權」。授權後即使瀏覽器顯示無法連線也沒關係，回到這則訊息按「貼上回調 URL」完成連結。\n\n授權請求會在 10 分鐘後過期。`,
+              components,
+            });
+            logger.info({ operation, user: interaction.user.id }, "/plugin auth started");
+            return;
+          }
           case "list":
             result = listPlugins();
             break;

@@ -105,11 +105,18 @@ function prunePending(store: GitAuthStore): void {
   store.pending = store.pending.filter(item => item.expiresAt > now);
 }
 
+export interface GiteaPluginAuthStart {
+  authorizationUrl: string;
+  redirectUri: string;
+  expiresAt: number;
+  instructions: string;
+}
+
 export function beginGiteaPluginAuth(
   host: string,
   ownerId: string,
   options: { clientId?: string; redirectUri?: string } = {},
-): string {
+): GiteaPluginAuthStart {
   const baseUrl = normalizeBaseUrl(host);
   const clientId = options.clientId?.trim() || DEFAULT_GITEA_CLIENT_ID;
   const redirectUri = normalizeRedirectUri(options.redirectUri);
@@ -121,6 +128,7 @@ export function beginGiteaPluginAuth(
   const store = readStore();
   prunePending(store);
   store.pending = store.pending.filter(item => !(item.ownerId === ownerId && item.baseUrl === baseUrl));
+  const expiresAt = Date.now() + PENDING_TTL_MS;
   store.pending.push({
     state,
     ownerId,
@@ -129,7 +137,7 @@ export function beginGiteaPluginAuth(
     redirectUri,
     scope,
     codeVerifier,
-    expiresAt: Date.now() + PENDING_TTL_MS,
+    expiresAt,
   });
   writeStore(store);
 
@@ -142,14 +150,19 @@ export function beginGiteaPluginAuth(
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("code_challenge", codeChallenge);
 
-  return [
-    `Open this Gitea authorization URL:\n${url.toString()}`,
-    "",
-    `After approval, the browser may show that ${redirectUri} cannot be reached. Copy the complete URL from the address bar and submit it with:`,
-    "`/plugin auth callback url:<complete callback URL>`",
-    "",
-    "This authorization request expires in 10 minutes.",
-  ].join("\n");
+  const authorizationUrl = url.toString();
+  return {
+    authorizationUrl,
+    redirectUri,
+    expiresAt,
+    instructions: [
+      `Open this Gitea authorization URL:\n${authorizationUrl}`,
+      "",
+      `After approval, the browser may show that ${redirectUri} cannot be reached. Copy the complete URL from the address bar and paste it into the callback form.`,
+      "",
+      "This authorization request expires in 10 minutes.",
+    ].join("\n"),
+  };
 }
 
 async function requestToken(baseUrl: string, body: URLSearchParams): Promise<TokenResponse> {
