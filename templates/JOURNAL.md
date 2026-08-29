@@ -77,10 +77,24 @@ lossy and may be missing whole conversations. The **archived sessions are the gr
 1. Get the day's clean conversation transcript with `journal_transcript_by_date` for `{{DATE}}`.
    It keeps the dialogue while removing tool calls, harness bookkeeping, and transport metadata.
    Then read the notes in `workspace/memory/{{DATE}}.md` with `read_file` as a supplement.
-2. Rewrite the entire daily file as a clean personal diary, reconstructed from the raw
-   conversation transcript (not just the notes):
-   - Organize by category/milestone (e.g., development, community, personal)
-   - Bullet points with clear headings
+2. Rewrite the entire daily file as a clean personal diary, reconstructed from the clean
+   conversation transcript rather than shaped by the notes:
+   - Treat `memory_save` notes only as a **fact index and omission checklist**. They are raw
+     capture, not an outline: do not preserve their wording, order, one-event-per-item shape,
+     timestamps, or level of detail.
+   - Before writing, identify the day's few main threads and the emotional or narrative arc
+     within each one. Merge related causes, actions, reactions, corrections, and outcomes into
+     coherent passages instead of replaying them as separate events.
+   - Use clear thematic headings, but write the body primarily as connected prose paragraphs.
+     Use bullet lists only when the content is genuinely a list; do not make every event a bullet.
+   - Small conversations and community moments may be woven together as a daily-life scene.
+     Keep the exchanges that carry personality, continuity, or feeling, without preserving every
+     line merely because it appeared in the transcript.
+   - Compress implementation details to what is needed to understand why the event mattered.
+     Do not turn filenames, commands, build steps, parameters, or every intermediate action into
+     diary entries unless that exact detail was itself important that day.
+   - The result must not read like a changelog, meeting minutes, work report, categorized event
+     log, or a polished rewrite of `memory_save` entries.
    - This is **your own diary, written first-person from your perspective** — record not
      only what the user did, talked about, cared about, and felt, but also what you did,
      noticed, thought, and reacted to. It is a diary, not a neutral incident report. The

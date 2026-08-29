@@ -26,6 +26,7 @@ import {
   removeManagedPlugin,
   updatePlugins,
 } from "./plugin-manager.js";
+import { syncApplicationEmojis, resolveEmojiMarkup } from "./emoji.js";
 import { KeyedSerialQueue } from "./utils/keyed-serial-queue.js";
 import { shouldOnboard, buildOnboardingContext, isWorkspaceUnconfigured } from "./onboarding.js";
 import { readFile, unlink, writeFile } from "node:fs/promises";
@@ -267,6 +268,11 @@ export async function startBot(token: string): Promise<void> {
     const guildIds = c.guilds.cache.map(g => g.id);
     await registerSlashCommands(token, c.user.id, guildIds);
 
+    // Sync Application Emojis into the in-memory cache. Failure is non-fatal: the
+    // helper logs the original Error and leaves the cache empty (safe no-emoji mode),
+    // so the bot never fails to start over this.
+    await syncApplicationEmojis(c);
+
     if (!config.discord.owner_id) {
       console.log("Discord owner is not configured. Run `furet onbord` locally, then use the bot in Discord.");
       logger.warn("fresh install awaiting local onboarding command");
@@ -381,7 +387,7 @@ export async function startBot(token: string): Promise<void> {
         try {
           const response = await ask(null, { session, systemPrompt: channelContext, trigger: "discord-owner" });
           const text = response.text || "（新對話開始）";
-          const formatted = fixMarkdownLinks(text);
+          const formatted = fixMarkdownLinks(resolveEmojiMarkup(text));
           const chunks = chunkMessage(formatted, 2000);
           await interaction.editReply(chunks[0]);
           for (let i = 1; i < chunks.length; i++) {
@@ -860,7 +866,10 @@ async function handleTrigger(message: Message, session: Session, images?: string
 
     // 若 AI 輸出 <@id>(帳號名｜暱稱) 格式，清掉括號讓 Discord 正常渲染 mention
     const stripped = response.text.replace(/(<@!?\d+>)[\(（][^\)）]*[\)）]/g, "$1");
-    const formatted = fixMarkdownLinks(stripped);
+    // 把 :name: 形式的 Application Emoji 引用解析成 Discord markup。
+    // 在 chunk 前對整段文字做，才能正確跳過跨行的 code fence；名稱不存在則保留原文。
+    const withEmojis = resolveEmojiMarkup(stripped);
+    const formatted = fixMarkdownLinks(withEmojis);
     const chunks = chunkMessage(formatted, 2000);
     const sentIds: string[] = [];
     const attachments = response.attachments;

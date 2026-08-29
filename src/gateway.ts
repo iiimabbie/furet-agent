@@ -12,6 +12,7 @@ import { loadConfig } from "./config.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { chunkMessage } from "./utils/chunk-message.js";
 import { NO_REPLY_TOKEN, isNoReplySentinel } from "./utils/no-reply.js";
+import { resolveEmojiMarkup } from "./emoji.js";
 import { ROOT } from "./paths.js";
 import { stamp, today } from "./utils/time.js";
 import { emitPluginEvent, loadPlugins, startPlugins, stopPlugins } from "./tools/plugin-loader.js";
@@ -25,7 +26,8 @@ async function sendToChannel(channelId: string, text: string): Promise<string[]>
       logger.warn({ channelId }, "channel not found or not text-based");
       return [];
     }
-    const formatted = fixMarkdownLinks(text);
+    // Application Emoji 引用（:name:）在分段前對整段解析，才能正確跳過跨行 code fence。
+    const formatted = fixMarkdownLinks(resolveEmojiMarkup(text));
     const sentIds: string[] = [];
     // Discord 2000 字元限制；跨段時維持 fenced code block 完整。
     for (const chunk of chunkMessage(formatted, 2000)) {
