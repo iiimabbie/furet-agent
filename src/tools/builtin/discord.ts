@@ -5,6 +5,7 @@ import type { Tool } from "../../types.js";
 import { normalizeMentions, formatName } from "../../utils/discord-mentions.js";
 import { queueAttachment } from "../context.js";
 import { createDiscordButtonMessage, type DiscordButtonDefinition } from "../../discord-buttons.js";
+import { resolveEmojiMarkup } from "../../emoji.js";
 
 let discordClient: Client | null = null;
 
@@ -89,7 +90,7 @@ export const discordSendMessage: Tool = {
     try {
       const channel = await getTextChannel(channel_id);
       const options: Record<string, unknown> = {};
-      if (content) options.content = content;
+      if (content) options.content = resolveEmojiMarkup(content);
       if (files?.length) options.files = files;
       if (reply_to) options.reply = { messageReference: reply_to };
       const sent = await channel.send(options);
@@ -218,7 +219,7 @@ export const discordReact: Tool = {
     try {
       const channel = await getTextChannel(channel_id);
       const msg = await channel.messages.fetch(message_id);
-      for (const e of emojis) await msg.react(e);
+      for (const e of emojis) await msg.react(resolveEmojiMarkup(e));
       return `Reacted with ${emojis.join(" ")}`;
     } catch (err) {
       return `Error: ${(err as Error).message}`;
@@ -323,7 +324,7 @@ export const discordCreateForumPost: Tool = {
       if (!channel || !("threads" in channel)) return `Error: channel ${channel_id} is not a forum channel`;
       const thread = await (channel as import("discord.js").ForumChannel).threads.create({
         name: title,
-        message: { content },
+        message: { content: resolveEmojiMarkup(content) },
       });
       return `Forum post created: "${thread.name}" (thread:${thread.id})`;
     } catch (err) {
@@ -409,7 +410,7 @@ export const discordEditMessage: Tool = {
       const msg = await channel.messages.fetch(message_id);
       if (msg.author.id !== getClient().user?.id) return "Error: can only edit own messages";
       const options: Record<string, unknown> = {};
-      if (content) options.content = content;
+      if (content) options.content = resolveEmojiMarkup(content);
       if (files?.length) options.files = files;
       await msg.edit(options);
       return `Message edited`;

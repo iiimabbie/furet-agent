@@ -6,6 +6,7 @@ import { listSkillDirs, readSkillMeta } from "./skills.js";
 import { nowWithZone } from "./utils/time.js";
 import { wrapTag } from "./utils/tagged-file.js";
 import { NO_REPLY_TOKEN } from "./utils/no-reply.js";
+import { buildEmojiPromptSection } from "./emoji.js";
 import type { TriggerSource } from "./types.js";
 
 // --- External prompt loading ---
@@ -161,6 +162,15 @@ Messages prefixed with [context] are background chatter. Never send a text reply
  * 超過門檻就只留一行指標，讓 agent 需要時自己 `read_file`。
  * 門檻由 `config.prompt.peopleInlineLimit` 控制，0 = 永不內嵌。
  */
+/**
+ * Application Emoji 清單只在會輸出到 Discord 的 turn 注入：一般 Discord 對話，
+ * 以及可能推播到 Discord channel 的 cron / reminder。CLI / journal 不注入，避免白付 token。無可用 emoji 時 buildEmojiPromptSection() 回空字串，不加空區塊。
+ */
+function buildEmojiSection(trigger: TriggerSource): string {
+  if (!["discord-owner", "discord-other", "cron", "reminder"].includes(trigger)) return "";
+  return buildEmojiPromptSection();
+}
+
 function buildPeopleSection(): string {
   const people = loadWorkspaceFile("PEOPLE.md");
   if (!people) return "";
@@ -208,6 +218,7 @@ export function buildSystemPrompt(extra?: string, recalled?: string, toolIndex?:
     skillsSection,                                     // 你會什麼（直接暴露的技能）
     (toolIndex ?? "").trim(),                           // 你還會什麼（tool_catalog 可達的能力群）
     buildRuntimePolicy(trigger),                       // 程式耦合的輸出協定（不可由 workspace 精簡掉）
+    buildEmojiSection(trigger),                        // 可用的 Application Emoji 清單（無 emoji 時為空）
     `Current datetime: ${nowWithZone()}`,              // ┐ 你現在在哪、什麼時候
     extra,                                             // ┘ channel / session 的 runtime context
     persona ? PERSONA_ANCHOR : "",                     // 錨定，最後一段

@@ -178,6 +178,7 @@ cron / reminder / journal 跟使用者對話是並行跑的，trigger 與待送�
 | 技能層 | `workspace/skills/*/SKILL.md` | `<skills>` | 已啟用技能的描述 |
 | 工具索引層 | registry metadata（動態） | `<tool-index>` | exposure 開啟時列出 `tool_catalog` 可達的能力群；關閉時不插入（見 Tool 系統 › Tool Exposure） |
 | Runtime policy 層 | `src/prompt.ts`（程式生成） | `<runtime-policy>` | 與輸出攔截直接耦合、不可被 workspace 精簡掉的 Discord 回覆／靜默協定 |
+| Application Emoji 層 | `src/emoji.ts`（程式生成，動態） | `<application-emojis>` | 目前 Application 擁有之 emoji 的精簡名稱清單，僅 Discord trigger 注入；無 emoji 時整層不產生（見 Application Emoji） |
 | 時間層 | 自動生成 | （無） | 當前日期時間（時區由 `config.timezone` 決定） |
 | 額外層 | `options.systemPrompt` | （無） | 動態注入（如 Discord channel ID、session ID、flush 指令） |
 | 錨定層 | 自動生成 | `<persona-reminder>` | 結尾把語氣的最終依據指回 `<persona>` |
@@ -456,6 +457,26 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 - `/model` — 切換 AI 模型與思考等級（模型名稱 autocomplete from modelList；effort 省略時為 default）
 - `/google-auth` — Google OAuth 授權流程
 - `/task` — 列出 Google Tasks
+
+### Application Emoji（自訂表情）
+
+`src/emoji.ts` — 讓 bot 在自己的訊息裡使用 Application 專屬 emoji（`client.application.emojis`，不隸屬任何 guild）。通用開源核心，**不寫死任何使用者的 emoji ID、名稱或圖片**；個人化語意（每顆 emoji 的 meaning / 場合 / 頻率）不在此核心，屬另列的可選擴充。
+
+**資料流**
+
+1. **同步**：Discord `ClientReady` 時 `bot.ts` 呼叫 `syncApplicationEmojis(client)`，用 `client.application.emojis.fetch()` 抓 Application 自己擁有的 emoji，建成記憶體快取（`name → { id, animated }`）。這是唯一資料來源，不讀任何寫死清單。
+2. **注入 prompt**：`prompt.ts` 只在會送往 Discord 的回合（`discord-owner` / `discord-other` / `cron` / `reminder`），透過 `buildEmojiPromptSection()` 把精簡的 `:name:` 清單與一句輸出語法說明包成 `<application-emojis>` 注入 system prompt。無可用 emoji 時回空字串，**不加空泛區塊**。
+3. **解析送出**：模型以穩定語法 `:name:` 引用。所有 Discord 文字出口在最終化文字後、`chunkMessage()` 分段前呼叫 `resolveEmojiMarkup()`，把已快取的名稱換成 Discord 接受的 `<:name:id>`（動畫為 `<a:name:id>`）。涵蓋一般回覆與 `/new`（`bot.ts`）、cron / reminder 主動推送（`gateway.ts` 的 `sendToChannel`），以及 Discord message/edit/forum/button/reaction 工具出口；全部共用同一支解析器。
+4. **重新同步**：啟動同步負責首載。之後 `getEmojiCatalog()` / `resolveEmojiMarkup()` / prompt 組裝前會做 **lazy TTL refresh**（`EMOJI_CACHE_TTL_MS`，10 分鐘）：距上次成功同步超過 TTL 就觸發一次**非阻塞**背景刷新（本輪先用既有快取，結果供下一輪），有 in-flight 旗標避免並發互相覆寫。新增／刪除 emoji 後最多一個 TTL 反映，**不需 slash command 或額外 UI**。
+
+**Token 控制**：prompt 只放名稱清單 + 一句語法，刻意不逐顆描述語意，也不放 raw ID；只在 Discord 對話與可能推播到 Discord 的 cron/reminder trigger 注入；CLI／journal 不付這個 token。
+
+**失敗降級**：`syncApplicationEmojis()` 吞掉所有錯誤、記錄**原始 Error**（`{ err }`，保留 cause / code），回傳成功與否但**永不拋出**；ready handler 因此不會因它啟動失敗。同步失敗時快取維持空的（安全的無 emoji 模式）：prompt 不加區塊、解析器直接回原文，訊息照常送出。
+
+**安全邊界**：
+- 名稱不在快取時 `resolveEmojiMarkup()` **保留原文 `:name:`**（可讀降級），**絕不捏造 ID**。
+- **不解析 code fence（``` / ~~~）與 inline code span（成對 backtick）內的文字**，避免範例、log、程式碼裡的 `:name:` 被替換；跨行 fence 的判定要求對整段文字（而非個別 chunk）解析，因此解析一律在分段前做。
+- 名稱比對限 Discord 合法字元 `[A-Za-z0-9_]{2,32}`；快取為空時整條路徑零成本 short-circuit。
 
 ## Gateway
 

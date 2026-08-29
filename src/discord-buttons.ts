@@ -15,6 +15,7 @@ import {
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { DISCORD_BUTTONS_FILE, WORKSPACE_CONFIG_DIR } from "./paths.js";
+import { resolveEmojiMarkup } from "./emoji.js";
 
 const CUSTOM_ID_PREFIX = "furet_button";
 const MAX_CONTENT_LENGTH = 1600;
@@ -186,7 +187,7 @@ async function fetchButtonMessage(client: Client, record: DiscordButtonMessageRe
 async function editButtonMessage(client: Client, record: DiscordButtonMessageRecord): Promise<void> {
   const message = await fetchButtonMessage(client, record);
   await message.edit({
-    content: renderContent(record),
+    content: resolveEmojiMarkup(renderContent(record)),
     components: buildComponents(record),
     allowedMentions: { parse: [] },
   });
@@ -290,7 +291,7 @@ export async function createDiscordButtonMessage(
   };
 
   const sent = await channel.send({
-    content: renderContent(record),
+    content: resolveEmojiMarkup(renderContent(record)),
     components: buildComponents(record),
     allowedMentions: { parse: [] },
   });
@@ -307,7 +308,7 @@ export async function createDiscordButtonMessage(
       await saveStore(store);
     });
   } catch (err) {
-    await sent.edit({ content: `${record.content}\n\n狀態：**按鈕狀態保存失敗**`, components: [], allowedMentions: { parse: [] } }).catch(() => {});
+    await sent.edit({ content: resolveEmojiMarkup(`${record.content}\n\n狀態：**按鈕狀態保存失敗**`), components: [], allowedMentions: { parse: [] } }).catch(() => {});
     throw err;
   }
   logger.info({ buttonMessageId: record.id, messageId: sent.id, buttonCount: record.buttons.length }, "Discord button message created");
