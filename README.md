@@ -69,6 +69,7 @@ GOOGLE_API_KEY=
 # Optional: enables Google Calendar, Gmail, Drive, and Tasks tools
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+
 ```
 
 Never commit `.env`, `config.yaml`, or `workspace/`. They are ignored by default because they can contain secrets and private assistant data.
@@ -146,7 +147,7 @@ without restarting the gateway. Existing daily files are appended to, never
 overwritten. Log entries use local time and a human-readable format:
 
 ```text
-[2026-08-21 09:04:52] INFO: discord trigger {"sessionId":"...","author":"yubbae"}
+[2026-08-21 09:04:52] INFO: discord trigger {"sessionId":"...","author":"owner"}
 ```
 
 Set `LOG_LEVEL` before launching the gateway to control verbosity. The default is `debug`; use `info` in routine operation if you do not need tool-level diagnostic logs.
@@ -178,6 +179,7 @@ Available slash commands:
 - `/model` — switch models; owner only.
 - `/google-auth` — finish Google OAuth authorization; owner only.
 - `/restart` — exit the gateway so its process manager can restart it; owner only.
+- `/plugin 動作:<安裝|更新|卸載> [目標:<GitHub URL or installed plugin>]` — owner-only plugin management; update without a target updates all managed plugins.
 
 ## Workspace and data
 
@@ -192,7 +194,7 @@ workspace/
 ├── MEMORY.md           # Curated long-term memory
 ├── JOURNAL.md          # Daily-memory and journal prompts
 ├── attachments/        # Generated and downloaded files
-├── config/             # SQLite DB, cron/reminder data, Google token
+├── config/             # SQLite DB, cron/reminder data, OAuth tokens
 ├── memory/             # Daily memory files
 ├── sessions/           # Active sessions and archived conversations
 └── skills/             # Installed skills
@@ -224,9 +226,23 @@ To enable Calendar, Gmail, Drive, and Tasks:
 
 ## Private plugins
 
-Private plugins can register deployment-specific tools without editing the built-in registry or committing private integrations to this repository. Plugins are loaded from `config.plugins`, default to owner-only, participate in tool exposure/catalog discovery, and run inside the Furet process without a sandbox.
+Private plugins can register deployment-specific tools, recurring background jobs, and lifecycle event handlers without editing the built-in registry or committing private integrations to this repository. Managed plugins are installed into `workspace/plugins/` and registered in `workspace/config/plugins.json`:
 
-See [docs/PLUGINS.md](docs/PLUGINS.md) for the API contract, a working module example, configuration, security guidance, lifecycle behavior, and troubleshooting.
+```bash
+furet plugin install <git-url>
+furet plugin install <git-url> --workspace <package-name-or-path>
+furet plugin list
+furet plugin enable <name>
+furet plugin disable <name>
+furet plugin update [name]
+furet plugin remove <name>
+```
+
+Discord exposes one owner-only `/plugin` command. Its required `動作` option selects 安裝、更新、or 卸載, and the shared optional `目標` string accepts a GitHub repository/package URL for installation or provides installed-plugin autocomplete for update/removal. Omitting `目標` while updating updates all managed sources; install and removal validate that a target was supplied at runtime. The caller is compared directly with `discord.owner_id`, because installing a plugin executes trusted code on the host. Discord installation accepts public HTTPS GitHub links; host-side CLI commands remain available for local paths, SSH sources, updates, and enable/disable maintenance.
+
+A plugin package declares its entry as `"furet": { "plugin": "./dist/index.js" }` in `package.json`. The installer runs dependency installation and an optional `build` script, but deliberately does not restart the gateway. Tool permissions still flow through the central registry, plugin schedules follow plugin startup/shutdown automatically, and all plugin code runs inside the Furet process without a sandbox.
+
+See [docs/PLUGINS.md](docs/PLUGINS.md) for a complete first-plugin tutorial, packaging examples, monorepo installation, the API contract, configuration, security guidance, lifecycle behavior, and troubleshooting.
 
 ## Development
 

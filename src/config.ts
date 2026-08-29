@@ -53,7 +53,7 @@ export interface FuretConfig {
     bash_owner_only: boolean;
     /**
      * `bash_owner_only: true` 時的例外人員：這些 Discord user ID 也能用 bash。
-     * 空陣列＝只有 owner。CLI / cron / reminder / journal 不受此限制。
+     * 空陣列＝只有 owner。CLI / cron / reminder / journal / plugin 不受此限制。
      * 只放寬 bash，不等於 owner——其他 owner-only 工具仍然擋。
      */
     bash_allowed_users: string[];
@@ -82,7 +82,7 @@ export interface FuretConfig {
   skills: string[];
   /**
    * 私有外掛清單（預設空）。每筆指定本機 `path`（絕對或相對 Furet root）與 `enabled`。
-   * 外掛可註冊額外工具而不需修改 `src/tools/registry.ts`；載入時機與權限見 DESIGN.md。
+   * 外掛可註冊額外工具、背景排程與事件 handler；載入時機與權限見 DESIGN.md。
    * 不要把任何私人連線資料寫進 repo——外掛模組自己從 .env / 私有設定讀。
    */
   plugins: PluginConfig[];
@@ -328,4 +328,38 @@ export function setRespondToBots(enabled: boolean): void {
   raw.discord = discord;
   writeFileSync(CONFIG_PATH, stringify(raw, { lineWidth: 0 }));
   cached = null;
+}
+
+function mutatePluginConfig(mutator: (plugins: PluginConfig[]) => PluginConfig[]): void {
+  let raw: Record<string, unknown> = {};
+  try { raw = (parse(readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) ?? {}; } catch {}
+  raw.plugins = mutator(mergePluginsConfig(raw.plugins));
+  writeFileSync(CONFIG_PATH, stringify(raw, { lineWidth: 0 }));
+  cached = null;
+}
+
+/** Register a plugin module path, or update its enabled state if already present. */
+export function upsertPluginConfig(path: string, enabled = true): void {
+  mutatePluginConfig((plugins) => {
+    const existing = plugins.find((plugin) => plugin.path === path);
+    if (existing) existing.enabled = enabled;
+    else plugins.push({ path, enabled });
+    return plugins;
+  });
+}
+
+/** Toggle a registered plugin. Returns false when the path was not registered. */
+export function setPluginConfigEnabled(path: string, enabled: boolean): boolean {
+  let found = false;
+  mutatePluginConfig((plugins) => plugins.map((plugin) => {
+    if (plugin.path !== path) return plugin;
+    found = true;
+    return { ...plugin, enabled };
+  }));
+  return found;
+}
+
+/** Remove a plugin path from config.yaml. */
+export function removePluginConfig(path: string): void {
+  mutatePluginConfig((plugins) => plugins.filter((plugin) => plugin.path !== path));
 }

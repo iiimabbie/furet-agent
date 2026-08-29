@@ -1,12 +1,234 @@
 # Furet Plugin Guide
 
-Furet plugins are local ECMAScript modules that register private tools without modifying `src/tools/registry.ts`. They are intended for deployment-specific integrations—home automation, private APIs, game helpers, internal databases, and similar capabilities that should not live in the public repository.
+Furet plugins are trusted local ECMAScript modules that can contribute private tools, recurring background jobs, and lifecycle event handlers without modifying the public core registry. They are intended for deployment-specific integrations such as home automation, private APIs, game helpers, internal databases, and personal workflows.
 
 > Plugins run inside the Furet process with the same operating-system privileges as Furet. They are not sandboxed. Only load code you trust.
 
-## Quick start
+## Installation
 
-Create a module outside the repository, for example `~/furet-plugins/hello/index.mjs`:
+Furet exposes the same managed plugin operations through the host CLI and an owner-only Discord slash command. Both paths call the same plugin manager; neither path restarts the gateway automatically.
+
+### Host CLI
+
+A plugin package declares its runtime entry in `package.json`:
+
+```json
+{
+  "name": "@example/private-hello",
+  "type": "module",
+  "furet": {
+    "name": "private-hello",
+    "plugin": "./dist/index.js"
+  }
+}
+```
+
+`furet.name` is optional and defaults to the unscoped npm package name. `furet.plugin` is required and must point to a file inside the package. The installer runs `npm install`, runs the selected package's `build` script when present, verifies that the entry exists, records the checkout under `workspace/plugins/`, and registers the entry in `workspace/config/plugins.json`. It never restarts the gateway automatically.
+
+```bash
+# Single-package repository
+furet plugin install ssh://git@example.invalid/owner/private-hello.git
+
+# npm workspace monorepo; accepts a package name or relative package path
+furet plugin install ssh://git@example.invalid/owner/furet-plugins.git \
+  --workspace private-hello
+
+furet plugin list
+furet plugin disable private-hello
+furet plugin enable private-hello
+furet plugin update private-hello   # omit the name to update every managed source
+furet plugin remove private-hello
+```
+
+Managed source metadata and activation state are stored in `workspace/config/plugins.json`. The runtime loader merges these managed entries with manually configured `config.yaml` plugins, so managed installation works even when `config.yaml` is mounted read-only. Removing the final plugin that uses a checkout moves that checkout to `workspace/.trash/` rather than deleting it permanently. Local-directory installs are copied into the managed area and cannot be updated in place; remove and reinstall them to refresh the copy.
+
+The installer executes trusted package scripts and the loaded plugin later runs inside the Furet process. Review third-party code before installing it. A restart is required after install, enable, disable, update, or remove.
+
+### Discord slash command
+
+The configured owner invokes a single command:
+
+```text
+/plugin 動作:安裝 目標:https://github.com/owner/repository/tree/main/packages/example-plugin
+/plugin 動作:更新 目標:<choose an installed plugin>   # omit 目標 to update all
+/plugin 動作:卸載 目標:<choose an installed plugin>
+```
+
+The required `動作` option selects installation, update, or removal. The shared `目標` string accepts either a repository URL or a GitHub package URL in `/tree/<branch>/<path>` form when installing; package URLs inspect the remote branch refs before deriving the repository checkout and npm workspace path, so branch names containing `/` are supported. For update and removal, autocomplete exposes the managed plugin registry like `/model`, so the owner chooses from currently installed plugins instead of typing a name from memory. Update may omit `目標` to update all managed sources; installation and removal require it at runtime.
+
+Every `/plugin` invocation compares the caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and installation defers the interaction before cloning, installing dependencies, or building. Discord installation accepts public HTTPS `github.com` links only and rejects embedded credentials. Private sources, local directories, SSH URLs, list, enable, and disable remain host-side CLI operations.
+
+A restart is still required after installation, update, or removal. The command reports the completed persistent change but does not restart Furet automatically.
+
+## Write your first plugin
+
+A plugin does not need a Furet source checkout or a special SDK. The smallest installable plugin is an ordinary ECMAScript package with two files:
+
+```text
+hello-furet-plugin/
+├── package.json
+└── index.mjs
+```
+
+### 1. Declare the package entry
+
+Create `package.json`:
+
+```json
+{
+  "name": "hello-furet-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "furet": {
+    "name": "hello-furet",
+    "plugin": "./index.mjs"
+  }
+}
+```
+
+The installer reads `furet.plugin`; npm's `main` or `exports` field does not replace it. The path must stay inside this package. `furet.name` is the stable name shown by plugin management and defaults to the unscoped npm package name when omitted.
+
+### 2. Export a plugin module
+
+Create `index.mjs`:
+
+```javascript
+const greetTool = {
+  name: "hello_greet",
+  description: "Greet a person by name.",
+  parameters: {
+    type: "object",
+    properties: {
+      name: {
+        type: "string",
+        description: "The person to greet.",
+      },
+    },
+    required: ["name"],
+    additionalProperties: false,
+  },
+  async execute(args) {
+    const name = typeof args.name === "string" ? args.name.trim() : "";
+    if (!name) return "Error: name must be a non-empty string.";
+    return `Hello, ${name}.`;
+  },
+};
+
+export default {
+  manifest: {
+    name: "hello-furet",
+  },
+  tools: [
+    {
+      tool: greetTool,
+      group: "greetings",
+      exposure: "match",
+      keywords: ["greet", "hello"],
+      aliases: ["say hello"],
+      ownerOnly: true,
+    },
+  ],
+};
+```
+
+A plugin must export:
+
+- `manifest.name`, unique among loaded plugins.
+- At least one item in `tools`, `schedules`, or `events`.
+- Tool `execute()` functions that always resolve to a string, including recoverable errors.
+
+This example uses `exposure: "match"`, so Furet offers the tool schema only when the request matches its keywords or aliases. Use `on-demand` for catalog-only tools and reserve `native` for small tools needed on nearly every turn.
+
+### 3. Publish and install it
+
+Push the two files to the root of a public GitHub repository, then install it from Discord:
+
+```text
+/plugin 動作:安裝 目標:https://github.com/owner/hello-furet-plugin
+```
+
+Or install it from the host:
+
+```bash
+furet plugin install https://github.com/owner/hello-furet-plugin.git
+```
+
+Restart Furet after installation. Then ask the assistant to use the greeting tool and inspect the gateway log if it is not selected or loaded.
+
+### 4. Add dependencies or a build step
+
+A plugin is a normal npm package. Declare runtime libraries in `dependencies`. If `package.json` contains a `build` script, the installer runs it after `npm install` and before checking `furet.plugin`.
+
+A typical TypeScript package looks like this:
+
+```text
+hello-furet-plugin/
+├── package.json
+├── tsconfig.json
+└── src/
+    └── index.ts
+```
+
+```json
+{
+  "name": "hello-furet-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "typescript": "^6.0.0"
+  },
+  "furet": {
+    "name": "hello-furet",
+    "plugin": "./dist/index.js"
+  }
+}
+```
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true
+  },
+  "include": ["src/**/*.ts"]
+}
+```
+
+Furet does not currently publish a separate plugin SDK package. Authors can use the contracts documented below, write plain JavaScript, or copy the relevant TypeScript interfaces from `src/tools/plugin-types.ts` into their own project for compile-time checking. The runtime contract is structural; the plugin must not import Furet's private source files at runtime.
+
+### 5. Choose the capability you need
+
+- **Tool:** the model invokes an operation in response to a conversation or another agent task.
+- **Schedule:** Furet runs a recurring background callback declared by the plugin.
+- **Event:** Furet runs the plugin after a supported core event, currently `journal:completed`.
+- **Lifecycle:** `manifest.start()` opens clients or validates configuration; `manifest.stop()` performs graceful cleanup.
+
+A plugin may combine these capabilities. The complete example in the next section shows one tool, one schedule, and one event together; the reference sections explain every field and failure rule.
+
+### Development loop
+
+1. Keep the plugin in its own repository or npm-workspaces monorepo.
+2. Run its own lint, typecheck, and tests before installing it.
+3. Install it into a non-production Furet deployment first.
+4. Restart Furet and check for the plugin's `started` state and capability counts in logs or `/status`.
+5. Exercise every tool, schedule, and event with unavailable credentials and failing upstream services as well as the successful path.
+6. Push plugin changes, run `furet plugin update <name>`, and restart to load the new module.
+
+Do not develop by editing files under `workspace/plugins/`; that directory is a managed checkout and may be replaced by update or reinstall operations.
+
+## Manual quick start
+
+For development, or for a module that is not packaged for the installer, create it outside the repository and register it manually. For example `~/furet-plugins/hello/index.mjs`:
 
 ```javascript
 const helloTool = {
@@ -15,10 +237,7 @@ const helloTool = {
   parameters: {
     type: "object",
     properties: {
-      name: {
-        type: "string",
-        description: "Person to greet.",
-      },
+      name: { type: "string", description: "Person to greet." },
     },
     required: ["name"],
     additionalProperties: false,
@@ -49,6 +268,26 @@ export default {
       ownerOnly: true,
     },
   ],
+  schedules: [
+    {
+      id: "daily-check",
+      name: "Daily private check",
+      schedule: "0 8 * * *",
+      timezone: "Asia/Taipei",
+      async run({ ask }) {
+        await ask("Run the private daily check and update its local state. Do not send a Discord message.");
+      },
+    },
+  ],
+  events: [
+    {
+      event: "journal:completed",
+      id: "after-journal",
+      async run({ date }, { ask }) {
+        await ask(`The built-in journal for ${date} has completed. Run the private post-processing workflow.`);
+      },
+    },
+  ],
 };
 ```
 
@@ -62,22 +301,18 @@ plugins:
 
 A relative path is resolved from the Furet repository root, not from the current working directory. Absolute paths are also accepted.
 
-Restart Furet and look for a log entry similar to:
-
-```text
-INFO: plugin loaded {"plugin":"private-hello","toolCount":1}
-```
-
-When tool exposure is enabled, an `on-demand` tool can be found with `tool_catalog.search`, described with `tool_catalog.describe`, and executed through `tool_catalog.call`. When exposure is disabled, plugin tools are included in the legacy full tool list.
+Restart Furet. A successful load logs the tool, schedule, and event counts. Plugin schedules start automatically after the plugin lifecycle succeeds; they are not copied into `workspace/config/crons.json`.
 
 ## Module contract
 
-A plugin module may use a default export, or directly export `manifest` and `tools` with the same shape:
+A plugin module may use a default export, or directly export `manifest` plus the optional capability arrays:
 
 ```typescript
 interface PluginModule {
   manifest: PluginManifest;
-  tools: PluginToolRegistration[];
+  tools?: PluginToolRegistration[];
+  schedules?: PluginScheduleRegistration[];
+  events?: PluginEventRegistration[];
 }
 
 interface PluginManifest {
@@ -86,6 +321,33 @@ interface PluginManifest {
   stop?: () => Promise<void> | void;
 }
 
+interface PluginRuntimeContext {
+  ask(
+    prompt: string,
+    options?: {
+      systemPrompt?: string;
+      maxTurns?: number;
+      model?: string;
+    },
+  ): Promise<AgentResponse>;
+}
+```
+
+At least one of `tools`, `schedules`, or `events` must contain a capability. The canonical TypeScript definitions are in `src/tools/plugin-types.ts`.
+
+### Manifest
+
+- `name` is required and unique across loaded plugins. It namespaces background-job diagnostics.
+- `start` runs once during gateway startup, before the plugin's tools, schedules, and events become active.
+- A plugin with `start` remains hidden from tool schemas and `tool_catalog`, and its background capabilities remain inactive, until `start` succeeds.
+- Each `start` hook has a 10-second timeout. A throw or timeout marks the plugin failed while the gateway continues starting.
+- `stop` runs during normal `SIGINT` or `SIGTERM` shutdown after plugin schedules have been stopped.
+- Lifecycle failures are logged and isolated from other plugins.
+- `/restart` exits immediately for systemd to restart the process, so it intentionally does not wait for plugin `stop` hooks. A plugin must tolerate abrupt termination.
+
+## Tools
+
+```typescript
 interface PluginToolRegistration {
   tool: Tool;
   group: string;
@@ -105,79 +367,84 @@ interface Tool {
 }
 ```
 
-The canonical TypeScript definitions are in `src/tools/plugin-types.ts` and `src/types.ts`.
+- Tool names are globally unique across built-ins and all plugins.
+- `execute` must resolve to a string. A non-string result becomes a recoverable tool error instead of crashing the agent loop.
+- `ownerOnly` defaults to `true`. Set it to `false` only when the tool and all data it can access are safe for non-owner callers.
+- Plugin tools use the same central `executeTool()` path as built-ins, including owner-only checks, model gates, path guards, confirmations, and `tool_catalog.call`.
 
-### Manifest
+### Exposure metadata
 
-- `name` is required and is used for logs and diagnostics. It is not a tool-name namespace.
-- `start` is optional and runs once during gateway startup, after name reservation and before background services begin accepting traffic.
-- A plugin with `start` remains hidden from tool schemas and `tool_catalog`, and its tools cannot execute, until `start` succeeds.
-- Each `start` hook has a 10-second timeout. A throw or timeout marks that plugin failed while the gateway continues starting.
-- `stop` is optional and runs during normal `SIGINT` or `SIGTERM` shutdown, including best-effort cleanup for a plugin whose startup failed partway through.
-- A lifecycle hook failure is logged and isolated from other plugins.
-- `/restart` exits immediately for systemd to restart the process, so it intentionally does not wait for plugin `stop` hooks. A plugin must tolerate abrupt process termination.
+- `native`: full schema is sent on every model request. Use sparingly.
+- `match`: schema is sent only after deterministic prompt matching. Declare at least one keyword, alias, or supported signal.
+- `index`: group appears in the tool index; schema is retrieved through `tool_catalog`.
+- `on-demand`: absent from the normal index and found only through explicit name or catalog search. This is the default.
 
-### Tool
+Exposure controls visibility, not authorization.
 
-- `name` must be non-empty and globally unique across built-in tools and all plugins. Names are not automatically prefixed with the plugin name.
-- `description` should clearly state what the tool does and when it should be used.
-- `parameters` is the JSON Schema sent to the model.
-- `execute` receives an argument object and must resolve to a string. Furet validates the result at runtime; a non-string result becomes a recoverable tool execution error instead of crashing the agent loop.
-- Validate security-sensitive arguments inside `execute`; the plugin loader validates the registration shape, not every runtime value.
-- Return useful error text for expected failures. Throwing is reserved for unexpected failures and is reported as a tool execution error.
+## Scheduled background jobs
 
-The first plugin API supports text results only. Returning images or structured content for same-turn model vision requires a future rich tool-result protocol.
-
-### Registration metadata
-
-#### `group`
-
-Required non-empty capability group. It is used by the tool index and `tool_catalog.list_groups`.
-
-Choose a stable, understandable label such as `home automation`, `private CRM`, or `game helpers`.
-
-#### `exposure`
-
-Controls visibility, not authorization:
-
-- `native`: the full tool schema is sent on every model request. Use sparingly.
-- `match`: the schema is sent only when deterministic prompt matching succeeds. At least one non-empty `keyword` or `alias` is required.
-- `index`: the tool's group appears in the tool index, while its schema is retrieved through `tool_catalog` when needed.
-- `on-demand`: hidden from the normal index and found only through explicit name/search. This is the default for plugin tools.
-
-#### `keywords`
-
-Non-empty Chinese or English strings used by `match` exposure. Prefer specific phrases over broad words that would expose the tool too often.
-
-#### `aliases`
-
-Alternative tool names or phrases. Exact aliases receive stronger matching priority and are also useful for catalog search.
-
-#### `signals`
-
-Optional coarse request signals for `match` tools:
-
-- `hasDateTime`: a scheduling-shaped date or time expression is present.
-- `hasAttachment`: the request includes one or more image attachments.
-- `hasImageEditRequest`: the request includes an image and asks for an edit such as background removal or image modification.
-
-A signal must be declared explicitly by the tool. Prefer the narrower `hasImageEditRequest` for editing tools so a normal image-analysis request does not expose them unnecessarily.
-
-#### `modelPredicate`
-
-Optional model capability gate:
-
-```javascript
-modelPredicate: model => model.startsWith("gpt-"),
+```typescript
+interface PluginScheduleRegistration {
+  id: string;
+  name?: string;
+  schedule: string;
+  timezone?: string;
+  timeoutMs?: number;
+  run: (context: PluginRuntimeContext) => Promise<void> | void;
+}
 ```
 
-This is a capability filter, not an identity or permission check.
+- `id` is required, unique within the plugin, and must match `[a-zA-Z0-9][a-zA-Z0-9._-]*`.
+- `schedule` is a node-cron expression (five fields, with optional seconds field) validated by `node-cron` during plugin loading.
+- `timezone` is an optional IANA timezone passed to `node-cron`.
+- Plugin schedules are declarative runtime capabilities. They are not user cron records, are not written to `crons.json`, and are not modified by `cron_*` tools.
+- Schedules start automatically only after plugin startup succeeds and stop automatically during graceful plugin shutdown.
+- The same job never runs concurrently with itself. A tick arriving while the previous run is active is skipped and logged.
+- `timeoutMs` defaults to 10 minutes and produces a warning when exceeded. JavaScript callbacks cannot be force-cancelled safely, so the run remains marked active until it actually settles; this preserves the no-overlap guarantee.
+- A thrown error is logged and isolated. It does not stop the scheduler or gateway.
+- `/status` shows the number of registered and currently running plugin jobs.
 
-#### `ownerOnly`
+## Event handlers
 
-Defaults to `true`. Set it to `false` only when the tool and all data it can access are safe for non-owner Discord callers.
+```typescript
+interface JournalCompletedEvent {
+  event: "journal:completed";
+  date: string;
+  result: string;
+}
 
-Exposure and permission are separate. Hiding a tool does not secure it; exposing a schema does not grant permission. Plugin execution always returns through the central `executeTool()` path, including calls proxied by `tool_catalog`.
+interface PluginEventRegistration {
+  event: "journal:completed";
+  id: string;
+  timeoutMs?: number;
+  run: (
+    payload: JournalCompletedEvent,
+    context: PluginRuntimeContext,
+  ) => Promise<void> | void;
+}
+```
+
+The initial event API supports `journal:completed`.
+
+- The event is emitted after the built-in journal agent request resolves successfully.
+- `date` is the date fixed at the beginning of the journal run; `result` is the journal agent's final text response.
+- Handlers run only for plugins in the `started` state.
+- Different handlers run independently. One handler's throw, long runtime, or failure does not change the built-in journal result and does not block other plugins.
+- Handler IDs follow the same safe ID format as schedule IDs and are unique per event within a plugin.
+- If the same handler is still active when the event fires again, the duplicate invocation is skipped.
+
+A handler that needs the generated Markdown should read the journal file itself using the supplied date rather than assuming the agent's final response contains the document body.
+
+## Plugin-owned agent requests
+
+Scheduled jobs and event handlers receive a limited `context.ask()` wrapper:
+
+- Requests run under the trusted `plugin` trigger in a fresh isolated agent context.
+- Plugins may choose `systemPrompt`, `maxTurns`, and `model`.
+- Plugins cannot override the trigger, impersonate a Discord user, inject a Discord session, or attach progress callbacks through this API.
+- The full `AgentResponse` is returned. If the request produces attachments or text that should be delivered externally, the plugin is responsible for that delivery and retention policy.
+
+The wrapper is intended for private workflows such as post-processing a journal. It is not an authorization boundary: the plugin module itself is already trusted in-process code.
 
 ## Secrets and configuration
 
@@ -187,23 +454,40 @@ A plugin can read deployment secrets from environment variables:
 
 ```javascript
 const apiToken = process.env.PRIVATE_SERVICE_TOKEN;
-if (!apiToken) {
-  throw new Error("PRIVATE_SERVICE_TOKEN is not configured");
-}
+if (!apiToken) throw new Error("PRIVATE_SERVICE_TOKEN is not configured");
 ```
 
-For larger private configuration, keep a separate ignored file outside the public repository and resolve its path explicitly. Never return secret values to the model.
+For larger private configuration, keep a separate ignored file outside the public repository and resolve its path explicitly.
 
 ## Loading and failure behavior
 
-Plugin loading is intentionally fail-soft:
+Plugin loading is fail-soft and all-or-nothing:
 
-- Missing files, import errors, invalid manifests, invalid registration metadata, and duplicate tool names are logged.
+- Missing files, import errors, invalid manifests, duplicate plugin names, invalid tools, invalid schedules, unsupported events, and duplicate IDs are logged.
 - One broken plugin does not prevent the gateway from starting.
-- A plugin is registered all-or-nothing. If any tool in it is invalid, none of its tools are registered.
-- Tool names are reserved when the module loads, but plugins with a `start` hook remain unavailable until startup succeeds. Failed or timed-out plugins do not appear in schemas or the catalog.
+- If any declared capability is invalid, none of that plugin's capabilities are activated.
+- Tool names may be reserved during loading, but tools and background capabilities remain inactive until startup succeeds.
 - Loading is idempotent within one process. Editing a plugin file requires a process restart.
-- Disabled entries remain in configuration but are skipped.
+- Disabled config entries are skipped.
+
+## Managed monorepo structure
+
+A private npm-workspaces repository can expose several independently installable plugins:
+
+```text
+furet-plugins/
+├── package.json
+├── package-lock.json
+└── packages/
+    ├── dream-journal/
+    │   ├── package.json   # contains furet.plugin
+    │   └── src/
+    └── private-service/
+        ├── package.json   # contains furet.plugin
+        └── src/
+```
+
+Install each package with the same repository URL and a different `--workspace`. Furet reuses one managed checkout and removes it only after the final installed plugin from that source is removed.
 
 ## Recommended plugin structure
 
@@ -212,28 +496,28 @@ furet-plugins/
 └── private-service/
     ├── index.mjs
     ├── client.mjs
+    ├── workflows.mjs
     ├── package.json
     └── README.md
 ```
 
-Keep transport/client code separate from Furet tool declarations. This makes it easier to test the private integration without starting the entire gateway.
-
-If a plugin has its own dependencies, install them in the plugin directory and give it its own `package.json`. Node resolves imports from the plugin module's location.
+Keep transport clients, tool declarations, and background workflows separate. If a plugin has dependencies, install them in the plugin directory and give it its own `package.json`; Node resolves imports from the plugin module's location.
 
 ## Author checklist
 
 Before enabling a plugin:
 
-- Tool names are globally unique and use a recognizable prefix when appropriate.
+- The manifest name is unique and stable.
+- Tool names and schedule/event IDs are unique and recognizable.
 - Every tool has a precise description and JSON Schema.
-- `execute` validates sensitive arguments and returns only non-secret text.
 - `ownerOnly` remains `true` unless non-owner access was deliberately reviewed.
-- `match` tools have at least one specific keyword, alias, or supported signal.
-- Startup and shutdown hooks are idempotent and tolerate partial initialization.
-- Network clients have timeouts; shutdown does not depend on an unbounded wait.
-- The plugin tolerates abrupt `/restart` termination.
+- Cron expressions and timezones are explicit and correct.
+- Scheduled callbacks are idempotent and safe to retry after a process restart.
+- Long jobs have suitable timeouts and external network calls have their own abort timeouts.
+- Startup and shutdown hooks tolerate partial initialization and abrupt `/restart` termination.
+- Event handlers do not assume the event payload contains full file contents.
 - Secrets stay in environment variables or private ignored configuration.
-- Furet starts successfully when the plugin is unavailable or misconfigured.
+- Furet starts successfully when the plugin's external dependency is unavailable.
 
 ## Troubleshooting
 
@@ -241,26 +525,26 @@ Before enabling a plugin:
 
 Check the resolved path in the log. Relative paths start at the Furet root.
 
-### `plugin import failed; skipping`
+### `plugin module does not export a valid manifest/capability shape`
 
-Run the module directly with the same Node.js version as Furet and verify its imports and dependencies. Use `.mjs` for the most portable no-build example.
+Ensure the module exports a non-empty `manifest.name`, optional capability arrays with the correct types, and at least one tool, schedule, or event.
 
-### `plugin module does not export a valid ...`
+### `plugin schedule rejected`
 
-Ensure the module exports both a non-empty `manifest.name` and a `tools` array, either as a default export or direct named exports.
+Check the logged reason. Common causes are an invalid cron expression, duplicate ID, malformed timezone field, non-positive timeout, or missing `run` function.
 
-### `plugin tool rejected; skipping whole plugin`
+### `plugin event rejected`
 
-The log's `reason` identifies the invalid field. Common causes are a duplicate tool name, an unsupported exposure value, a missing group, or `match` exposure without keywords/aliases.
+The initial API accepts only `journal:completed`. Check the event name, handler ID, timeout, and `run` function.
+
+### The plugin is loaded but no schedule runs
+
+Check `/status` and logs for the plugin state. Schedules are registered only after `manifest.start()` succeeds. Editing a plugin requires a gateway restart.
+
+### A job tick was skipped
+
+The previous run with the same runtime key is still active. Inspect its logs and external calls; increasing the cron interval or adding network abort timeouts may be appropriate.
 
 ### The tool does not appear in the prompt
 
-This may be expected:
-
-- `on-demand` tools are intentionally absent from the normal index.
-- `index` tools appear by group, not full schema.
-- `match` tools appear only after a keyword/alias match.
-- `modelPredicate` may reject the active model.
-- `ownerOnly` can reject execution even when the tool is visible.
-
-Use `tool_catalog.search` and `tool_catalog.describe` to inspect registered non-native tools when exposure is enabled.
+This may be expected for `on-demand`, `index`, or unmatched `match` tools. Use `tool_catalog.search` and `tool_catalog.describe`; also check that the plugin state is `started` and the active model passes `modelPredicate`.

@@ -1,78 +1,99 @@
-import type { Tool } from "../types.js";
+import type { AgentResponse, Tool } from "../types.js";
 import type { ExposureLevel, MatchSignalName } from "./metadata.js";
 
-/**
- * Stable public API for private Furet plugins (extensions).
- *
- * A plugin is a local module (loaded from a path in `config.plugins`) that can register
- * extra tools WITHOUT editing `src/tools/registry.ts`. This keeps private integrations
- * (e.g. the private livly-mumu plugin) out of the repo while still going through the one
- * execution path — exposure grading, owner-only checks, model gates and the tool_catalog
- * proxy all apply to plugin tools exactly as they do to builtin tools.
- *
- * IMPORTANT invariants a plugin author must respect:
- * - Tool names are GLOBALLY unique. A plugin tool whose name collides with a builtin (or
- *   another plugin) is rejected and the whole plugin fails to load — no silent shadowing.
- * - Exposure is *visibility*, not permission. `ownerOnly` (default true) is the real gate,
- *   enforced by the registry's `executeTool()`; hiding a tool never grants it.
- * - `execute` returns `Promise<string>` (first-version tool result protocol). Rich results
- *   (e.g. same-turn image recognition for livly screenshots) are a future extension — see
- *   DESIGN.md › Plugin 系統 › 已知限制.
- */
+/** Stable public API for private Furet plugins (extensions). */
 
-/**
- * How a plugin classifies one tool it registers. Mirrors the fields the registry's
- * internal `ToolRegistration` carries, plus `ownerOnly` (which for builtins lives in the
- * hard-coded `OWNER_ONLY_TOOLS` set — plugins declare it inline instead).
- */
 export interface PluginToolRegistration {
   /** The tool itself (`src/types.ts` `Tool`). `execute` must return `Promise<string>`. */
   tool: Tool;
-  /**
-   * Exposure level. Defaults to `"on-demand"` when omitted — a private plugin tool should
-   * not leak into every prompt unless the author opts into `match` / `native`.
-   */
+  /** Defaults to `"on-demand"`. */
   exposure?: ExposureLevel;
-  /** Capability group; used for <tool-index> grouping and tool_catalog listing. */
+  /** Capability group used by the tool index and tool catalog. */
   group: string;
-  /** Chinese + English keywords that make a `match`-level tool match a prompt. */
   keywords?: string[];
-  /** Alternate names/phrases; an exact mention counts as a direct match hit. */
   aliases?: string[];
-  /** Optional coarse request signals used by match exposure. */
   signals?: MatchSignalName[];
-  /** Optional model gate — same semantics as builtin `modelPredicate`. */
   modelPredicate?: (model: string) => boolean;
-  /**
-   * Owner-only enforcement. Plugin tools default to `true` (owner-only) because a private
-   * integration typically exposes owner data/actions. Set `false` explicitly only when the
-   * tool is safe for non-owner (`discord-other`) callers.
-   */
+  /** Defaults to true. */
   ownerOnly?: boolean;
 }
 
-/**
- * A plugin module's default export. The loader imports the module and reads `.default`
- * (or the module namespace itself if it directly matches this shape).
- */
+/** Options deliberately exposed to plugin-owned agent requests. */
+export interface PluginAskOptions {
+  systemPrompt?: string;
+  maxTurns?: number;
+  model?: string;
+}
+
+/** Host capabilities passed to scheduled jobs and event handlers. */
+export interface PluginRuntimeContext {
+  /** Run an isolated agent request under the trusted `plugin` trigger. */
+  ask: (prompt: string, options?: PluginAskOptions) => Promise<AgentResponse>;
+}
+
+export interface PluginScheduleRegistration {
+  /** Unique within this plugin. Runtime identity becomes `<plugin name>:<id>`. */
+  id: string;
+  /** Human-readable diagnostics/status label. Defaults to `id`. */
+  name?: string;
+  /** Standard five-field cron expression. */
+  schedule: string;
+  /** Optional IANA timezone passed to node-cron. */
+  timezone?: string;
+  /** Warn when a run exceeds this duration. The callback is not force-cancelled. */
+  timeoutMs?: number;
+  /** Runs at most once concurrently; overlapping ticks are skipped. */
+  run: (context: PluginRuntimeContext) => Promise<void> | void;
+}
+
+export type PluginEventName = "journal:completed";
+
+export interface JournalCompletedEvent {
+  event: "journal:completed";
+  date: string;
+  /** Final text returned by the built-in journal agent request. */
+  result: string;
+}
+
+export type PluginEvent = JournalCompletedEvent;
+
+export interface PluginJournalCompletedEventRegistration {
+  event: "journal:completed";
+  /** Unique within this plugin and event list. */
+  id: string;
+  timeoutMs?: number;
+  run: (payload: JournalCompletedEvent, context: PluginRuntimeContext) => Promise<void> | void;
+}
+
+export type PluginEventRegistration = PluginJournalCompletedEventRegistration;
+
+/** A plugin module's default export (or equivalent named exports). */
 export interface PluginModule {
-  /** Manifest: at minimum a unique `name`; optional lifecycle hooks. */
   manifest: PluginManifest;
-  /** The tools this plugin contributes. */
-  tools: PluginToolRegistration[];
+  /** Optional so a plugin may contribute only background jobs or event handlers. */
+  tools?: PluginToolRegistration[];
+  /** Declarative background jobs registered automatically with the plugin lifecycle. */
+  schedules?: PluginScheduleRegistration[];
+  /** Event handlers invoked only after the corresponding core event succeeds. */
+  events?: PluginEventRegistration[];
 }
 
 export interface PluginManifest {
-  /** Human-readable plugin name; used only for logging/diagnostics (not a namespace). */
+  /** Unique plugin name; also namespaces schedules and diagnostics. */
   name: string;
-  /**
-   * Optional startup hook. Called once by `startPlugins()` before background services
-   * accept traffic. A throw here is logged and isolates to this plugin only.
-   */
+  /** Called once before tools/jobs/events become active. */
   start?: () => Promise<void> | void;
-  /**
-   * Optional shutdown hook. Called by `stopPlugins()` on gateway shutdown / SIGINT /
-   * SIGTERM. A throw here is logged and does not block other plugins from stopping.
-   */
+  /** Called during graceful gateway shutdown. */
   stop?: () => Promise<void> | void;
+}
+
+export interface PluginRuntimeStatus {
+  plugins: Array<{
+    name: string;
+    state: "loaded" | "started" | "failed";
+    schedules: number;
+    events: number;
+  }>;
+  activeSchedules: number;
+  runningJobs: number;
 }

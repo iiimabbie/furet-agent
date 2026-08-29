@@ -1,6 +1,7 @@
 import {
   Client, GatewayIntentBits, Events, REST, Routes,
   SlashCommandBuilder, MessageFlags, EmbedBuilder, ActivityType, PresenceStatusData,
+  ActionRowBuilder,
   type Message, type Interaction, type TextBasedChannel,
 } from "discord.js";
 import { ask, compactSession } from "./agent.js";
@@ -18,10 +19,19 @@ import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
 import { estimateCost } from "./utils/pricing.js";
 import { stamp } from "./utils/time.js";
 import { isNoReplySentinel } from "./utils/no-reply.js";
+import { getPluginRuntimeStatus } from "./tools/plugin-loader.js";
+import {
+  installPlugin,
+  listManagedPluginNames,
+  removeManagedPlugin,
+  updatePlugins,
+} from "./plugin-manager.js";
 import { syncApplicationEmojis, resolveEmojiMarkup } from "./emoji.js";
 import { KeyedSerialQueue } from "./utils/keyed-serial-queue.js";
 import { shouldOnboard, buildOnboardingContext, isWorkspaceUnconfigured } from "./onboarding.js";
 import { readFile, unlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -101,10 +111,29 @@ const SLASH_COMMANDS = [
     .setName("compact")
     .setDescription("壓縮當前 session（摘要舊對話，保留最近訊息）")
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName("plugin")
+    .setDescription("安裝、更新或卸載 Furet 外掛（owner only）")
+    .addStringOption(opt =>
+      opt.setName("動作")
+        .setDescription("選擇要執行的外掛操作")
+        .setRequired(true)
+        .addChoices(
+          { name: "安裝", value: "install" },
+          { name: "更新", value: "update" },
+          { name: "卸載", value: "remove" },
+        )
+    )
+    .addStringOption(opt =>
+      opt.setName("目標")
+        .setDescription("安裝時貼 GitHub 網址；更新或卸載時選外掛（更新留空＝全部）")
+        .setRequired(false)
+        .setAutocomplete(true)
+    )
+    .toJSON(),
 ];
 
 const OWNER_ONLY_MSG = "只有 owner 能用這個指令！";
-
 // Discord.js does not await async MessageCreate listeners. Serialize all work that
 // touches the same session so a later message cannot enter the session or start an
 // agent request before the previous reply has been fully delivered.
@@ -118,6 +147,7 @@ interface PendingRestart {
 
 const RESTART_STATE_FILE = join(tmpdir(), `furet-restart-${process.getuid?.() ?? "unknown"}.json`);
 const RESTART_TOKEN_TTL_MS = 14 * 60 * 1000;
+const execFileAsync = promisify(execFile);
 
 async function savePendingRestart(applicationId: string, token: string): Promise<void> {
   const state: PendingRestart = { applicationId, token, createdAt: Date.now() };
@@ -175,6 +205,58 @@ async function registerSlashCommands(token: string, clientId: string, guildIds: 
   } catch (err) {
     logger.error({ err: (err as Error).message }, "slash command registration failed");
   }
+}
+
+async function parseGitHubPluginSource(source: string): Promise<{ repository: string; workspace?: string; ref?: string }> {
+  const url = new URL(source);
+  if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "github.com") {
+    throw new Error("Discord installation only accepts an HTTPS GitHub link");
+  }
+  if (url.username || url.password) {
+    throw new Error("Do not put credentials or tokens in the GitHub link");
+  }
+  const segments = url.pathname.split("/").filter(Boolean);
+  if (segments.length < 2) throw new Error("Enter a complete GitHub repository link");
+
+  const owner = segments[0];
+  const repositoryName = segments[1].replace(/\.git$/i, "");
+  const repository = `https://github.com/${owner}/${repositoryName}.git`;
+  if (segments.length === 2) return { repository };
+
+  if (segments[2] !== "tree" || segments.length < 5) {
+    throw new Error("Use a repository link or a GitHub /tree/<branch>/<package> link");
+  }
+
+  const treePath = segments.slice(3).map(segment => decodeURIComponent(segment)).join("/");
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync("git", ["ls-remote", "--heads", repository], {
+      timeout: 30_000,
+      maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    }));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Unable to inspect GitHub branches: ${detail}`);
+  }
+
+  const refs = stdout
+    .split("\n")
+    .map(line => line.match(/\trefs\/heads\/(.+)$/)?.[1])
+    .filter((ref): ref is string => Boolean(ref))
+    .sort((a, b) => b.length - a.length);
+  const ref = refs.find(candidate => treePath.startsWith(`${candidate}/`));
+  if (!ref) {
+    throw new Error("The GitHub tree link does not contain a valid branch and package path");
+  }
+
+  const workspace = treePath.slice(ref.length + 1);
+  return { repository, workspace, ref };
+}
+
+function truncateInteractionReply(content: string): string {
+  const limit = 1_900;
+  return content.length <= limit ? content : `${content.slice(0, limit)}\n…output truncated`;
 }
 
 function sessionIdForMessage(msg: Message): string {
@@ -247,15 +329,35 @@ export async function startBot(token: string): Promise<void> {
       return;
     }
 
-    // autocomplete for /model
-    if (interaction.isAutocomplete() && interaction.commandName === "model") {
-      const focused = interaction.options.getFocused();
-      const { llm } = loadConfig();
-      const filtered = llm.modelList
-        .filter(m => m.includes(focused))
-        .slice(0, 25);
-      await interaction.respond(filtered.map(m => ({ name: m, value: m })));
-      return;
+    if (interaction.isAutocomplete()) {
+      if (interaction.commandName === "model") {
+        const focused = interaction.options.getFocused();
+        const { llm } = loadConfig();
+        const filtered = llm.modelList
+          .filter(m => m.includes(focused))
+          .slice(0, 25);
+        await interaction.respond(filtered.map(m => ({ name: m, value: m })));
+        return;
+      }
+
+      if (interaction.commandName === "plugin") {
+        if (interaction.user.id !== loadConfig().discord.owner_id) {
+          await interaction.respond([]);
+          return;
+        }
+        const action = interaction.options.getString("動作");
+        if (action !== "update" && action !== "remove") {
+          await interaction.respond([]);
+          return;
+        }
+        const focused = interaction.options.getFocused().toLowerCase();
+        const names = listManagedPluginNames()
+          .filter(name => name.toLowerCase().includes(focused))
+          .slice(0, 25);
+        await interaction.respond(names.map(name => ({ name, value: name })));
+        return;
+      }
+
     }
 
     if (!interaction.isChatInputCommand()) return;
@@ -337,6 +439,7 @@ export async function startBot(token: string): Promise<void> {
       const reminders = loadReminders();
       const activeSessions = Session.listActive();
       const skills = config.skills;
+      const pluginStatus = getPluginRuntimeStatus();
 
       const totalTokens = usage.inputTokens + usage.outputTokens;
       const cost = estimateCost(usage, config.llm.currentModel);
@@ -351,7 +454,11 @@ export async function startBot(token: string): Promise<void> {
           { name: "Active Sessions", value: `${activeSessions.length}`, inline: true },
           { name: "Crons", value: `${crons.filter(c => c.enabled).length} active / ${crons.length} total`, inline: true },
           { name: "Reminders", value: `${reminders.length} pending`, inline: true },
-          { name: "Skills", value: skills.length > 0 ? skills.join(", ") : "none", inline: true },
+          { name: "Plugin Jobs", value: `${pluginStatus.activeSchedules} scheduled / ${pluginStatus.runningJobs} running`, inline: true },
+          { name: "Plugins", value: pluginStatus.plugins.length > 0
+            ? pluginStatus.plugins.map(p => `${p.name} (${p.state})`).join(", ")
+            : "none", inline: false },
+          { name: "Skills", value: skills.length > 0 ? skills.join(", ") : "none", inline: false },
         )
         .setTimestamp();
 
@@ -486,6 +593,52 @@ export async function startBot(token: string): Promise<void> {
         logger.error({ err, sessionId }, "queued /compact handling failed");
         await interaction.editReply("Session 壓縮失敗，請查看日誌。").catch(() => {});
       });
+    }
+
+    if (interaction.commandName === "plugin") {
+      const config = loadConfig();
+      if (interaction.user.id !== config.discord.owner_id) {
+        await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const action = interaction.options.getString("動作", true);
+      const target = interaction.options.getString("目標")?.trim() || undefined;
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        if (action === "install") {
+          if (!target) throw new Error("請在「目標」貼上 GitHub repository 或 package 網址");
+          const source = await parseGitHubPluginSource(target);
+          const result = await installPlugin(source.repository, { workspace: source.workspace, ref: source.ref });
+          logger.info({ operation: "install", user: interaction.user.id }, "/plugin interaction completed");
+          await interaction.editReply(truncateInteractionReply(result));
+          return;
+        }
+
+        if (action === "update") {
+          if (target && !listManagedPluginNames().includes(target)) {
+            throw new Error(`Managed plugin ${target} is not installed`);
+          }
+          const result = await updatePlugins(target);
+          logger.info({ operation: "update", plugin: target, user: interaction.user.id }, "/plugin interaction completed");
+          await interaction.editReply(truncateInteractionReply(result));
+          return;
+        }
+
+        if (action !== "remove") throw new Error("未知的外掛操作");
+        if (!target) throw new Error("請在「目標」選擇要卸載的外掛");
+        if (!listManagedPluginNames().includes(target)) {
+          throw new Error(`Managed plugin ${target} is not installed`);
+        }
+        const result = removeManagedPlugin(target);
+        logger.info({ operation: "remove", plugin: target, user: interaction.user.id }, "/plugin interaction completed");
+        await interaction.editReply(truncateInteractionReply(result));
+      } catch (err) {
+        const message = (err as Error).message;
+        logger.error({ err, operation: action, user: interaction.user.id }, "/plugin interaction failed");
+        const label = action === "install" ? "外掛安裝失敗" : action === "update" ? "外掛更新失敗" : "外掛卸載失敗";
+        await interaction.editReply(truncateInteractionReply(`${label}：${message}`));
+      }
     }
   });
 
