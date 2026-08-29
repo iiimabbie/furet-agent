@@ -666,7 +666,7 @@ furet plugin remove <name>
 /plugin 動作:卸載 目標:<autocomplete from installed plugins>
 ```
 
-- Discord 只暴露一個 owner-only `/plugin` 指令，不使用 subcommand；必填的 `動作` choice 選擇安裝、更新或卸載，共用的選填 `目標` string 依動作解讀。安裝時自由輸入公開 HTTPS GitHub 連結；若連結是 `/tree/<branch>/<path>` package URL，介面層自動拆出 repository 與 workspace path，再委派 managed plugin service。更新／卸載時 autocomplete 依目前的 `動作` 回傳 managed plugin registry；更新省略 `目標` 代表更新全部，安裝與卸載則在執行時驗證目標必填。這種設計避免 Discord 把三個 subcommand 顯示成三列，同時保留安裝網址自由輸入與已安裝外掛選單。每次互動都直接比對 caller ID 與 `config.discord.owner_id`，不接受 guild role 或 channel allowlist 代替 owner 身分；安裝在 clone、dependency install 與 build 前先 defer interaction。
+- Discord 只暴露一個 owner-only `/plugin` 指令，不使用 subcommand；必填的 `動作` choice 選擇安裝、更新或卸載，共用的選填 `目標` string 依動作解讀。安裝時自由輸入公開 HTTPS GitHub 連結；若連結是 `/tree/<branch>/<path>` package URL，介面層先用 `git ls-remote --heads` 對遠端 refs 做最長前綴比對，因此 branch 名稱可包含 `/`，再拆出 workspace path 並委派 managed plugin service。更新／卸載時 autocomplete 依目前的 `動作` 回傳 managed plugin registry；更新省略 `目標` 代表更新全部，安裝與卸載則在執行時驗證目標必填。這種設計避免 Discord 把三個 subcommand 顯示成三列，同時保留安裝網址自由輸入與已安裝外掛選單。每次互動都直接比對 caller ID 與 `config.discord.owner_id`，不接受 guild role 或 channel allowlist 代替 owner 身分；安裝在 clone、dependency install 與 build 前先 defer interaction。
 - CLI 保留 list／enable／disable／update，以及本機目錄、SSH 或其他 Git URL 等維運功能；Discord UX 不暴露 list／enable／disable 這些低頻操作，也不提供 auth 流程。私有 repository 由主機既有 Git 認證或 SSH 設定處理。
 - CLI 與 Discord 只負責解析輸入、授權與呈現結果，install/update/remove 都委派同一組 `plugin-manager.ts` 函式，避免兩套管理邏輯分岔。
 - Managed checkout 固定放在 `workspace/plugins/`，安裝來源、package 對應與啟用狀態都記在 mode `0600` 的 `workspace/config/plugins.json`；runtime loader 會把 managed registry 與 `config.yaml` 的手動外掛合併，重複路徑以手動設定為準。這讓容器可維持唯讀掛載 `config.yaml`，Discord 安裝仍只需寫入 workspace。

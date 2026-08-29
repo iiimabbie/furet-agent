@@ -54,7 +54,7 @@ The configured owner invokes a single command:
 /plugin 動作:卸載 目標:<choose an installed plugin>
 ```
 
-The required `動作` option selects installation, update, or removal. The shared `目標` string accepts either a repository URL or a GitHub package URL in `/tree/<branch>/<path>` form when installing; package URLs automatically derive the repository checkout and npm workspace path. For update and removal, autocomplete exposes the managed plugin registry like `/model`, so the owner chooses from currently installed plugins instead of typing a name from memory. Update may omit `目標` to update all managed sources; installation and removal require it at runtime.
+The required `動作` option selects installation, update, or removal. The shared `目標` string accepts either a repository URL or a GitHub package URL in `/tree/<branch>/<path>` form when installing; package URLs inspect the remote branch refs before deriving the repository checkout and npm workspace path, so branch names containing `/` are supported. For update and removal, autocomplete exposes the managed plugin registry like `/model`, so the owner chooses from currently installed plugins instead of typing a name from memory. Update may omit `目標` to update all managed sources; installation and removal require it at runtime.
 
 Every `/plugin` invocation compares the caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and installation defers the interaction before cloning, installing dependencies, or building. Discord installation accepts public HTTPS `github.com` links only and rejects embedded credentials. Private sources, local directories, SSH URLs, list, enable, and disable remain host-side CLI operations.
 

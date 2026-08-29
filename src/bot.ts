@@ -30,6 +30,8 @@ import { syncApplicationEmojis, resolveEmojiMarkup } from "./emoji.js";
 import { KeyedSerialQueue } from "./utils/keyed-serial-queue.js";
 import { shouldOnboard, buildOnboardingContext, isWorkspaceUnconfigured } from "./onboarding.js";
 import { readFile, unlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -145,6 +147,7 @@ interface PendingRestart {
 
 const RESTART_STATE_FILE = join(tmpdir(), `furet-restart-${process.getuid?.() ?? "unknown"}.json`);
 const RESTART_TOKEN_TTL_MS = 14 * 60 * 1000;
+const execFileAsync = promisify(execFile);
 
 async function savePendingRestart(applicationId: string, token: string): Promise<void> {
   const state: PendingRestart = { applicationId, token, createdAt: Date.now() };
@@ -204,7 +207,7 @@ async function registerSlashCommands(token: string, clientId: string, guildIds: 
   }
 }
 
-function parseGitHubPluginSource(source: string): { repository: string; workspace?: string; ref?: string } {
+async function parseGitHubPluginSource(source: string): Promise<{ repository: string; workspace?: string; ref?: string }> {
   const url = new URL(source);
   if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "github.com") {
     throw new Error("Discord installation only accepts an HTTPS GitHub link");
@@ -223,8 +226,31 @@ function parseGitHubPluginSource(source: string): { repository: string; workspac
   if (segments[2] !== "tree" || segments.length < 5) {
     throw new Error("Use a repository link or a GitHub /tree/<branch>/<package> link");
   }
-  const ref = decodeURIComponent(segments[3]);
-  const workspace = segments.slice(4).map(segment => decodeURIComponent(segment)).join("/");
+
+  const treePath = segments.slice(3).map(segment => decodeURIComponent(segment)).join("/");
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync("git", ["ls-remote", "--heads", repository], {
+      timeout: 30_000,
+      maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    }));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Unable to inspect GitHub branches: ${detail}`);
+  }
+
+  const refs = stdout
+    .split("\n")
+    .map(line => line.match(/\trefs\/heads\/(.+)$/)?.[1])
+    .filter((ref): ref is string => Boolean(ref))
+    .sort((a, b) => b.length - a.length);
+  const ref = refs.find(candidate => treePath.startsWith(`${candidate}/`));
+  if (!ref) {
+    throw new Error("The GitHub tree link does not contain a valid branch and package path");
+  }
+
+  const workspace = treePath.slice(ref.length + 1);
   return { repository, workspace, ref };
 }
 
@@ -582,7 +608,7 @@ export async function startBot(token: string): Promise<void> {
       try {
         if (action === "install") {
           if (!target) throw new Error("請在「目標」貼上 GitHub repository 或 package 網址");
-          const source = parseGitHubPluginSource(target);
+          const source = await parseGitHubPluginSource(target);
           const result = await installPlugin(source.repository, { workspace: source.workspace, ref: source.ref });
           logger.info({ operation: "install", user: interaction.user.id }, "/plugin interaction completed");
           await interaction.editReply(truncateInteractionReply(result));
