@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
-import type { Client } from "discord.js";
+import { ComponentType, type Client } from "discord.js";
 import { logger } from "../../logger.js";
 import type { Tool } from "../../types.js";
 import { normalizeMentions, formatName } from "../../utils/discord-mentions.js";
 import { queueAttachment } from "../context.js";
 import { createDiscordButtonMessage, type DiscordButtonDefinition } from "../../discord-buttons.js";
 import { resolveEmojiMarkup } from "../../emoji.js";
+import { extractMessageAttachments, extractMessageText, v2Edit, v2Message } from "../../utils/discord-components.js";
 
 let discordClient: Client | null = null;
 
@@ -47,7 +48,7 @@ export const discordFetchMessage: Tool = {
       const channel = await getTextChannel(channel_id);
       const msg = await channel.messages.fetch(message_id);
       const authorName = formatName(msg.author.username, msg.member?.displayName);
-      const content = await normalizeMentions(msg.content, getClient(), msg.guild);
+      const content = await normalizeMentions(extractMessageText(msg), getClient(), msg.guild);
       return JSON.stringify({
         messageId: msg.id,
         channelId: msg.channelId,
@@ -55,7 +56,7 @@ export const discordFetchMessage: Tool = {
         content,
         timestamp: new Date(msg.createdTimestamp).toISOString(),
         editedTimestamp: msg.editedTimestamp ? new Date(msg.editedTimestamp).toISOString() : null,
-        attachments: msg.attachments.map(a => a.url),
+        attachments: extractMessageAttachments(msg).map(attachment => attachment.url),
         replyToMessageId: msg.reference?.messageId,
       }, null, 2);
     } catch (err) {
@@ -89,11 +90,13 @@ export const discordSendMessage: Tool = {
     logger.info({ channel_id, content: content?.slice(0, 100), reply_to, files }, "discord_send_message");
     try {
       const channel = await getTextChannel(channel_id);
-      const options: Record<string, unknown> = {};
-      if (content) options.content = resolveEmojiMarkup(content);
-      if (files?.length) options.files = files;
-      if (reply_to) options.reply = { messageReference: reply_to };
-      const sent = await channel.send(options);
+      const sent = await channel.send(v2Message(
+        content ? resolveEmojiMarkup(content) : undefined,
+        {
+          files,
+          ...(reply_to ? { reply: { messageReference: reply_to } } : {}),
+        },
+      ));
       return `Message sent (msg:${sent.id})`;
     } catch (err) {
       return `Error: ${(err as Error).message}`;
@@ -324,7 +327,7 @@ export const discordCreateForumPost: Tool = {
       if (!channel || !("threads" in channel)) return `Error: channel ${channel_id} is not a forum channel`;
       const thread = await (channel as import("discord.js").ForumChannel).threads.create({
         name: title,
-        message: { content: resolveEmojiMarkup(content) },
+        message: v2Message(resolveEmojiMarkup(content)),
       });
       return `Forum post created: "${thread.name}" (thread:${thread.id})`;
     } catch (err) {
@@ -409,10 +412,18 @@ export const discordEditMessage: Tool = {
       const channel = await getTextChannel(channel_id);
       const msg = await channel.messages.fetch(message_id);
       if (msg.author.id !== getClient().user?.id) return "Error: can only edit own messages";
-      const options: Record<string, unknown> = {};
-      if (content) options.content = resolveEmojiMarkup(content);
-      if (files?.length) options.files = files;
-      await msg.edit(options);
+      const existingText = extractMessageText(msg);
+      const nextText = content !== undefined ? resolveEmojiMarkup(content) : existingText;
+      const preservedComponents = msg.components.filter(component => {
+        if (component.type === ComponentType.TextDisplay) return false;
+        if (files?.length && (component.type === ComponentType.File || component.type === ComponentType.MediaGallery)) return false;
+        return true;
+      });
+      await msg.edit(v2Edit(nextText || undefined, {
+        files,
+        components: preservedComponents,
+        replaceAttachments: Boolean(files?.length),
+      }));
       return `Message edited`;
     } catch (err) {
       return `Error: ${(err as Error).message}`;
@@ -480,7 +491,7 @@ export const discordFetchChannelMessages: Tool = {
       const sorted = Array.from(messages.values()).sort((a, b) => b.createdTimestamp - a.createdTimestamp);
       const result = await Promise.all(sorted.map(async msg => {
         const authorName = formatName(msg.author.username, msg.member?.displayName);
-        const content = await normalizeMentions(msg.content, client, msg.guild);
+        const content = await normalizeMentions(extractMessageText(msg), client, msg.guild);
         return {
           messageId: msg.id,
           author: { id: msg.author.id, name: authorName, isBot: msg.author.bot },
@@ -488,7 +499,7 @@ export const discordFetchChannelMessages: Tool = {
           timestamp: new Date(msg.createdTimestamp).toISOString(),
           editedTimestamp: msg.editedTimestamp ? new Date(msg.editedTimestamp).toISOString() : null,
           replyToMessageId: msg.reference?.messageId ?? null,
-          attachments: msg.attachments.map(a => a.url),
+          attachments: extractMessageAttachments(msg).map(attachment => attachment.url),
         };
       }));
       return JSON.stringify(result, null, 2);

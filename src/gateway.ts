@@ -11,6 +11,7 @@ import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt, authoritativeNowBlock } f
 import { loadConfig } from "./config.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { chunkMessage } from "./utils/chunk-message.js";
+import { v2Message } from "./utils/discord-components.js";
 import { NO_REPLY_TOKEN, isNoReplySentinel } from "./utils/no-reply.js";
 import { resolveEmojiMarkup } from "./emoji.js";
 import { ROOT } from "./paths.js";
@@ -29,9 +30,9 @@ async function sendToChannel(channelId: string, text: string): Promise<string[]>
     // Application Emoji 引用（:name:）在分段前對整段解析，才能正確跳過跨行 code fence。
     const formatted = fixMarkdownLinks(resolveEmojiMarkup(text));
     const sentIds: string[] = [];
-    // Discord 2000 字元限制；跨段時維持 fenced code block 完整。
-    for (const chunk of chunkMessage(formatted, 2000)) {
-      const sent = await channel.send(chunk);
+    // Components V2 的 Text Display 上限為 4000 字元；跨段時維持 fenced code block 完整。
+    for (const chunk of chunkMessage(formatted, 4000)) {
+      const sent = await channel.send(v2Message(chunk));
       sentIds.push(sent.id);
     }
     return sentIds;

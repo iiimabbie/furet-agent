@@ -2,8 +2,6 @@ import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ARCHIVE_DIR, SESSIONS_DIR, ATTACHMENTS_DIR } from "../../paths.js";
 import { getDb } from "../../db.js";
-import { loadConfig } from "../../config.js";
-import { estimateCost } from "../../utils/pricing.js";
 import { logger } from "../../logger.js";
 import type { Tool } from "../../types.js";
 
@@ -14,7 +12,6 @@ interface DashboardStats {
   messages: number;
   totalInputTokens: number;
   totalOutputTokens: number;
-  totalCost: string;
   activeDays: number;
   currentStreak: number;
   longestStreak: number;
@@ -137,9 +134,6 @@ export function collectStats(): DashboardStats {
   const dates = [...dailyActivity.keys()];
   const { current: currentStreak, longest: longestStreak } = computeStreaks(dates);
 
-  const config = loadConfig();
-  const totalCost = estimateCost({ inputTokens: totalInputTokens, outputTokens: totalOutputTokens }, config.llm.currentModel);
-
   // Unique session count = archive files + active session files
   const archiveSessionIds = new Set(archiveFiles.map(f => f.replace(/-\d{4}-\d{2}-\d{2}T.*$/, "")));
   const sessions = archiveSessionIds.size + activeFiles.length;
@@ -149,7 +143,6 @@ export function collectStats(): DashboardStats {
     messages: rows.length + activeMessages,
     totalInputTokens,
     totalOutputTokens,
-    totalCost,
     activeDays: dates.length,
     currentStreak,
     longestStreak,
@@ -305,10 +298,6 @@ export function renderDashboardHTML(stats: DashboardStats): string {
     <div class="stat-box">
       <div class="stat-label">Peak hour</div>
       <div class="stat-value small">${stats.peakHour}:00</div>
-    </div>
-    <div class="stat-box">
-      <div class="stat-label">Est. cost</div>
-      <div class="stat-value small">${stats.totalCost}</div>
     </div>
   </div>
   <div class="heatmap">

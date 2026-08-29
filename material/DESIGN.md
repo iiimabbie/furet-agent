@@ -392,9 +392,21 @@ Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 
 - Thread/論壇貼文首次進入時以 `[System]` user message 存入 starter message
 
 ### 長訊息分段
-Discord 單則訊息上限為 2,000 字元。一般回覆、slash command 回覆與 Gateway 主動推送共用
-`utils/chunk-message.ts` 分段；若切點落在 fenced code block 內，前一段會自動補上關閉 fence，
+Components V2 的單則訊息所有 `TextDisplay` 合計上限為 4,000 字元。一般回覆、slash command 回覆與 Gateway 主動推送共用
+`utils/chunk-message.ts` 以 4,000 字元分段；若切點落在 fenced code block 內，前一段會自動補上關閉 fence，
 下一段以相同語言標記重新開啟，避免 diff、log 等長 code block 吞掉後續文字。
+
+### Discord 訊息模型
+
+Furet 依訊息用途使用兩種 Discord 訊息模型：
+
+- 一般文字與互動流程使用 Components V2。`src/utils/discord-components.ts` 是 payload builder：一般訊息、interaction reply、message edit 與重啟後的 raw webhook PATCH 都帶 `MessageFlags.IsComponentsV2`，文字使用 `TextDisplay`。
+- Slash command 的一般文字回覆、`/new`、聊天、工具進度、cron、reminder、Forum starter、Discord send/edit tool 與按鈕訊息共用 V2 輸出層。`deferReply()` 只負責 interaction acknowledgement，內容由後續的回覆 payload 提供。
+- 需要卡片欄位、橫向 inline 資訊格或 Embed 排版的輸出使用 Legacy Embed；目前 `/status` 與有內容的 `/task` 屬於此類。一般聊天與純文字狀態不為了視覺一致性硬套 Embed。
+- V2 的本機圖片附件使用 `MediaGallery`，其他檔案使用 `File`，並包在 attachment `Container`；上傳檔名以 `attachment://...` 對應。
+- V2 訊息的編輯 payload 持續保留 `IsComponentsV2`。編輯既有非 V2 訊息時，payload 同時清空 `content` 與 `embeds`，再由 component tree 提供完整內容；Embed 卡片則維持 Legacy payload，不設定 `IsComponentsV2`。
+- Discord 輸入解析同時涵蓋一般 `message.content`、Embed 的 author/title/description/fields/footer、Embed image/thumbnail，以及 Components V2 的 `TextDisplay`、`MediaGallery` 與 `File`。`discord_fetch_message`、channel history、Forum starter、回覆圖片與輸入格式化共用 `extractMessageText()` / `extractMessageAttachments()`，因此不依賴訊息由哪一種 Discord 格式產生。
+- Modal、autocomplete、reaction、typing 與 pin 不屬於 message payload，不套用 `IsComponentsV2`。
 
 ### 漸進式進度訊息
 Tool call 執行時即時顯示進度（`→` / `✓` / `✗`），完成後替換成最終回覆。防抖 1 秒避免 Discord rate limit。
@@ -402,7 +414,7 @@ Tool call 執行時即時顯示進度（`→` / `✓` / `✗`），完成後替�
 Agent 在 tool call 之間產生的文字以 `> 引用` 併進同一則進度訊息（`ProgressEvent` 的 `text`）。
 這些文字只存在於 session，不在 `ask()` 的回傳值裡——回傳的是最後一輪、沒有 tool call 的文字。
 純過場，最終回覆會覆蓋整則訊息，不另發訊息。emit 點在執行工具之前，順序才與實際動作一致。
-單段上限 300 字，整則超過 1900 字截尾；`text` 事件不套用防抖。
+單段上限 300 字，整則超過 3900 字截尾；`text` 事件不套用防抖。
 
 ### 靜默回覆哨符（`[no_reply]`）
 一般 Discord 對話與排程 / 提醒**共用同一套哨符判定**：當模型**最終**文字回覆整則就是
@@ -452,7 +464,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 
 ### Slash Commands
 - `/new` — silent memory flush + 歸檔 session + AI 重新打招呼
-- `/status` — 顯示 model / cost / tokens / sessions / crons / reminders / plugin jobs / plugins / skills
+- `/status` — 顯示 model / tokens / sessions / crons / reminders / plugin jobs / plugins / skills
 - `/restart` — 重啟 gateway（spawn detached child）
 - `/model` — 切換 AI 模型與思考等級（模型名稱 autocomplete from modelList；effort 省略時為 default）
 - `/google-auth` — Google OAuth 授權流程

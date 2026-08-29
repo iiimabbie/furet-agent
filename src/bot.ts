@@ -1,7 +1,6 @@
 import {
   Client, GatewayIntentBits, Events, REST, Routes,
   SlashCommandBuilder, MessageFlags, EmbedBuilder, ActivityType, PresenceStatusData,
-  ActionRowBuilder,
   type Message, type Interaction, type TextBasedChannel,
 } from "discord.js";
 import { ask, compactSession } from "./agent.js";
@@ -15,8 +14,8 @@ import { runWithContext } from "./tools/context.js";
 import { handleDiscordButtonInteraction } from "./discord-buttons.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { chunkMessage } from "./utils/chunk-message.js";
+import { extractMessageAttachments, extractMessageText, v2Edit, v2Interaction, v2Message, v2WebhookBody } from "./utils/discord-components.js";
 import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
-import { estimateCost } from "./utils/pricing.js";
 import { stamp } from "./utils/time.js";
 import { isNoReplySentinel } from "./utils/no-reply.js";
 import { getPluginRuntimeStatus } from "./tools/plugin-loader.js";
@@ -178,7 +177,7 @@ async function completePendingRestart(): Promise<void> {
   const response = await fetch(url, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content: "重啟成功，已經回來了。" }),
+    body: JSON.stringify(v2WebhookBody("重啟成功，已經回來了。")),
   });
   if (!response.ok) {
     throw new Error(`Discord interaction edit failed: ${response.status} ${await response.text()}`);
@@ -255,7 +254,7 @@ async function parseGitHubPluginSource(source: string): Promise<{ repository: st
 }
 
 function truncateInteractionReply(content: string): string {
-  const limit = 1_900;
+  const limit = 3_900;
   return content.length <= limit ? content : `${content.slice(0, limit)}\n…output truncated`;
 }
 
@@ -324,7 +323,7 @@ export async function startBot(token: string): Promise<void> {
     } catch (err) {
       logger.error({ err, customId: "customId" in interaction ? interaction.customId : undefined }, "Discord button interaction failed");
       if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: "處理按鈕互動時發生錯誤，請先不要重複操作；可查看原訊息狀態或日誌確認結果。", flags: MessageFlags.Ephemeral }).catch(() => {});
+        await interaction.reply(v2Interaction("處理按鈕互動時發生錯誤，請先不要重複操作；可查看原訊息狀態或日誌確認結果。", { ephemeral: true })).catch(() => {});
       }
       return;
     }
@@ -365,14 +364,14 @@ export async function startBot(token: string): Promise<void> {
     // Before the local installer records owner_id, reject every Discord command.
     // This is intentionally before any session write or owner-only command check.
     if (!loadConfig().discord.owner_id) {
-      await interaction.reply({ content: "請在主機本機執行 `furet onbord` 完成 Discord owner 設定。", flags: MessageFlags.Ephemeral });
+      await interaction.reply(v2Interaction("請在主機本機執行 `furet onbord` 完成 Discord owner 設定。", { ephemeral: true }));
       return;
     }
 
     if (interaction.commandName === "new") {
       const config = loadConfig();
       if (isWorkspaceUnconfigured() && interaction.user.id !== config.discord.owner_id) {
-        await interaction.reply({ content: "首次設定尚未完成，只有已設定的 owner 能重開 onboarding session。", flags: MessageFlags.Ephemeral });
+        await interaction.reply(v2Interaction("首次設定尚未完成，只有已設定的 owner 能重開 onboarding session。", { ephemeral: true }));
         return;
       }
       const sessionId = interaction.guild
@@ -414,10 +413,10 @@ export async function startBot(token: string): Promise<void> {
           const response = await ask(null, { session, systemPrompt: channelContext, trigger: "discord-owner" });
           const text = response.text || "（新對話開始）";
           const formatted = fixMarkdownLinks(resolveEmojiMarkup(text));
-          const chunks = chunkMessage(formatted, 2000);
-          await interaction.editReply(chunks[0]);
+          const chunks = chunkMessage(formatted, 4000);
+          await interaction.editReply(v2Edit(chunks[0]));
           for (let i = 1; i < chunks.length; i++) {
-            await interaction.followUp(chunks[i]);
+            await interaction.followUp(v2Interaction(chunks[i], { ephemeral: true }));
           }
         } catch (err) {
           logger.error({ err: (err as Error).message }, "/new failed");
@@ -442,14 +441,12 @@ export async function startBot(token: string): Promise<void> {
       const pluginStatus = getPluginRuntimeStatus();
 
       const totalTokens = usage.inputTokens + usage.outputTokens;
-      const cost = estimateCost(usage, config.llm.currentModel);
-
       const embed = new EmbedBuilder()
         .setTitle("Furet Status")
+        .setColor(0x5865f2)
         .addFields(
           { name: "Model", value: `\`${config.llm.currentModel}\``, inline: true },
           { name: "Reasoning", value: `\`${config.llm.reasoningEffort}\``, inline: true },
-          { name: "Cost", value: cost, inline: true },
           { name: "Tokens", value: `${totalTokens.toLocaleString()} (in: ${usage.inputTokens.toLocaleString()} / out: ${usage.outputTokens.toLocaleString()})`, inline: false },
           { name: "Active Sessions", value: `${activeSessions.length}`, inline: true },
           { name: "Crons", value: `${crons.filter(c => c.enabled).length} active / ${crons.length} total`, inline: true },
@@ -468,16 +465,16 @@ export async function startBot(token: string): Promise<void> {
     if (interaction.commandName === "restart") {
       const config = loadConfig();
       if (config.discord.owner_id && interaction.user.id !== config.discord.owner_id) {
-        await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral });
+        await interaction.reply(v2Interaction(OWNER_ONLY_MSG, { ephemeral: true }));
         return;
       }
       logger.info({ user: interaction.user.id }, "/restart triggered");
-      await interaction.reply({ content: "重啟中... 等個幾秒就回來。", flags: MessageFlags.Ephemeral });
+      await interaction.reply(v2Interaction("重啟中... 等個幾秒就回來。", { ephemeral: true }));
       try {
         await savePendingRestart(interaction.applicationId, interaction.token);
       } catch (err) {
         logger.error({ err: (err as Error).message }, "failed to save pending restart state");
-        await interaction.editReply("重啟取消：無法保存重啟狀態。");
+        await interaction.editReply(v2Edit("重啟取消：無法保存重啟狀態。"));
         return;
       }
       selfRestart();
@@ -486,12 +483,12 @@ export async function startBot(token: string): Promise<void> {
     if (interaction.commandName === "model") {
       const config = loadConfig();
       if (config.discord.owner_id && interaction.user.id !== config.discord.owner_id) {
-        await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral });
+        await interaction.reply(v2Interaction(OWNER_ONLY_MSG, { ephemeral: true }));
         return;
       }
       const name = interaction.options.getString("name", true);
       if (config.llm.modelList.length > 0 && !config.llm.modelList.includes(name)) {
-        await interaction.reply({ content: `不在 modelList 裡：\`${name}\``, flags: MessageFlags.Ephemeral });
+        await interaction.reply(v2Interaction(`不在 modelList 裡：\`${name}\``, { ephemeral: true }));
         return;
       }
       const effort = (interaction.options.getString("effort") ?? "default") as ReasoningEffort;
@@ -499,41 +496,41 @@ export async function startBot(token: string): Promise<void> {
       const prevEffort = config.llm.reasoningEffort;
       setModelConfig(name, effort);
       logger.info({ prev, next: name, prevEffort, effort, user: interaction.user.id }, "/model switched");
-      await interaction.reply({
-        content: `模型已切換：\`${prev} (${prevEffort})\` → \`${name} (${effort})\``,
-        flags: MessageFlags.Ephemeral,
-      });
+      await interaction.reply(v2Interaction(
+        `模型已切換：\`${prev} (${prevEffort})\` → \`${name} (${effort})\``,
+        { ephemeral: true },
+      ));
     }
 
     if (interaction.commandName === "google-auth") {
       const config = loadConfig();
       if (config.discord.owner_id && interaction.user.id !== config.discord.owner_id) {
-        await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral });
+        await interaction.reply(v2Interaction(OWNER_ONLY_MSG, { ephemeral: true }));
         return;
       }
       const callback = interaction.options.getString("callback");
       if (!callback) {
         const authed = getAuthClient();
         if (authed) {
-          await interaction.reply({ content: "Google API 已經授權過了。", flags: MessageFlags.Ephemeral });
+          await interaction.reply(v2Interaction("Google API 已經授權過了。", { ephemeral: true }));
           return;
         }
         const url = getAuthUrl();
         if (!url) {
-          await interaction.reply({ content: "請先在 .env 設定 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET 後重啟。", flags: MessageFlags.Ephemeral });
+          await interaction.reply(v2Interaction("請先在 .env 設定 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET 後重啟。", { ephemeral: true }));
           return;
         }
-        await interaction.reply({
-          content: `點這個連結授權：\n${url}\n\n授權後瀏覽器會跳到 \`http://localhost?code=xxx\`，把整個網址貼回來：\n\`/google-auth callback:<貼上整個網址>\``,
-          flags: MessageFlags.Ephemeral,
-        });
+        await interaction.reply(v2Interaction(
+          `點這個連結授權：\n${url}\n\n授權後瀏覽器會跳到 \`http://localhost?code=xxx\`，把整個網址貼回來：\n\`/google-auth callback:<貼上整個網址>\``,
+          { ephemeral: true },
+        ));
       } else {
         try {
           await exchangeCode(callback);
-          await interaction.reply({ content: "Google API 授權成功！", flags: MessageFlags.Ephemeral });
+          await interaction.reply(v2Interaction("Google API 授權成功！", { ephemeral: true }));
           logger.info({ user: interaction.user.id }, "google oauth completed via /google-auth");
         } catch (err) {
-          await interaction.reply({ content: `授權失敗：${(err as Error).message}`, flags: MessageFlags.Ephemeral });
+          await interaction.reply(v2Interaction(`授權失敗：${(err as Error).message}`, { ephemeral: true }));
         }
       }
     }
@@ -541,7 +538,7 @@ export async function startBot(token: string): Promise<void> {
     if (interaction.commandName === "task") {
       const auth = getAuthClient();
       if (!auth) {
-        await interaction.reply({ content: "Google API 未授權，請先用 /google-auth 授權。", flags: MessageFlags.Ephemeral });
+        await interaction.reply(v2Interaction("Google API 未授權，請先用 /google-auth 授權。", { ephemeral: true }));
         return;
       }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -555,7 +552,7 @@ export async function startBot(token: string): Promise<void> {
         });
         const items = res.data.items || [];
         if (items.length === 0) {
-          await interaction.editReply("沒有待辦事項 🎉");
+          await interaction.editReply(v2Edit("沒有待辦事項 🎉"));
           return;
         }
         const lines = items.map(t => {
@@ -566,9 +563,9 @@ export async function startBot(token: string): Promise<void> {
           .setTitle("Google Tasks")
           .setDescription(lines.join("\n"))
           .setTimestamp();
-        await interaction.editReply({ embeds: [embed] });
+        await interaction.editReply({ content: null, components: [], embeds: [embed] });
       } catch (err) {
-        await interaction.editReply(`取得 Tasks 失敗：${(err as Error).message}`);
+        await interaction.editReply(v2Edit(`取得 Tasks 失敗：${(err as Error).message}`));
       }
     }
 
@@ -580,25 +577,25 @@ export async function startBot(token: string): Promise<void> {
       await discordSessionQueue.enqueue(sessionId, async () => {
         const session = new Session(sessionId);
         if (session.length === 0) {
-          await interaction.editReply("Session 是空的，不需要壓縮。");
+          await interaction.editReply(v2Edit("Session 是空的，不需要壓縮。"));
           return;
         }
         const summary = await compactSession(session);
         if (summary) {
-          await interaction.editReply(`Session 已壓縮（${session.length} 則訊息保留）。`);
+          await interaction.editReply(v2Edit(`Session 已壓縮（${session.length} 則訊息保留）。`));
         } else {
-          await interaction.editReply("Session 太短，不需要壓縮。");
+          await interaction.editReply(v2Edit("Session 太短，不需要壓縮。"));
         }
       }).catch(async err => {
         logger.error({ err, sessionId }, "queued /compact handling failed");
-        await interaction.editReply("Session 壓縮失敗，請查看日誌。").catch(() => {});
+        await interaction.editReply(v2Edit("Session 壓縮失敗，請查看日誌。")).catch(() => {});
       });
     }
 
     if (interaction.commandName === "plugin") {
       const config = loadConfig();
       if (interaction.user.id !== config.discord.owner_id) {
-        await interaction.reply({ content: OWNER_ONLY_MSG, flags: MessageFlags.Ephemeral });
+        await interaction.reply(v2Interaction(OWNER_ONLY_MSG, { ephemeral: true }));
         return;
       }
 
@@ -611,7 +608,7 @@ export async function startBot(token: string): Promise<void> {
           const source = await parseGitHubPluginSource(target);
           const result = await installPlugin(source.repository, { workspace: source.workspace, ref: source.ref });
           logger.info({ operation: "install", user: interaction.user.id }, "/plugin interaction completed");
-          await interaction.editReply(truncateInteractionReply(result));
+          await interaction.editReply(v2Edit(truncateInteractionReply(result)));
           return;
         }
 
@@ -621,7 +618,7 @@ export async function startBot(token: string): Promise<void> {
           }
           const result = await updatePlugins(target);
           logger.info({ operation: "update", plugin: target, user: interaction.user.id }, "/plugin interaction completed");
-          await interaction.editReply(truncateInteractionReply(result));
+          await interaction.editReply(v2Edit(truncateInteractionReply(result)));
           return;
         }
 
@@ -632,12 +629,12 @@ export async function startBot(token: string): Promise<void> {
         }
         const result = removeManagedPlugin(target);
         logger.info({ operation: "remove", plugin: target, user: interaction.user.id }, "/plugin interaction completed");
-        await interaction.editReply(truncateInteractionReply(result));
+        await interaction.editReply(v2Edit(truncateInteractionReply(result)));
       } catch (err) {
         const message = (err as Error).message;
         logger.error({ err, operation: action, user: interaction.user.id }, "/plugin interaction failed");
         const label = action === "install" ? "外掛安裝失敗" : action === "update" ? "外掛更新失敗" : "外掛卸載失敗";
-        await interaction.editReply(truncateInteractionReply(`${label}：${message}`));
+        await interaction.editReply(v2Edit(truncateInteractionReply(`${label}：${message}`)));
       }
     }
   });
@@ -701,7 +698,7 @@ export async function startBot(token: string): Promise<void> {
             const threadName = message.channel.name;
             session.append({
               role: "user",
-              content: `[System] This is the initial message of forum post "${threadName}" (by ${authorName}) [thread_id: ${message.channelId}]:\n${starter.content}`,
+              content: `[System] This is the initial message of forum post "${threadName}" (by ${authorName}) [thread_id: ${message.channelId}]:\n${extractMessageText(starter)}`,
               time: ts,
               msgId: starter.id,
             });
@@ -748,22 +745,24 @@ async function formatIncomingMessage(message: Message): Promise<FormattedMessage
   const authorId = message.author.id;
 
   const ts = stamp(new Date(message.createdTimestamp));
-  const content = await normalizeMentions(message.content, message.client, message.guild);
-  const attach = message.attachments.size > 0
-    ? ` [附件: ${[...message.attachments.values()].map(a => a.url).join(", ")}]`
+  const content = await normalizeMentions(extractMessageText(message), message.client, message.guild);
+  const attachments = extractMessageAttachments(message);
+  const attach = attachments.length > 0
+    ? ` [附件: ${attachments.map(item => item.url).join(", ")}]`
     : "";
 
   const imageExts = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
-  const isImage = (a: { contentType?: string | null; name?: string | null }) =>
-    a.contentType?.startsWith("image/") || imageExts.some(e => a.name?.toLowerCase().endsWith(e));
+  const isImage = (attachment: { url: string; contentType?: string; name?: string }) =>
+    attachment.contentType?.startsWith("image/")
+    || imageExts.some(extension => (attachment.name || new URL(attachment.url).pathname).toLowerCase().endsWith(extension));
 
-  const images = [...message.attachments.values()].filter(isImage).map(a => a.url);
+  const images = attachments.filter(isImage).map(attachment => attachment.url);
 
   // reply 的訊息如果有圖片，也加進來
   if (message.reference?.messageId) {
     try {
       const replied = await message.channel.messages.fetch(message.reference.messageId);
-      const replyImages = [...replied.attachments.values()].filter(isImage).map(a => a.url);
+      const replyImages = extractMessageAttachments(replied).filter(isImage).map(attachment => attachment.url);
       images.push(...replyImages);
     } catch { /* replied message not available */ }
   }
@@ -799,7 +798,7 @@ export function renderProgress(lines: ProgressLine[]): string {
     })
     .join("\n");
   // 過場訊息，超長時保留尾端即可
-  return body.length > 1900 ? `${body.slice(-1900)}` : body;
+  return body.length > 3900 ? `${body.slice(-3900)}` : body;
 }
 
 // 靜默哨符判定集中在 utils/no-reply.ts，一般對話與排程共用同一套語意。
@@ -838,9 +837,9 @@ async function handleTrigger(message: Message, session: Session, images?: string
     const body = renderProgress(progressLines);
     try {
       if (!progressMsg) {
-        progressMsg = await message.reply(body);
+        progressMsg = await message.reply(v2Message(body));
       } else {
-        await progressMsg.edit(body);
+        await progressMsg.edit(v2Edit(body));
       }
     } catch {
       // 編輯失敗不影響，最終回覆才是權威
@@ -896,37 +895,37 @@ async function handleTrigger(message: Message, session: Session, images?: string
     // 在 chunk 前對整段文字做，才能正確跳過跨行的 code fence；名稱不存在則保留原文。
     const withEmojis = resolveEmojiMarkup(stripped);
     const formatted = fixMarkdownLinks(withEmojis);
-    const chunks = chunkMessage(formatted, 2000);
+    const chunks = chunkMessage(formatted, 4000);
     const sentIds: string[] = [];
     const attachments = response.attachments;
 
     // 第一個 chunk：編輯進度訊息或發新訊息（附件跟第一個 chunk 一起發）
-    const firstPayload: Record<string, unknown> = { content: chunks[0] };
-    if (attachments.length) firstPayload.files = attachments;
+    const firstMessagePayload = v2Message(chunks[0], { files: attachments });
+    const firstEditPayload = v2Edit(chunks[0], { files: attachments });
 
     if (progressMsg) {
       try {
-        await progressMsg.edit(firstPayload);
+        await progressMsg.edit(firstEditPayload);
         sentIds.push(progressMsg.id);
       } catch (err) {
         // Editing the progress message can fail while uploading attachments. Do not
         // silently leave the user with a stale ✓ tool-status message: log the real
         // error and fall back to a fresh reply carrying the same payload.
         logger.error({ err, attachmentCount: attachments.length }, "final progress message edit failed; sending fallback reply");
-        const sent = await message.reply(firstPayload);
+        const sent = await message.reply(firstMessagePayload);
         sentIds.push(sent.id);
         await progressMsg.delete().catch(deleteErr =>
           logger.warn({ err: deleteErr }, "failed to delete stale progress message after fallback")
         );
       }
     } else {
-      const sent = await message.reply(firstPayload);
+      const sent = await message.reply(firstMessagePayload);
       sentIds.push(sent.id);
     }
 
     // 剩餘 chunks：用 reply 發新訊息
     for (let i = 1; i < chunks.length; i++) {
-      const sent = await message.reply(chunks[i]);
+      const sent = await message.reply(v2Message(chunks[i]));
       sentIds.push(sent.id);
     }
 

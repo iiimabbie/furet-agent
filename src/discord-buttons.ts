@@ -16,6 +16,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { DISCORD_BUTTONS_FILE, WORKSPACE_CONFIG_DIR } from "./paths.js";
 import { resolveEmojiMarkup } from "./emoji.js";
+import { v2Edit, v2Interaction, v2Message } from "./utils/discord-components.js";
 
 const CUSTOM_ID_PREFIX = "furet_button";
 const MAX_CONTENT_LENGTH = 1600;
@@ -186,11 +187,10 @@ async function fetchButtonMessage(client: Client, record: DiscordButtonMessageRe
 
 async function editButtonMessage(client: Client, record: DiscordButtonMessageRecord): Promise<void> {
   const message = await fetchButtonMessage(client, record);
-  await message.edit({
-    content: resolveEmojiMarkup(renderContent(record)),
+  await message.edit(v2Edit(resolveEmojiMarkup(renderContent(record)), {
     components: buildComponents(record),
     allowedMentions: { parse: [] },
-  });
+  }));
 }
 
 function parseCustomId(customId: string): { recordId: string; buttonId: string; modal: boolean } | undefined {
@@ -206,7 +206,7 @@ function isExpired(record: DiscordButtonMessageRecord): boolean {
 async function requireAllowedUser(record: DiscordButtonMessageRecord, interaction: Interaction): Promise<boolean> {
   if (record.allowedUserIds.includes(interaction.user.id)) return true;
   if (interaction.isRepliable()) {
-    await interaction.reply({ content: "你不能操作這些按鈕。", flags: MessageFlags.Ephemeral }).catch(() => {});
+    await interaction.reply(v2Interaction("你不能操作這些按鈕。", { ephemeral: true })).catch(() => {});
   }
   return false;
 }
@@ -290,11 +290,10 @@ export async function createDiscordButtonMessage(
     expiresAt: new Date(Date.now() + expiresInMinutes * 60_000).toISOString(),
   };
 
-  const sent = await channel.send({
-    content: resolveEmojiMarkup(renderContent(record)),
+  const sent = await channel.send(v2Message(resolveEmojiMarkup(renderContent(record)), {
     components: buildComponents(record),
     allowedMentions: { parse: [] },
-  });
+  }));
   record.messageId = sent.id;
 
   try {
@@ -308,7 +307,7 @@ export async function createDiscordButtonMessage(
       await saveStore(store);
     });
   } catch (err) {
-    await sent.edit({ content: resolveEmojiMarkup(`${record.content}\n\n狀態：**按鈕狀態保存失敗**`), components: [], allowedMentions: { parse: [] } }).catch(() => {});
+    await sent.edit(v2Edit(resolveEmojiMarkup(`${record.content}\n\n狀態：**按鈕狀態保存失敗**`), { allowedMentions: { parse: [] } })).catch(() => {});
     throw err;
   }
   logger.info({ buttonMessageId: record.id, messageId: sent.id, buttonCount: record.buttons.length }, "Discord button message created");
@@ -332,7 +331,7 @@ export async function handleDiscordButtonInteraction(
 
   let record = await getRecord();
   if (!record) {
-    await interaction.reply({ content: "這組按鈕已不存在。", flags: MessageFlags.Ephemeral }).catch(() => {});
+    await interaction.reply(v2Interaction("這組按鈕已不存在。", { ephemeral: true })).catch(() => {});
     return true;
   }
   if (!(await requireAllowedUser(record, interaction))) return true;
@@ -353,13 +352,13 @@ export async function handleDiscordButtonInteraction(
   }
 
   if (record.status !== "pending") {
-    await interaction.reply({ content: `這組按鈕目前是「${statusLabel(record.status)}」。`, flags: MessageFlags.Ephemeral }).catch(() => {});
+    await interaction.reply(v2Interaction(`這組按鈕目前是「${statusLabel(record.status)}」。`, { ephemeral: true })).catch(() => {});
     return true;
   }
 
   const button = getButton(record, parsed.buttonId);
   if (!button) {
-    await interaction.reply({ content: "這顆按鈕已不存在。", flags: MessageFlags.Ephemeral }).catch(() => {});
+    await interaction.reply(v2Interaction("這顆按鈕已不存在。", { ephemeral: true })).catch(() => {});
     return true;
   }
 
@@ -395,12 +394,12 @@ export async function handleDiscordButtonInteraction(
       return structuredClone(current);
     });
     if (!updated || updated.status !== "pending") {
-      await interaction.reply({ content: updated ? `這組按鈕目前是「${statusLabel(updated.status)}」。` : "無法更新這組按鈕。", flags: MessageFlags.Ephemeral });
+      await interaction.reply(v2Interaction(updated ? `這組按鈕目前是「${statusLabel(updated.status)}」。` : "無法更新這組按鈕。", { ephemeral: true }));
       return true;
     }
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     await editButtonMessage(client, updated);
-    await interaction.editReply("已更新內容。");
+    await interaction.editReply(v2Edit("已更新內容。"));
     logger.info({ buttonMessageId: updated.id, buttonId: button.id }, "Discord button action edited");
     return true;
   }
@@ -419,7 +418,7 @@ export async function handleDiscordButtonInteraction(
       return structuredClone(current);
     });
     if (!closed || closed.status !== "closed") {
-      await interaction.reply({ content: closed ? `這組按鈕目前是「${statusLabel(closed.status)}」。` : "這組按鈕已不存在。", flags: MessageFlags.Ephemeral });
+      await interaction.reply(v2Interaction(closed ? `這組按鈕目前是「${statusLabel(closed.status)}」。` : "這組按鈕已不存在。", { ephemeral: true }));
       return true;
     }
     await interaction.deferUpdate();
@@ -438,7 +437,7 @@ export async function handleDiscordButtonInteraction(
       return { transitioned: true, record: structuredClone(current) };
     });
     if (!transition.transitioned || !transition.record) {
-      await interaction.reply({ content: transition.record ? `這組按鈕目前是「${statusLabel(transition.record.status)}」。` : "這組按鈕已不存在。", flags: MessageFlags.Ephemeral });
+      await interaction.reply(v2Interaction(transition.record ? `這組按鈕目前是「${statusLabel(transition.record.status)}」。` : "這組按鈕已不存在。", { ephemeral: true }));
       return true;
     }
 
