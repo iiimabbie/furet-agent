@@ -25,6 +25,7 @@ const VALID_EXPOSURE: ExposureLevel[] = ["native", "match", "index", "on-demand"
 const VALID_SIGNALS: MatchSignalName[] = ["hasDateTime", "hasAttachment", "hasImageEditRequest"];
 const VALID_EVENTS: PluginEventName[] = ["journal:completed"];
 const PLUGIN_START_TIMEOUT_MS = 10_000;
+const PLUGIN_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_JOB_TIMEOUT_MS = 10 * 60 * 1000;
 const ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
@@ -36,6 +37,7 @@ interface LoadedPlugin {
   events: PluginEventRegistration[];
   tasks: Map<string, ScheduledTask>;
   state: "loaded" | "started" | "failed";
+  stopEligible: boolean;
 }
 
 let loaded: LoadedPlugin[] = [];
@@ -272,6 +274,7 @@ async function loadOne(entry: PluginConfig): Promise<void> {
     events: eventResult.value,
     tasks: new Map(),
     state: manifest.start ? "loaded" : "started",
+    stopEligible: manifest.start === undefined,
   });
   logger.info({
     plugin: manifest.name,
@@ -358,6 +361,26 @@ function startPluginSchedules(plugin: LoadedPlugin): void {
   }
 }
 
+async function stopPluginLifecycle(plugin: LoadedPlugin, reason: string, force = false): Promise<void> {
+  if (!plugin.manifest.stop || (!force && !plugin.stopEligible)) return;
+  plugin.stopEligible = false;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve().then(() => plugin.manifest.stop!()),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`plugin stop timed out after ${PLUGIN_STOP_TIMEOUT_MS}ms`)), PLUGIN_STOP_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ]);
+    logger.info({ plugin: plugin.manifest.name, reason }, "plugin lifecycle cleaned up");
+  } catch (err) {
+    logger.error({ plugin: plugin.manifest.name, reason, err }, "plugin lifecycle cleanup failed (isolated)");
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function startPlugins(context: PluginRuntimeContext): Promise<void> {
   runtime = context;
   if (!didLoad) await loadPlugins();
@@ -365,23 +388,37 @@ export async function startPlugins(context: PluginRuntimeContext): Promise<void>
     if (plugin.state === "failed") continue;
     if (plugin.state === "loaded" && plugin.manifest.start) {
       let timer: NodeJS.Timeout | undefined;
+      let timedOut = false;
+      const startPromise = Promise.resolve().then(() => plugin.manifest.start!());
       try {
         await Promise.race([
-          Promise.resolve().then(() => plugin.manifest.start!()),
+          startPromise,
           new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error(`plugin start timed out after ${PLUGIN_START_TIMEOUT_MS}ms`)), PLUGIN_START_TIMEOUT_MS);
+            timer = setTimeout(() => {
+              timedOut = true;
+              reject(new Error(`plugin start timed out after ${PLUGIN_START_TIMEOUT_MS}ms`));
+            }, PLUGIN_START_TIMEOUT_MS);
+            timer.unref?.();
           }),
         ]);
-        if (timer) clearTimeout(timer);
+        plugin.stopEligible = true;
         setPluginToolsActive(plugin.toolNames, true);
         plugin.state = "started";
         logger.info({ plugin: plugin.manifest.name }, "plugin started");
       } catch (err) {
-        if (timer) clearTimeout(timer);
         setPluginToolsActive(plugin.toolNames, false);
         plugin.state = "failed";
         logger.error({ plugin: plugin.manifest.name, err }, "plugin start failed (isolated)");
+        await stopPluginLifecycle(plugin, "start failure", true);
+        if (timedOut) {
+          void startPromise.then(
+            () => stopPluginLifecycle(plugin, "late start completion after timeout", true),
+            lateErr => logger.warn({ plugin: plugin.manifest.name, err: lateErr }, "timed-out plugin start later rejected"),
+          );
+        }
         continue;
+      } finally {
+        if (timer) clearTimeout(timer);
       }
     }
     if (plugin.state === "started" && plugin.tasks.size === 0) {
@@ -391,6 +428,7 @@ export async function startPlugins(context: PluginRuntimeContext): Promise<void>
         setPluginToolsActive(plugin.toolNames, false);
         plugin.state = "failed";
         logger.error({ plugin: plugin.manifest.name, err }, "plugin schedule registration failed (isolated)");
+        await stopPluginLifecycle(plugin, "schedule registration failure");
       }
     }
   }
@@ -431,12 +469,6 @@ export async function stopPlugins(): Promise<void> {
     plugin.tasks.clear();
   }
   for (const plugin of loaded) {
-    if (!plugin.manifest.stop) continue;
-    try {
-      await plugin.manifest.stop();
-      logger.info({ plugin: plugin.manifest.name }, "plugin stopped");
-    } catch (err) {
-      logger.error({ plugin: plugin.manifest.name, err }, "plugin stop failed (isolated)");
-    }
+    await stopPluginLifecycle(plugin, "gateway shutdown");
   }
 }

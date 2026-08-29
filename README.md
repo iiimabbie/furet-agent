@@ -179,7 +179,7 @@ Available slash commands:
 - `/model` — switch models; owner only.
 - `/google-auth` — finish Google OAuth authorization; owner only.
 - `/restart` — exit the gateway so its process manager can restart it; owner only.
-- `/plugin 安裝 連結:<GitHub URL>` / `/plugin 卸載 外掛:<installed plugin>` — owner-only plugin management.
+- `/plugin 動作:<安裝|更新|卸載> [目標:<GitHub URL or installed plugin>]` — owner-only plugin management; update without a target updates all managed plugins.
 
 ## Workspace and data
 
@@ -238,11 +238,11 @@ furet plugin update [name]
 furet plugin remove <name>
 ```
 
-Discord exposes one owner-only `/plugin` command with two subcommands. `/plugin 安裝` accepts a GitHub repository URL or a package URL such as `https://github.com/owner/repository/tree/main/packages/example-plugin`; package URLs automatically select the workspace path. `/plugin 卸載` uses autocomplete populated from the currently installed managed plugins, matching the `/model` selection experience. The caller is compared directly with `discord.owner_id`, because installing a plugin executes trusted code on the host. Discord installation accepts public HTTPS GitHub links; host-side CLI commands remain available for local paths, SSH sources, updates, and enable/disable maintenance.
+Discord exposes one owner-only `/plugin` command. Its required `動作` option selects 安裝、更新、or 卸載, and the shared optional `目標` string accepts a GitHub repository/package URL for installation or provides installed-plugin autocomplete for update/removal. Omitting `目標` while updating updates all managed sources; install and removal validate that a target was supplied at runtime. The caller is compared directly with `discord.owner_id`, because installing a plugin executes trusted code on the host. Discord installation accepts public HTTPS GitHub links; host-side CLI commands remain available for local paths, SSH sources, updates, and enable/disable maintenance.
 
 A plugin package declares its entry as `"furet": { "plugin": "./dist/index.js" }` in `package.json`. The installer runs dependency installation and an optional `build` script, but deliberately does not restart the gateway. Tool permissions still flow through the central registry, plugin schedules follow plugin startup/shutdown automatically, and all plugin code runs inside the Furet process without a sandbox.
 
-See [docs/PLUGINS.md](docs/PLUGINS.md) for packaging, monorepo installation, the API contract, configuration, security guidance, lifecycle behavior, and troubleshooting.
+See [docs/PLUGINS.md](docs/PLUGINS.md) for a complete first-plugin tutorial, packaging examples, monorepo installation, the API contract, configuration, security guidance, lifecycle behavior, and troubleshooting.
 
 ## Development
 

@@ -24,6 +24,7 @@ import {
   installPlugin,
   listManagedPluginNames,
   removeManagedPlugin,
+  updatePlugins,
 } from "./plugin-manager.js";
 import { KeyedSerialQueue } from "./utils/keyed-serial-queue.js";
 import { shouldOnboard, buildOnboardingContext, isWorkspaceUnconfigured } from "./onboarding.js";
@@ -109,25 +110,22 @@ const SLASH_COMMANDS = [
     .toJSON(),
   new SlashCommandBuilder()
     .setName("plugin")
-    .setDescription("安裝或卸載 Furet 外掛（owner only）")
-    .addSubcommand(subcommand =>
-      subcommand.setName("安裝")
-        .setDescription("從 GitHub 連結安裝外掛")
-        .addStringOption(opt =>
-          opt.setName("連結")
-            .setDescription("GitHub repository 或 package 連結")
-            .setRequired(true)
+    .setDescription("安裝、更新或卸載 Furet 外掛（owner only）")
+    .addStringOption(opt =>
+      opt.setName("動作")
+        .setDescription("選擇要執行的外掛操作")
+        .setRequired(true)
+        .addChoices(
+          { name: "安裝", value: "install" },
+          { name: "更新", value: "update" },
+          { name: "卸載", value: "remove" },
         )
     )
-    .addSubcommand(subcommand =>
-      subcommand.setName("卸載")
-        .setDescription("卸載目前已安裝的外掛")
-        .addStringOption(opt =>
-          opt.setName("外掛")
-            .setDescription("要卸載的外掛")
-            .setRequired(true)
-            .setAutocomplete(true)
-        )
+    .addStringOption(opt =>
+      opt.setName("目標")
+        .setDescription("安裝時貼 GitHub 網址；更新或卸載時選外掛（更新留空＝全部）")
+        .setRequired(false)
+        .setAutocomplete(true)
     )
     .toJSON(),
 ];
@@ -312,6 +310,11 @@ export async function startBot(token: string): Promise<void> {
 
       if (interaction.commandName === "plugin") {
         if (interaction.user.id !== loadConfig().discord.owner_id) {
+          await interaction.respond([]);
+          return;
+        }
+        const action = interaction.options.getString("動作");
+        if (action !== "update" && action !== "remove") {
           await interaction.respond([]);
           return;
         }
@@ -567,30 +570,42 @@ export async function startBot(token: string): Promise<void> {
         return;
       }
 
-      const action = interaction.options.getSubcommand(true);
+      const action = interaction.options.getString("動作", true);
+      const target = interaction.options.getString("目標")?.trim() || undefined;
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
-        if (action === "安裝") {
-          const link = interaction.options.getString("連結", true).trim();
-          const source = parseGitHubPluginSource(link);
+        if (action === "install") {
+          if (!target) throw new Error("請在「目標」貼上 GitHub repository 或 package 網址");
+          const source = parseGitHubPluginSource(target);
           const result = await installPlugin(source.repository, { workspace: source.workspace, ref: source.ref });
           logger.info({ operation: "install", user: interaction.user.id }, "/plugin interaction completed");
           await interaction.editReply(truncateInteractionReply(result));
           return;
         }
 
-        const name = interaction.options.getString("外掛", true);
-        if (!listManagedPluginNames().includes(name)) {
-          throw new Error(`Managed plugin ${name} is not installed`);
+        if (action === "update") {
+          if (target && !listManagedPluginNames().includes(target)) {
+            throw new Error(`Managed plugin ${target} is not installed`);
+          }
+          const result = await updatePlugins(target);
+          logger.info({ operation: "update", plugin: target, user: interaction.user.id }, "/plugin interaction completed");
+          await interaction.editReply(truncateInteractionReply(result));
+          return;
         }
-        const result = removeManagedPlugin(name);
-        logger.info({ operation: "remove", plugin: name, user: interaction.user.id }, "/plugin interaction completed");
+
+        if (action !== "remove") throw new Error("未知的外掛操作");
+        if (!target) throw new Error("請在「目標」選擇要卸載的外掛");
+        if (!listManagedPluginNames().includes(target)) {
+          throw new Error(`Managed plugin ${target} is not installed`);
+        }
+        const result = removeManagedPlugin(target);
+        logger.info({ operation: "remove", plugin: target, user: interaction.user.id }, "/plugin interaction completed");
         await interaction.editReply(truncateInteractionReply(result));
       } catch (err) {
         const message = (err as Error).message;
-        logger.error({ err: message, operation: action, user: interaction.user.id }, "/plugin interaction failed");
-        const label = action === "安裝" ? "Plugin installation failed" : "Plugin removal failed";
-        await interaction.editReply(truncateInteractionReply(`${label}: ${message}`));
+        logger.error({ err, operation: action, user: interaction.user.id }, "/plugin interaction failed");
+        const label = action === "install" ? "外掛安裝失敗" : action === "update" ? "外掛更新失敗" : "外掛卸載失敗";
+        await interaction.editReply(truncateInteractionReply(`${label}：${message}`));
       }
     }
   });

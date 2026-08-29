@@ -49,15 +49,182 @@ The installer executes trusted package scripts and the loaded plugin later runs 
 The configured owner invokes a single command:
 
 ```text
-/plugin 安裝 連結:https://github.com/owner/repository/tree/main/packages/example-plugin
-/plugin 卸載 外掛:<choose an installed plugin>
+/plugin 動作:安裝 目標:https://github.com/owner/repository/tree/main/packages/example-plugin
+/plugin 動作:更新 目標:<choose an installed plugin>   # omit 目標 to update all
+/plugin 動作:卸載 目標:<choose an installed plugin>
 ```
 
-`/plugin 安裝` accepts either a repository URL or a GitHub package URL in `/tree/<branch>/<path>` form. A package URL automatically derives the repository checkout and npm workspace path, so monorepo users do not enter them separately. `/plugin 卸載` exposes the managed plugin registry through Discord autocomplete, like `/model`, so the owner chooses from currently installed plugins instead of typing a name from memory.
+The required `動作` option selects installation, update, or removal. The shared `目標` string accepts either a repository URL or a GitHub package URL in `/tree/<branch>/<path>` form when installing; package URLs automatically derive the repository checkout and npm workspace path. For update and removal, autocomplete exposes the managed plugin registry like `/model`, so the owner chooses from currently installed plugins instead of typing a name from memory. Update may omit `目標` to update all managed sources; installation and removal require it at runtime.
 
-Every `/plugin` invocation compares the caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and installation defers the interaction before cloning, installing dependencies, or building. Discord installation accepts public HTTPS `github.com` links only and rejects embedded credentials. Private sources, local directories, SSH URLs, list, enable, disable, and update remain host-side CLI operations.
+Every `/plugin` invocation compares the caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and installation defers the interaction before cloning, installing dependencies, or building. Discord installation accepts public HTTPS `github.com` links only and rejects embedded credentials. Private sources, local directories, SSH URLs, list, enable, and disable remain host-side CLI operations.
 
-A restart is still required after installation or removal. The command reports the completed persistent change but does not restart Furet automatically.
+A restart is still required after installation, update, or removal. The command reports the completed persistent change but does not restart Furet automatically.
+
+## Write your first plugin
+
+A plugin does not need a Furet source checkout or a special SDK. The smallest installable plugin is an ordinary ECMAScript package with two files:
+
+```text
+hello-furet-plugin/
+├── package.json
+└── index.mjs
+```
+
+### 1. Declare the package entry
+
+Create `package.json`:
+
+```json
+{
+  "name": "hello-furet-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "furet": {
+    "name": "hello-furet",
+    "plugin": "./index.mjs"
+  }
+}
+```
+
+The installer reads `furet.plugin`; npm's `main` or `exports` field does not replace it. The path must stay inside this package. `furet.name` is the stable name shown by plugin management and defaults to the unscoped npm package name when omitted.
+
+### 2. Export a plugin module
+
+Create `index.mjs`:
+
+```javascript
+const greetTool = {
+  name: "hello_greet",
+  description: "Greet a person by name.",
+  parameters: {
+    type: "object",
+    properties: {
+      name: {
+        type: "string",
+        description: "The person to greet.",
+      },
+    },
+    required: ["name"],
+    additionalProperties: false,
+  },
+  async execute(args) {
+    const name = typeof args.name === "string" ? args.name.trim() : "";
+    if (!name) return "Error: name must be a non-empty string.";
+    return `Hello, ${name}.`;
+  },
+};
+
+export default {
+  manifest: {
+    name: "hello-furet",
+  },
+  tools: [
+    {
+      tool: greetTool,
+      group: "greetings",
+      exposure: "match",
+      keywords: ["greet", "hello"],
+      aliases: ["say hello"],
+      ownerOnly: true,
+    },
+  ],
+};
+```
+
+A plugin must export:
+
+- `manifest.name`, unique among loaded plugins.
+- At least one item in `tools`, `schedules`, or `events`.
+- Tool `execute()` functions that always resolve to a string, including recoverable errors.
+
+This example uses `exposure: "match"`, so Furet offers the tool schema only when the request matches its keywords or aliases. Use `on-demand` for catalog-only tools and reserve `native` for small tools needed on nearly every turn.
+
+### 3. Publish and install it
+
+Push the two files to the root of a public GitHub repository, then install it from Discord:
+
+```text
+/plugin 動作:安裝 目標:https://github.com/owner/hello-furet-plugin
+```
+
+Or install it from the host:
+
+```bash
+furet plugin install https://github.com/owner/hello-furet-plugin.git
+```
+
+Restart Furet after installation. Then ask the assistant to use the greeting tool and inspect the gateway log if it is not selected or loaded.
+
+### 4. Add dependencies or a build step
+
+A plugin is a normal npm package. Declare runtime libraries in `dependencies`. If `package.json` contains a `build` script, the installer runs it after `npm install` and before checking `furet.plugin`.
+
+A typical TypeScript package looks like this:
+
+```text
+hello-furet-plugin/
+├── package.json
+├── tsconfig.json
+└── src/
+    └── index.ts
+```
+
+```json
+{
+  "name": "hello-furet-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "typescript": "^6.0.0"
+  },
+  "furet": {
+    "name": "hello-furet",
+    "plugin": "./dist/index.js"
+  }
+}
+```
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true
+  },
+  "include": ["src/**/*.ts"]
+}
+```
+
+Furet does not currently publish a separate plugin SDK package. Authors can use the contracts documented below, write plain JavaScript, or copy the relevant TypeScript interfaces from `src/tools/plugin-types.ts` into their own project for compile-time checking. The runtime contract is structural; the plugin must not import Furet's private source files at runtime.
+
+### 5. Choose the capability you need
+
+- **Tool:** the model invokes an operation in response to a conversation or another agent task.
+- **Schedule:** Furet runs a recurring background callback declared by the plugin.
+- **Event:** Furet runs the plugin after a supported core event, currently `journal:completed`.
+- **Lifecycle:** `manifest.start()` opens clients or validates configuration; `manifest.stop()` performs graceful cleanup.
+
+A plugin may combine these capabilities. The complete example in the next section shows one tool, one schedule, and one event together; the reference sections explain every field and failure rule.
+
+### Development loop
+
+1. Keep the plugin in its own repository or npm-workspaces monorepo.
+2. Run its own lint, typecheck, and tests before installing it.
+3. Install it into a non-production Furet deployment first.
+4. Restart Furet and check for the plugin's `started` state and capability counts in logs or `/status`.
+5. Exercise every tool, schedule, and event with unavailable credentials and failing upstream services as well as the successful path.
+6. Push plugin changes, run `furet plugin update <name>`, and restart to load the new module.
+
+Do not develop by editing files under `workspace/plugins/`; that directory is a managed checkout and may be replaced by update or reinstall operations.
 
 ## Manual quick start
 

@@ -1,13 +1,17 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
+  closeSync,
   cpSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
@@ -53,7 +57,16 @@ export interface InstallPluginOptions {
   ref?: string;
 }
 
+interface PreparedUpdate {
+  source: ManagedPluginSource;
+  sourceRoot: string;
+  stagedRoot: string;
+  backupRoot: string;
+  swapped: boolean;
+}
+
 const EMPTY_REGISTRY: PluginRegistry = { version: 1, sources: [], plugins: [] };
+const REGISTRY_LOCK_FILE = `${PLUGIN_REGISTRY_FILE}.lock`;
 
 function ensureManagedDirs(): void {
   mkdirSync(PLUGINS_DIR, { recursive: true });
@@ -61,15 +74,70 @@ function ensureManagedDirs(): void {
   mkdirSync(TRASH_DIR, { recursive: true });
 }
 
+function isInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== "..");
+}
+
+function assertManagedPath(path: string, label: string): string {
+  const absolute = resolve(ROOT, path);
+  if (!isInside(PLUGINS_DIR, absolute)) throw new Error(`${label} escapes workspace/plugins`);
+  return absolute;
+}
+
+function validateRegistry(value: unknown): PluginRegistry {
+  if (value === null || typeof value !== "object") throw new Error("registry root is not an object");
+  const parsed = value as Partial<PluginRegistry>;
+  if (parsed.version !== 1 || !Array.isArray(parsed.sources) || !Array.isArray(parsed.plugins)) {
+    throw new Error("unsupported registry format");
+  }
+
+  const sourceIds = new Set<string>();
+  for (const source of parsed.sources) {
+    if (
+      source === null || typeof source !== "object" ||
+      typeof source.id !== "string" || !source.id ||
+      typeof source.source !== "string" || !source.source ||
+      typeof source.directory !== "string" || !source.directory ||
+      typeof source.local !== "boolean" ||
+      (source.ref !== undefined && typeof source.ref !== "string")
+    ) {
+      throw new Error("registry contains an invalid source record");
+    }
+    if (sourceIds.has(source.id)) throw new Error(`registry contains duplicate source id ${source.id}`);
+    sourceIds.add(source.id);
+    assertManagedPath(source.directory, `source ${source.id}`);
+  }
+
+  const pluginNames = new Set<string>();
+  for (const plugin of parsed.plugins) {
+    if (
+      plugin === null || typeof plugin !== "object" ||
+      typeof plugin.name !== "string" || !plugin.name ||
+      typeof plugin.sourceId !== "string" || !sourceIds.has(plugin.sourceId) ||
+      typeof plugin.workspace !== "string" || !plugin.workspace ||
+      typeof plugin.packageName !== "string" || !plugin.packageName ||
+      typeof plugin.entry !== "string" || !plugin.entry ||
+      typeof plugin.installedAt !== "string" ||
+      typeof plugin.updatedAt !== "string"
+    ) {
+      throw new Error("registry contains an invalid plugin record");
+    }
+    if (pluginNames.has(plugin.name)) throw new Error(`registry contains duplicate plugin name ${plugin.name}`);
+    pluginNames.add(plugin.name);
+    const source = parsed.sources.find(item => item.id === plugin.sourceId)!;
+    const sourceRoot = assertManagedPath(source.directory, `source ${source.id}`);
+    const entry = assertManagedPath(plugin.entry, `plugin ${plugin.name} entry`);
+    if (!isInside(sourceRoot, entry)) throw new Error(`plugin ${plugin.name} entry escapes its source checkout`);
+    plugin.enabled = plugin.enabled !== false;
+  }
+
+  return parsed as PluginRegistry;
+}
+
 function readRegistry(): PluginRegistry {
   try {
-    const parsed = JSON.parse(readFileSync(PLUGIN_REGISTRY_FILE, "utf-8")) as Partial<PluginRegistry>;
-    if (parsed.version !== 1 || !Array.isArray(parsed.sources) || !Array.isArray(parsed.plugins)) {
-      throw new Error("unsupported registry format");
-    }
-    const registry = parsed as PluginRegistry;
-    registry.plugins = registry.plugins.map((plugin) => ({ ...plugin, enabled: plugin.enabled !== false }));
-    return registry;
+    return validateRegistry(JSON.parse(readFileSync(PLUGIN_REGISTRY_FILE, "utf-8")) as unknown);
   } catch (error) {
     if (!existsSync(PLUGIN_REGISTRY_FILE)) return structuredClone(EMPTY_REGISTRY);
     throw new Error(`Cannot read plugin registry: ${(error as Error).message}`);
@@ -78,9 +146,52 @@ function readRegistry(): PluginRegistry {
 
 function writeRegistry(registry: PluginRegistry): void {
   ensureManagedDirs();
-  const temp = `${PLUGIN_REGISTRY_FILE}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temp, PLUGIN_REGISTRY_FILE);
+  validateRegistry(registry);
+  const temp = `${PLUGIN_REGISTRY_FILE}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temp, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600 });
+    renameSync(temp, PLUGIN_REGISTRY_FILE);
+  } finally {
+    if (existsSync(temp)) unlinkSync(temp);
+  }
+}
+
+function acquireRegistryLock(): number {
+  ensureManagedDirs();
+  try {
+    return openSync(REGISTRY_LOCK_FILE, "wx", 0o600);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") throw new Error("Another plugin management operation is already running; try again shortly");
+    throw error;
+  }
+}
+
+function releaseRegistryLock(fd: number): void {
+  closeSync(fd);
+  try {
+    unlinkSync(REGISTRY_LOCK_FILE);
+  } catch {
+    // A missing lock after close does not invalidate the completed operation.
+  }
+}
+
+function withRegistryLock<T>(operation: () => T): T {
+  const fd = acquireRegistryLock();
+  try {
+    return operation();
+  } finally {
+    releaseRegistryLock(fd);
+  }
+}
+
+async function withRegistryLockAsync<T>(operation: () => Promise<T>): Promise<T> {
+  const fd = acquireRegistryLock();
+  try {
+    return await operation();
+  } finally {
+    releaseRegistryLock(fd);
+  }
 }
 
 function run(command: string, args: string[], cwd: string, extraEnv: NodeJS.ProcessEnv = {}): void {
@@ -116,11 +227,6 @@ function isLocalDirectory(source: string): boolean {
   }
 }
 
-function isInside(parent: string, child: string): boolean {
-  const rel = relative(parent, child);
-  return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== "..");
-}
-
 function readPackage(packageRoot: string): PackageJson {
   const path = resolve(packageRoot, "package.json");
   if (!existsSync(path)) throw new Error(`No package.json found at ${packageRoot}`);
@@ -147,7 +253,7 @@ function findPackageRoots(root: string): string[] {
 }
 
 function resolvePackageRoot(sourceRoot: string, workspace?: string): string {
-  if (!workspace) return sourceRoot;
+  if (!workspace || workspace === ".") return sourceRoot;
 
   const pathCandidate = resolve(sourceRoot, workspace);
   if (isInside(sourceRoot, pathCandidate) && existsSync(resolve(pathCandidate, "package.json"))) {
@@ -191,7 +297,7 @@ function assertEntryExists(packageRoot: string, entryPath: string): void {
 
 function installDependencies(sourceRoot: string): void {
   if (!existsSync(resolve(sourceRoot, "package.json"))) return;
-  run("npm", ["install", "--no-audit", "--no-fund"], sourceRoot);
+  run("npm", ["install", "--no-audit", "--no-fund", "--ignore-scripts=false"], sourceRoot);
 }
 
 function buildPackage(sourceRoot: string, packageRoot: string, packageName: string): void {
@@ -222,66 +328,69 @@ function displayPath(absolutePath: string): string {
   return rel && !rel.startsWith("..") ? rel : absolutePath;
 }
 
+function moveToTrash(path: string, label: string): string | undefined {
+  if (!existsSync(path)) return undefined;
+  const destination = resolve(TRASH_DIR, `${label}-${Date.now()}-${randomUUID().slice(0, 8)}`);
+  renameSync(path, destination);
+  return destination;
+}
+
 export async function installPlugin(source: string, options: InstallPluginOptions = {}): Promise<string> {
-  ensureManagedDirs();
-  const registry = readRegistry();
-  const normalizedSource = isLocalDirectory(source) ? realpathSync(resolve(source)) : source;
-  const requestedRef = options.ref?.trim() || undefined;
-  let sourceRecord = registry.sources.find((item) => item.source === normalizedSource && item.ref === requestedRef);
-  let createdSource = false;
+  return withRegistryLockAsync(async () => {
+    const registry = readRegistry();
+    const normalizedSource = isLocalDirectory(source) ? realpathSync(resolve(source)) : source;
+    const requestedRef = options.ref?.trim() || undefined;
+    let sourceRecord = registry.sources.find((item) => item.source === normalizedSource && item.ref === requestedRef);
+    let createdSource = false;
 
-  if (!sourceRecord) {
-    const base = sourceBaseName(source);
-    let id = base;
-    let suffix = 2;
-    while (registry.sources.some((item) => item.id === id) || existsSync(resolve(PLUGINS_DIR, id))) {
-      id = `${base}-${suffix++}`;
-    }
-    const directory = resolve(PLUGINS_DIR, id);
-    const local = await checkoutSource(source, directory, requestedRef);
-    sourceRecord = { id, source: normalizedSource, directory: displayPath(directory), local, ...(requestedRef ? { ref: requestedRef } : {}) };
-    registry.sources.push(sourceRecord);
-    createdSource = true;
-  }
-
-  const sourceRoot = resolve(ROOT, sourceRecord.directory);
-  try {
-    const packageRoot = resolvePackageRoot(sourceRoot, options.workspace);
-    installDependencies(sourceRoot);
-    const beforeBuild = pluginMetadata(packageRoot);
-    buildPackage(sourceRoot, packageRoot, beforeBuild.packageName);
-    const metadata = pluginMetadata(packageRoot);
-    assertEntryExists(packageRoot, metadata.entryPath);
-    if (registry.plugins.some((item) => item.name === metadata.name)) {
-      throw new Error(`Plugin ${metadata.name} is already installed`);
-    }
-
-    const now = new Date().toISOString();
-    const entry = displayPath(metadata.entryPath);
-    registry.plugins.push({
-      name: metadata.name,
-      enabled: true,
-      sourceId: sourceRecord.id,
-      workspace: displayPath(packageRoot).replace(`${sourceRecord.directory}${sep}`, ""),
-      packageName: metadata.packageName,
-      entry,
-      installedAt: now,
-      updatedAt: now,
-    });
-    writeRegistry(registry);
-    return `Installed ${metadata.name} from ${sourceRecord.id}. Restart Furet to load it.`;
-  } catch (error) {
-    if (createdSource) {
-      const index = registry.sources.findIndex((item) => item.id === sourceRecord?.id);
-      if (index >= 0) registry.sources.splice(index, 1);
-      const sourceRoot = resolve(ROOT, sourceRecord.directory);
-      if (existsSync(sourceRoot)) {
-        const trash = resolve(TRASH_DIR, `plugin-install-failed-${sourceRecord.id}-${Date.now()}`);
-        renameSync(sourceRoot, trash);
+    if (!sourceRecord) {
+      const base = sourceBaseName(source);
+      let id = base;
+      let suffix = 2;
+      while (registry.sources.some((item) => item.id === id) || existsSync(resolve(PLUGINS_DIR, id))) {
+        id = `${base}-${suffix++}`;
       }
+      const directory = resolve(PLUGINS_DIR, id);
+      const local = await checkoutSource(source, directory, requestedRef);
+      sourceRecord = { id, source: normalizedSource, directory: displayPath(directory), local, ...(requestedRef ? { ref: requestedRef } : {}) };
+      registry.sources.push(sourceRecord);
+      createdSource = true;
     }
-    throw error;
-  }
+
+    const sourceRoot = assertManagedPath(sourceRecord.directory, `source ${sourceRecord.id}`);
+    try {
+      const packageRoot = resolvePackageRoot(sourceRoot, options.workspace);
+      installDependencies(sourceRoot);
+      const beforeBuild = pluginMetadata(packageRoot);
+      buildPackage(sourceRoot, packageRoot, beforeBuild.packageName);
+      const metadata = pluginMetadata(packageRoot);
+      assertEntryExists(packageRoot, metadata.entryPath);
+      if (registry.plugins.some((item) => item.name === metadata.name)) {
+        throw new Error(`Plugin ${metadata.name} is already installed`);
+      }
+
+      const now = new Date().toISOString();
+      registry.plugins.push({
+        name: metadata.name,
+        enabled: true,
+        sourceId: sourceRecord.id,
+        workspace: relative(sourceRoot, packageRoot) || ".",
+        packageName: metadata.packageName,
+        entry: displayPath(metadata.entryPath),
+        installedAt: now,
+        updatedAt: now,
+      });
+      writeRegistry(registry);
+      return `已安裝外掛「${metadata.name}」。請執行 /restart 載入外掛。`;
+    } catch (error) {
+      if (createdSource) {
+        const index = registry.sources.findIndex((item) => item.id === sourceRecord.id);
+        if (index >= 0) registry.sources.splice(index, 1);
+        moveToTrash(sourceRoot, `plugin-install-failed-${sourceRecord.id}`);
+      }
+      throw error;
+    }
+  });
 }
 
 export function listManagedPluginNames(): string[] {
@@ -310,68 +419,138 @@ export function listPlugins(): string {
 }
 
 export function setManagedPluginEnabled(name: string, enabled: boolean): string {
-  const registry = readRegistry();
-  const plugin = registry.plugins.find((item) => item.name === name);
-  if (!plugin) throw new Error(`Managed plugin ${name} is not installed`);
-  plugin.enabled = enabled;
-  writeRegistry(registry);
-  return `${enabled ? "Enabled" : "Disabled"} ${name}. Restart Furet to apply the change.`;
+  return withRegistryLock(() => {
+    const registry = readRegistry();
+    const plugin = registry.plugins.find((item) => item.name === name);
+    if (!plugin) throw new Error(`Managed plugin ${name} is not installed`);
+    plugin.enabled = enabled;
+    writeRegistry(registry);
+    return `${enabled ? "已啟用" : "已停用"}外掛「${name}」。請執行 /restart 套用變更。`;
+  });
 }
 
-async function updateSource(registry: PluginRegistry, source: ManagedPluginSource): Promise<void> {
-  const sourceRoot = resolve(ROOT, source.directory);
+async function prepareSourceUpdate(registry: PluginRegistry, source: ManagedPluginSource): Promise<PreparedUpdate> {
+  const sourceRoot = assertManagedPath(source.directory, `source ${source.id}`);
   if (!existsSync(sourceRoot)) throw new Error(`Plugin source directory is missing: ${source.directory}`);
   if (source.local) throw new Error(`Cannot update copied local source ${source.id}; remove and install it again`);
-  run("git", ["pull", "--ff-only"], sourceRoot);
-  installDependencies(sourceRoot);
-  for (const plugin of registry.plugins.filter((item) => item.sourceId === source.id)) {
-    const packageRoot = resolve(sourceRoot, plugin.workspace === source.directory ? "." : plugin.workspace);
-    buildPackage(sourceRoot, packageRoot, plugin.packageName);
-    const metadata = pluginMetadata(packageRoot);
-    if (metadata.name !== plugin.name || displayPath(metadata.entryPath) !== plugin.entry) {
-      throw new Error(`Plugin identity or entry changed for ${plugin.name}; remove and install it again`);
+
+  const stagedRoot = resolve(PLUGINS_DIR, `.update-${source.id}-${randomUUID()}`);
+  const backupRoot = resolve(TRASH_DIR, `plugin-update-backup-${source.id}-${Date.now()}-${randomUUID().slice(0, 8)}`);
+  try {
+    await checkoutSource(source.source, stagedRoot, source.ref);
+    installDependencies(stagedRoot);
+    for (const plugin of registry.plugins.filter((item) => item.sourceId === source.id)) {
+      const workspace = plugin.workspace === source.directory ? "." : plugin.workspace;
+      const packageRoot = resolvePackageRoot(stagedRoot, workspace);
+      const beforeBuild = pluginMetadata(packageRoot);
+      buildPackage(stagedRoot, packageRoot, beforeBuild.packageName);
+      const metadata = pluginMetadata(packageRoot);
+      const oldEntryRelative = relative(sourceRoot, resolve(ROOT, plugin.entry));
+      const newEntryRelative = relative(stagedRoot, metadata.entryPath);
+      if (metadata.name !== plugin.name || oldEntryRelative !== newEntryRelative) {
+        throw new Error(`Plugin identity or entry changed for ${plugin.name}; remove and install it again`);
+      }
+      assertEntryExists(packageRoot, metadata.entryPath);
+      plugin.packageName = metadata.packageName;
+      plugin.workspace = relative(stagedRoot, packageRoot) || ".";
+      plugin.updatedAt = new Date().toISOString();
     }
-    assertEntryExists(packageRoot, metadata.entryPath);
-    plugin.updatedAt = new Date().toISOString();
+    return { source, sourceRoot, stagedRoot, backupRoot, swapped: false };
+  } catch (error) {
+    moveToTrash(stagedRoot, `plugin-update-failed-${source.id}`);
+    throw error;
   }
 }
 
 export async function updatePlugins(name?: string): Promise<string> {
-  const registry = readRegistry();
-  if (!registry.plugins.length) return "No managed plugins installed.";
-  const sources = name
-    ? (() => {
-        const plugin = registry.plugins.find((item) => item.name === name);
-        if (!plugin) throw new Error(`Managed plugin ${name} is not installed`);
-        return registry.sources.filter((item) => item.id === plugin.sourceId);
-      })()
-    : registry.sources;
-  for (const source of sources) await updateSource(registry, source);
-  writeRegistry(registry);
-  return `Updated ${name ?? `${sources.length} plugin source${sources.length === 1 ? "" : "s"}`}. Restart Furet to load the new code.`;
+  return withRegistryLockAsync(async () => {
+    const registry = readRegistry();
+    if (!registry.plugins.length) return "目前沒有已安裝的 managed 外掛。";
+    const sources = name
+      ? (() => {
+          const plugin = registry.plugins.find((item) => item.name === name);
+          if (!plugin) throw new Error(`Managed plugin ${name} is not installed`);
+          return registry.sources.filter((item) => item.id === plugin.sourceId);
+        })()
+      : registry.sources;
+
+    const prepared: PreparedUpdate[] = [];
+    try {
+      for (const source of sources) prepared.push(await prepareSourceUpdate(registry, source));
+      for (const update of prepared) {
+        renameSync(update.sourceRoot, update.backupRoot);
+        try {
+          renameSync(update.stagedRoot, update.sourceRoot);
+          update.swapped = true;
+        } catch (error) {
+          renameSync(update.backupRoot, update.sourceRoot);
+          throw error;
+        }
+      }
+      writeRegistry(registry);
+    } catch (error) {
+      const rollbackErrors: unknown[] = [];
+      for (const update of [...prepared].reverse()) {
+        try {
+          if (update.swapped) {
+            moveToTrash(update.sourceRoot, `plugin-update-rollback-${update.source.id}`);
+            renameSync(update.backupRoot, update.sourceRoot);
+          } else {
+            moveToTrash(update.stagedRoot, `plugin-update-aborted-${update.source.id}`);
+          }
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      }
+      if (rollbackErrors.length > 0) {
+        throw new AggregateError([error, ...rollbackErrors], "Plugin update failed and one or more source checkouts could not be restored");
+      }
+      throw error;
+    }
+
+    const label = name ? `外掛「${name}」` : `${sources.length} 個外掛來源`;
+    return `已更新${label}。請執行 /restart 載入新版本。`;
+  });
 }
 
 export function removeManagedPlugin(name: string): string {
-  const registry = readRegistry();
-  const index = registry.plugins.findIndex((item) => item.name === name);
-  if (index < 0) throw new Error(`Managed plugin ${name} is not installed`);
-  const [plugin] = registry.plugins.splice(index, 1);
+  return withRegistryLock(() => {
+    const registry = readRegistry();
+    const index = registry.plugins.findIndex((item) => item.name === name);
+    if (index < 0) throw new Error(`Managed plugin ${name} is not installed`);
+    const [plugin] = registry.plugins.splice(index, 1);
 
-  const sourceStillUsed = registry.plugins.some((item) => item.sourceId === plugin.sourceId);
-  if (!sourceStillUsed) {
-    const sourceIndex = registry.sources.findIndex((item) => item.id === plugin.sourceId);
-    if (sourceIndex >= 0) {
-      const [source] = registry.sources.splice(sourceIndex, 1);
-      const sourceRoot = resolve(ROOT, source.directory);
-      if (existsSync(sourceRoot)) {
-        const trash = resolve(TRASH_DIR, `plugin-${source.id}-${Date.now()}`);
-        renameSync(sourceRoot, trash);
+    const sourceStillUsed = registry.plugins.some((item) => item.sourceId === plugin.sourceId);
+    let moved: { original: string; trash: string } | undefined;
+    if (!sourceStillUsed) {
+      const sourceIndex = registry.sources.findIndex((item) => item.id === plugin.sourceId);
+      if (sourceIndex >= 0) {
+        const [source] = registry.sources.splice(sourceIndex, 1);
+        const sourceRoot = assertManagedPath(source.directory, `source ${source.id}`);
+        if (existsSync(sourceRoot)) {
+          const trash = resolve(TRASH_DIR, `plugin-${source.id}-${Date.now()}-${randomUUID().slice(0, 8)}`);
+          renameSync(sourceRoot, trash);
+          moved = { original: sourceRoot, trash };
+        }
       }
     }
-  }
-  writeRegistry(registry);
-  const sourceNote = sourceStillUsed
-    ? "The shared source checkout was kept because another plugin still uses it."
-    : "The unused source checkout was moved to workspace/.trash/.";
-  return `Removed ${name}. ${sourceNote} Restart Furet to apply the change.`;
+
+    try {
+      writeRegistry(registry);
+    } catch (error) {
+      if (moved) {
+        try {
+          renameSync(moved.trash, moved.original);
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], `Plugin removal failed and the checkout could not be restored from ${moved.trash}`);
+        }
+      }
+      throw error;
+    }
+
+    const sourceNote = sourceStillUsed
+      ? "共用的來源仍有其他外掛使用，因此保留 checkout。"
+      : "未使用的來源已移到 workspace/.trash/。";
+    return `已卸載外掛「${name}」。${sourceNote}請執行 /restart 套用變更。`;
+  });
 }
