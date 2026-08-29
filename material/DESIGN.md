@@ -659,8 +659,7 @@ request-scoped `enabledTools`，後續回合可直接暴露其 schema；進度�
 
 對外掛作者的完整規格、可執行範例、安全檢查表與疑難排解見 [`docs/PLUGINS.md`](../docs/PLUGINS.md)。本節保留核心內部設計與不變量。
 
-`src/tools/plugin-loader.ts` + `src/tools/plugin-types.ts` — 讓受信任的本機外掛從 `config.yaml` 指定的路徑載入並註冊額外能力，**不需修改
-`src/tools/registry.ts`**，也不把私人連線資料寫進 repo。
+`src/tools/plugin-loader.ts` + `src/tools/plugin-types.ts` — 讓受信任的本機外掛從 `config.yaml` 指定的路徑載入並註冊工具、背景工作、Discord slash command 與事件，**不需修改 `src/tools/registry.ts`**，也不把私人連線資料寫進 repo。
 
 ### 安裝與管理
 
@@ -695,7 +694,10 @@ furet plugin remove <name>
 - `path`：外掛模組路徑，**絕對**或**相對 Furet root**（`src/paths.ts` 的 `ROOT`）。相對路徑一律對 `ROOT` 解析，不依當下工作目錄——CWD 會漂移。
 - `enabled`：`false` 直接跳過。省略 `enabled` 視為 `true`。
 - 正規化在 `config.ts` 的 `mergePluginsConfig()`：非物件、`path` 非字串或空的條目直接丟棄，畸形設定不會讓 config load 崩潰。
-- **私人 secret 不放這裡**——外掛模組自己從 `.env` / 私有設定讀。repo 只知道路徑。
+
+每顆已載入外掛另有自己的 `workspace/config/plugins/<manifest.name>.yaml`。`src/plugin-config.ts` 在外掛載入時建立空 YAML，並提供結構化 `read(defaults)`、`write()`、`update()`；寫入採 mode `0600` 與原子 rename。設定與 `workspace/plugins/` 的 managed checkout 分離，因此更新或重裝原始碼不會覆蓋部署設定。
+
+外掛設定中的 `schedules.<id>` 是主架構保留區，可覆寫該外掛宣告的 `enabled`、`schedule`、`timezone`；載入時會重新跑 cron 與欄位驗證。外掛自己的頻道、顯示選項等欄位由外掛透過同一個 config store 管理。秘密仍優先放 `.env`，不寫進公開 repository、tool description 或錯誤訊息。
 
 ### Plugin API（穩定介面）
 
@@ -703,9 +705,14 @@ furet plugin remove <name>
 
 ```typescript
 interface PluginModule {
-  manifest: { name: string; start?: () => Promise<void> | void; stop?: () => Promise<void> | void };
+  manifest: {
+    name: string;
+    start?: (context: PluginRuntimeContext) => Promise<void> | void;
+    stop?: (context: PluginRuntimeContext) => Promise<void> | void;
+  };
   tools?: PluginToolRegistration[];
   schedules?: PluginScheduleRegistration[];
+  commands?: PluginSlashCommandRegistration[];
   events?: PluginEventRegistration[];
 }
 
@@ -727,19 +734,22 @@ interface PluginEventRegistration {
 
 interface PluginRuntimeContext {
   ask(prompt: string, options?: { systemPrompt?: string; maxTurns?: number; model?: string }): Promise<AgentResponse>;
+  config: PluginConfigStore;
 }
 ```
 
 - **Tool 名稱全域唯一**：跟 builtin 或其他外掛撞名的工具會被拒，整個外掛不載入（不 silent shadow）。
+- **Slash command 名稱全域唯一**：外掛之間撞名會拒絕後載入的外掛；與 Furet 內建指令撞名時主架構不註冊該外掛指令，內建行為保持權威。command 預設 owner-only、ephemeral，handler 回傳字串由主架構送出。
 - **Plugin manifest 名稱全域唯一**：它是 schedules／events 的 namespace，重名外掛整體跳過。
 - **`ownerOnly` 預設 true**：私有外掛工具預設鎖 owner；明確 `false` 才放給 `discord-other`。外掛背景 callback 本身是受信任的 in-process code，呼叫 `context.ask()` 時使用獨立的 `plugin` trigger，不冒充 Discord 使用者。
 - **Agent API 受限**：背景工作只拿到 `prompt`、`systemPrompt`、`maxTurns`、`model`；不能自行偽造 trigger、user ID、Discord session 或進度 callback。回傳完整 `AgentResponse`，附件是否送出由外掛自行決定。
 
 ### 載入、排程與事件生命週期
 
-- `loadPlugins()`：驗證 manifest、tools、schedules 與 events；任一能力無效就整個外掛不載入。schedule ID／event ID 必須是穩定安全字串，cron expression 先用 `node-cron.validate()` 檢查。目前事件白名單只有 `journal:completed`。
+- `loadPlugins()`：驗證 manifest、tools、schedules、slash commands 與 events；任一能力無效就整個外掛不載入。schedule ID／event ID 必須是穩定安全字串，cron expression 先用 `node-cron.validate()` 檢查。目前事件白名單只有 `journal:completed`。
 - `startPlugins(runtime)`：先執行可選的 `manifest.start()`；成功後才啟用工具並註冊外掛 schedules。無 `start()` 的外掛也要等 gateway 呼叫 `startPlugins()` 才會真正開始背景排程，確保服務尚未準備好時不會提早觸發。
-- **Schedule ownership**：外掛 schedule 不寫入 `workspace/config/crons.json`，也不受 `cron_*` 工具修改；它跟著外掛設定與程序生命週期，自動啟動、自動停止。`/status` 以 `Plugin Jobs` 顯示已註冊數與正在執行數，並列出 plugin state。
+- **Schedule ownership**：外掛 schedule 不寫入 `workspace/config/crons.json`，也不受 `cron_*` 工具修改；它跟著外掛設定與程序生命週期，自動啟動、自動停止。`workspace/config/plugins/<name>.yaml` 可覆寫排程，重啟後套用。`/status` 以 `Plugin Jobs` 顯示已註冊數與正在執行數，並列出 plugin state。
+- **Slash command ownership**：只有 `started` 外掛的 command 會在 Discord ready 時與內建清單一起註冊；安裝、更新或設定 command 後需重啟。輸入由主架構轉成純值 args，handler 只取得 caller/channel/guild 與自己的 config store，不接觸 Discord token 或原始 interaction。
 - **不重疊**：同一個 plugin job 上一輪尚未結束時，新 tick 會略過並記 warning。預設 10 分鐘後記 timeout warning；JavaScript callback 無法安全強殺，因此仍保持 running 狀態直到實際 settle，避免 timeout 後下一 tick 反而重疊。
 - `emitPluginEvent()`：只派送給 `started` plugin，handler 彼此並行、失敗互相隔離。內建 journal 的 `ask()` 成功 resolve 後才發出 `journal:completed`，payload 帶固定日期與 agent 最終文字；handler 的失敗不會把已完成的內建 journal 改判失敗。
 - `stopPlugins()`：先停止所有 plugin schedules，再 best-effort 執行每個 `manifest.stop()`。SIGINT／SIGTERM 仍有 gateway 5 秒總硬限；`/restart` 維持立即 exit、由 systemd 拉起。

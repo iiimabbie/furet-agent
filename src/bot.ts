@@ -18,7 +18,12 @@ import { extractMessageAttachments, extractMessageText, v2Edit, v2Interaction, v
 import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
 import { stamp } from "./utils/time.js";
 import { isNoReplySentinel } from "./utils/no-reply.js";
-import { getPluginRuntimeStatus } from "./tools/plugin-loader.js";
+import {
+  executePluginSlashCommand,
+  getPluginRuntimeStatus,
+  getPluginSlashCommands,
+  isPluginSlashCommandOwnerOnly,
+} from "./tools/plugin-loader.js";
 import {
   installPlugin,
   listManagedPluginNames,
@@ -132,6 +137,48 @@ const SLASH_COMMANDS = [
     .toJSON(),
 ];
 
+const BUILTIN_SLASH_COMMAND_NAMES = new Set(SLASH_COMMANDS.map(command => command.name));
+
+function buildPluginSlashCommands(): ReturnType<SlashCommandBuilder["toJSON"]>[] {
+  return getPluginSlashCommands().flatMap(registration => {
+    if (BUILTIN_SLASH_COMMAND_NAMES.has(registration.name)) {
+      logger.error({ command: registration.name }, "plugin slash command conflicts with a built-in command; skipping registration");
+      return [];
+    }
+    const builder = new SlashCommandBuilder()
+      .setName(registration.name)
+      .setDescription(registration.description);
+    for (const option of registration.options ?? []) {
+      if (option.type === "string") {
+        builder.addStringOption(input => {
+          input.setName(option.name).setDescription(option.description).setRequired(option.required === true);
+          const choices = option.choices?.filter(choice => typeof choice.value === "string") as Array<{ name: string; value: string }> | undefined;
+          if (choices?.length) input.addChoices(...choices);
+          return input;
+        });
+      } else if (option.type === "integer") {
+        builder.addIntegerOption(input => {
+          input.setName(option.name).setDescription(option.description).setRequired(option.required === true);
+          const choices = option.choices?.filter(choice => typeof choice.value === "number") as Array<{ name: string; value: number }> | undefined;
+          if (choices?.length) input.addChoices(...choices);
+          return input;
+        });
+      } else if (option.type === "boolean") {
+        builder.addBooleanOption(input => input
+          .setName(option.name)
+          .setDescription(option.description)
+          .setRequired(option.required === true));
+      } else {
+        builder.addChannelOption(input => input
+          .setName(option.name)
+          .setDescription(option.description)
+          .setRequired(option.required === true));
+      }
+    }
+    return [builder.toJSON()];
+  });
+}
+
 const OWNER_ONLY_MSG = "只有 owner 能用這個指令！";
 // Discord.js does not await async MessageCreate listeners. Serialize all work that
 // touches the same session so a later message cannot enter the session or start an
@@ -197,9 +244,10 @@ async function registerSlashCommands(token: string, clientId: string, guildIds: 
   const rest = new REST({ version: "10" }).setToken(token);
   try {
     await rest.put(Routes.applicationCommands(clientId), { body: [] });
+    const commands = [...SLASH_COMMANDS, ...buildPluginSlashCommands()];
     for (const guildId of guildIds) {
-      await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: SLASH_COMMANDS });
-      logger.info({ guildId, count: SLASH_COMMANDS.length }, "slash commands registered to guild");
+      await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+      logger.info({ guildId, count: commands.length }, "slash commands registered to guild");
     }
   } catch (err) {
     logger.error({ err: (err as Error).message }, "slash command registration failed");
@@ -365,6 +413,41 @@ export async function startBot(token: string): Promise<void> {
     // This is intentionally before any session write or owner-only command check.
     if (!loadConfig().discord.owner_id) {
       await interaction.reply(v2Interaction("請在主機本機執行 `furet onbord` 完成 Discord owner 設定。", { ephemeral: true }));
+      return;
+    }
+
+    const pluginOwnerOnly = BUILTIN_SLASH_COMMAND_NAMES.has(interaction.commandName)
+      ? undefined
+      : isPluginSlashCommandOwnerOnly(interaction.commandName);
+    if (pluginOwnerOnly !== undefined) {
+      if (pluginOwnerOnly && interaction.user.id !== loadConfig().discord.owner_id) {
+        await interaction.reply(v2Interaction(OWNER_ONLY_MSG, { ephemeral: true }));
+        return;
+      }
+      const registration = getPluginSlashCommands().find(command => command.name === interaction.commandName);
+      if (!registration) {
+        await interaction.reply(v2Interaction("外掛指令目前不可用", { ephemeral: true }));
+        return;
+      }
+      const args = Object.fromEntries(
+        interaction.options.data.map(option => [option.name, option.value as string | number | boolean | undefined]),
+      );
+      if (registration.ephemeral === false) await interaction.deferReply();
+      else await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const result = await executePluginSlashCommand(interaction.commandName, args, {
+          userId: interaction.user.id,
+          channelId: interaction.channelId,
+          ...(interaction.guildId ? { guildId: interaction.guildId } : {}),
+        });
+        if (!result) throw new Error("外掛指令目前不可用");
+        const text = truncateInteractionReply(fixMarkdownLinks(resolveEmojiMarkup(result.content)));
+        await interaction.editReply(v2Edit(text));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error({ err, command: interaction.commandName, user: interaction.user.id }, "plugin slash command failed");
+        await interaction.editReply(v2Edit(`外掛指令失敗：${msg}`));
+      }
       return;
     }
 

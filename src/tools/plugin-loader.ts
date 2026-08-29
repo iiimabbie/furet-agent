@@ -6,6 +6,7 @@ import { loadConfig, type PluginConfig } from "../config.js";
 import { logger } from "../logger.js";
 import { getManagedPluginConfigs } from "../plugin-manager.js";
 import { ROOT } from "../paths.js";
+import { createPluginConfigStore, type PluginConfigStore } from "../plugin-config.js";
 import type { Tool } from "../types.js";
 import type { ExposureLevel, MatchSignalName } from "./metadata.js";
 import type {
@@ -17,6 +18,7 @@ import type {
   PluginRuntimeContext,
   PluginRuntimeStatus,
   PluginScheduleRegistration,
+  PluginSlashCommandRegistration,
   PluginToolRegistration,
 } from "./plugin-types.js";
 import { hasToolName, registerPluginTools, setPluginToolsActive } from "./registry.js";
@@ -28,6 +30,8 @@ const PLUGIN_START_TIMEOUT_MS = 10_000;
 const PLUGIN_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_JOB_TIMEOUT_MS = 10 * 60 * 1000;
 const ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+const COMMAND_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/; // Discord limit: 1-32 lowercase alphanumeric + hyphen/underscore
+const COMMAND_OPTION_TYPES = new Set(["string", "integer", "boolean", "channel"]);
 
 interface LoadedPlugin {
   manifest: PluginManifest;
@@ -35,6 +39,8 @@ interface LoadedPlugin {
   toolNames: string[];
   schedules: PluginScheduleRegistration[];
   events: PluginEventRegistration[];
+  commands: PluginSlashCommandRegistration[];
+  config: PluginConfigStore;
   tasks: Map<string, ScheduledTask>;
   state: "loaded" | "started" | "failed";
   stopEligible: boolean;
@@ -42,7 +48,9 @@ interface LoadedPlugin {
 
 let loaded: LoadedPlugin[] = [];
 let didLoad = false;
-let runtime: PluginRuntimeContext | null = null;
+type PluginRuntimeBase = Omit<PluginRuntimeContext, "config">;
+
+let runtime: PluginRuntimeBase | null = null;
 const runningJobs = new Set<string>();
 
 function resolvePluginPath(rawPath: string): string {
@@ -165,6 +173,98 @@ function validateSchedules(raw: unknown): { ok: true; value: PluginScheduleRegis
   return { ok: true, value: schedules };
 }
 
+function validateCommands(raw: unknown): { ok: true; value: PluginSlashCommandRegistration[] } | { ok: false; error: string } {
+  if (raw === undefined) return { ok: true, value: [] };
+  if (!Array.isArray(raw)) return { ok: false, error: "commands must be an array" };
+  const seen = new Set<string>();
+  const commands: PluginSlashCommandRegistration[] = [];
+  for (const item of raw) {
+    if (item === null || typeof item !== "object") return { ok: false, error: "command registration is not an object" };
+    const r = item as Record<string, unknown>;
+    if (typeof r.name !== "string" || !COMMAND_NAME_PATTERN.test(r.name)) {
+      return { ok: false, error: `command name "${String(r.name)}" must match ${COMMAND_NAME_PATTERN}` };
+    }
+    // Cross-plugin uniqueness relies on sequential loadOne() — loaded[] contains
+    // all previously loaded plugins. If loading is ever parallelised, this check
+    // must be replaced with a shared pending-names set.
+    if (seen.has(r.name) || loaded.some(plugin => plugin.commands.some(command => command.name === r.name))) {
+      return { ok: false, error: `duplicate slash command name "${r.name}"` };
+    }
+    if (typeof r.description !== "string" || r.description.trim().length === 0 || r.description.length > 100) {
+      return { ok: false, error: `command ${r.name}: description must be 1-100 characters` };
+    }
+    if (r.ownerOnly !== undefined && typeof r.ownerOnly !== "boolean") {
+      return { ok: false, error: `command ${r.name}: ownerOnly must be a boolean` };
+    }
+    if (r.ephemeral !== undefined && typeof r.ephemeral !== "boolean") {
+      return { ok: false, error: `command ${r.name}: ephemeral must be a boolean` };
+    }
+    if (typeof r.execute !== "function") return { ok: false, error: `command ${r.name}: execute must be a function` };
+    if (r.options !== undefined && !Array.isArray(r.options)) {
+      return { ok: false, error: `command ${r.name}: options must be an array` };
+    }
+    const optionNames = new Set<string>();
+    for (const optionValue of (r.options as unknown[] | undefined) ?? []) {
+      if (optionValue === null || typeof optionValue !== "object") {
+        return { ok: false, error: `command ${r.name}: option is not an object` };
+      }
+      const option = optionValue as Record<string, unknown>;
+      if (typeof option.name !== "string" || !COMMAND_NAME_PATTERN.test(option.name)) {
+        return { ok: false, error: `command ${r.name}: invalid option name "${String(option.name)}"` };
+      }
+      if (optionNames.has(option.name)) return { ok: false, error: `command ${r.name}: duplicate option "${option.name}"` };
+      if (typeof option.description !== "string" || option.description.trim().length === 0 || option.description.length > 100) {
+        return { ok: false, error: `command ${r.name} option ${option.name}: description must be 1-100 characters` };
+      }
+      if (typeof option.type !== "string" || !COMMAND_OPTION_TYPES.has(option.type)) {
+        return { ok: false, error: `command ${r.name} option ${option.name}: unsupported type "${String(option.type)}"` };
+      }
+      if (option.required !== undefined && typeof option.required !== "boolean") {
+        return { ok: false, error: `command ${r.name} option ${option.name}: required must be a boolean` };
+      }
+      if (option.choices !== undefined) {
+        if (!Array.isArray(option.choices) || !["string", "integer"].includes(option.type)) {
+          return { ok: false, error: `command ${r.name} option ${option.name}: choices require a string or integer option` };
+        }
+        for (const choiceValue of option.choices) {
+          if (choiceValue === null || typeof choiceValue !== "object") {
+            return { ok: false, error: `command ${r.name} option ${option.name}: invalid choice` };
+          }
+          const choice = choiceValue as Record<string, unknown>;
+          const expected = option.type === "integer" ? "number" : "string";
+          if (typeof choice.name !== "string" || choice.name.length === 0 || typeof choice.value !== expected) {
+            return { ok: false, error: `command ${r.name} option ${option.name}: invalid choice` };
+          }
+        }
+      }
+      optionNames.add(option.name);
+    }
+    seen.add(r.name);
+    commands.push(item as PluginSlashCommandRegistration);
+  }
+  return { ok: true, value: commands };
+}
+
+function applyScheduleOverrides(
+  schedules: PluginScheduleRegistration[] | undefined,
+  config: PluginConfigStore,
+): PluginScheduleRegistration[] | undefined {
+  if (!schedules) return undefined;
+  const stored = config.read({ schedules: {} as Record<string, unknown> });
+  const overrides = stored.schedules;
+  return schedules.flatMap(registration => {
+    const value = overrides[registration.id];
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return [registration];
+    const override = value as Record<string, unknown>;
+    if (override.enabled === false) return [];
+    return [{
+      ...registration,
+      ...(typeof override.schedule === "string" ? { schedule: override.schedule } : {}),
+      ...(typeof override.timezone === "string" ? { timezone: override.timezone } : {}),
+    }];
+  });
+}
+
 function validateEvents(raw: unknown): { ok: true; value: PluginEventRegistration[] } | { ok: false; error: string } {
   if (raw === undefined) return { ok: true, value: [] };
   if (!Array.isArray(raw)) return { ok: false, error: "events must be an array" };
@@ -203,6 +303,7 @@ function extractModule(mod: Record<string, unknown>): PluginModule | null {
     manifest,
     tools: (c.tools as PluginToolRegistration[] | undefined) ?? [],
     schedules: c.schedules as PluginScheduleRegistration[] | undefined,
+    commands: c.commands as PluginSlashCommandRegistration[] | undefined,
     events: c.events as PluginEventRegistration[] | undefined,
   };
 }
@@ -232,6 +333,13 @@ async function loadOne(entry: PluginConfig): Promise<void> {
     logger.error({ plugin: manifest.name, resolvedPath }, "duplicate plugin manifest name; skipping");
     return;
   }
+  let pluginConfig: PluginConfigStore;
+  try {
+    pluginConfig = createPluginConfigStore(manifest.name);
+  } catch (err) {
+    logger.error({ plugin: manifest.name, resolvedPath, err }, "plugin config store could not be created; skipping");
+    return;
+  }
 
   const seenTools = new Set<string>();
   const acceptedTools: PluginToolRegistration[] = [];
@@ -244,9 +352,21 @@ async function loadOne(entry: PluginConfig): Promise<void> {
     seenTools.add(result.value.tool.name);
     acceptedTools.push(result.value);
   }
-  const scheduleResult = validateSchedules(parsed.schedules);
+  let configuredSchedules: PluginScheduleRegistration[] | undefined;
+  try {
+    configuredSchedules = applyScheduleOverrides(parsed.schedules, pluginConfig);
+  } catch (err) {
+    logger.error({ plugin: manifest.name, resolvedPath, configPath: pluginConfig.path, err }, "plugin config could not be read; skipping whole plugin");
+    return;
+  }
+  const scheduleResult = validateSchedules(configuredSchedules);
   if (!scheduleResult.ok) {
     logger.error({ plugin: manifest.name, resolvedPath, reason: scheduleResult.error }, "plugin schedule rejected; skipping whole plugin");
+    return;
+  }
+  const commandResult = validateCommands(parsed.commands);
+  if (!commandResult.ok) {
+    logger.error({ plugin: manifest.name, resolvedPath, reason: commandResult.error }, "plugin slash command rejected; skipping whole plugin");
     return;
   }
   const eventResult = validateEvents(parsed.events);
@@ -254,8 +374,8 @@ async function loadOne(entry: PluginConfig): Promise<void> {
     logger.error({ plugin: manifest.name, resolvedPath, reason: eventResult.error }, "plugin event rejected; skipping whole plugin");
     return;
   }
-  if (acceptedTools.length === 0 && scheduleResult.value.length === 0 && eventResult.value.length === 0) {
-    logger.error({ plugin: manifest.name, resolvedPath }, "plugin declares no tools, schedules, or events; skipping");
+  if (acceptedTools.length === 0 && scheduleResult.value.length === 0 && commandResult.value.length === 0 && eventResult.value.length === 0) {
+    logger.error({ plugin: manifest.name, resolvedPath }, "plugin declares no tools, schedules, commands, or events; skipping");
     return;
   }
 
@@ -272,6 +392,8 @@ async function loadOne(entry: PluginConfig): Promise<void> {
     toolNames: acceptedTools.map(r => r.tool.name),
     schedules: scheduleResult.value,
     events: eventResult.value,
+    commands: commandResult.value,
+    config: pluginConfig,
     tasks: new Map(),
     state: manifest.start ? "loaded" : "started",
     stopEligible: manifest.start === undefined,
@@ -281,6 +403,7 @@ async function loadOne(entry: PluginConfig): Promise<void> {
     resolvedPath,
     toolCount: acceptedTools.length,
     scheduleCount: scheduleResult.value.length,
+    commandCount: commandResult.value.length,
     eventCount: eventResult.value.length,
   }, "plugin loaded");
 }
@@ -333,15 +456,20 @@ async function runPluginCallback(
   }
 }
 
-function startPluginSchedules(plugin: LoadedPlugin): void {
+function runtimeFor(plugin: LoadedPlugin): PluginRuntimeContext {
   if (!runtime) throw new Error("plugin runtime context is unavailable");
+  return { ...runtime, config: plugin.config };
+}
+
+function startPluginSchedules(plugin: LoadedPlugin): void {
+  const pluginRuntime = runtimeFor(plugin);
   const created: ScheduledTask[] = [];
   try {
     for (const registration of plugin.schedules) {
       const key = `${plugin.manifest.name}:${registration.id}`;
       const task = schedule(
         registration.schedule,
-        () => void runPluginCallback(key, registration.timeoutMs, () => registration.run(runtime!)),
+        () => void runPluginCallback(key, registration.timeoutMs, () => registration.run(pluginRuntime)),
         registration.timezone ? { timezone: registration.timezone } : undefined,
       );
       plugin.tasks.set(registration.id, task);
@@ -367,7 +495,7 @@ async function stopPluginLifecycle(plugin: LoadedPlugin, reason: string, force =
   let timer: NodeJS.Timeout | undefined;
   try {
     await Promise.race([
-      Promise.resolve().then(() => plugin.manifest.stop!()),
+      Promise.resolve().then(() => plugin.manifest.stop!(runtimeFor(plugin))),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`plugin stop timed out after ${PLUGIN_STOP_TIMEOUT_MS}ms`)), PLUGIN_STOP_TIMEOUT_MS);
         timer.unref?.();
@@ -381,7 +509,7 @@ async function stopPluginLifecycle(plugin: LoadedPlugin, reason: string, force =
   }
 }
 
-export async function startPlugins(context: PluginRuntimeContext): Promise<void> {
+export async function startPlugins(context: PluginRuntimeBase): Promise<void> {
   runtime = context;
   if (!didLoad) await loadPlugins();
   for (const plugin of loaded) {
@@ -389,7 +517,7 @@ export async function startPlugins(context: PluginRuntimeContext): Promise<void>
     if (plugin.state === "loaded" && plugin.manifest.start) {
       let timer: NodeJS.Timeout | undefined;
       let timedOut = false;
-      const startPromise = Promise.resolve().then(() => plugin.manifest.start!());
+      const startPromise = Promise.resolve().then(() => plugin.manifest.start!(runtimeFor(plugin)));
       try {
         await Promise.race([
           startPromise,
@@ -446,8 +574,34 @@ export async function emitPluginEvent(payload: PluginEvent): Promise<void> {
   );
   await Promise.all(handlers.map(({ plugin, registration }) => {
     const key = `${plugin.manifest.name}:event:${registration.event}:${registration.id}`;
-    return runPluginCallback(key, registration.timeoutMs, () => registration.run(payload, runtime!));
+    return runPluginCallback(key, registration.timeoutMs, () => registration.run(payload, runtimeFor(plugin)));
   }));
+}
+
+export function getPluginSlashCommands(): PluginSlashCommandRegistration[] {
+  return loaded
+    .filter(plugin => plugin.state === "started")
+    .flatMap(plugin => plugin.commands);
+}
+
+export async function executePluginSlashCommand(
+  name: string,
+  args: Record<string, string | number | boolean | undefined>,
+  context: { userId: string; channelId: string; guildId?: string },
+): Promise<{ content: string; ephemeral: boolean } | null> {
+  const plugin = loaded.find(item => item.state === "started" && item.commands.some(command => command.name === name));
+  if (!plugin) return null;
+  const command = plugin.commands.find(item => item.name === name);
+  if (!command) return null;
+  const content = await command.execute(args, { ...context, config: plugin.config });
+  if (typeof content !== "string") throw new Error(`plugin slash command ${name} returned a non-string result`);
+  return { content, ephemeral: command.ephemeral !== false };
+}
+
+export function isPluginSlashCommandOwnerOnly(name: string): boolean | undefined {
+  const plugin = loaded.find(item => item.state === "started" && item.commands.some(command => command.name === name));
+  const command = plugin?.commands.find(item => item.name === name);
+  return command ? command.ownerOnly !== false : undefined;
 }
 
 export function getPluginRuntimeStatus(): PluginRuntimeStatus {
@@ -456,6 +610,7 @@ export function getPluginRuntimeStatus(): PluginRuntimeStatus {
       name: plugin.manifest.name,
       state: plugin.state,
       schedules: plugin.schedules.length,
+      commands: plugin.commands.length,
       events: plugin.events.length,
     })),
     activeSchedules: loaded.reduce((count, plugin) => count + plugin.tasks.size, 0),

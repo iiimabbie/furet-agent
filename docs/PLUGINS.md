@@ -1,6 +1,6 @@
 # Furet Plugin Guide
 
-Furet plugins are trusted local ECMAScript modules that can contribute private tools, recurring background jobs, and lifecycle event handlers without modifying the public core registry. They are intended for deployment-specific integrations such as home automation, private APIs, game helpers, internal databases, and personal workflows.
+Furet plugins are trusted local ECMAScript modules that can contribute private tools, recurring background jobs, Discord slash commands, and lifecycle event handlers without modifying the public core registry. They are intended for deployment-specific integrations such as home automation, private APIs, game helpers, internal databases, and personal workflows.
 
 > Plugins run inside the Furet process with the same operating-system privileges as Furet. They are not sandboxed. Only load code you trust.
 
@@ -135,7 +135,7 @@ export default {
 A plugin must export:
 
 - `manifest.name`, unique among loaded plugins.
-- At least one item in `tools`, `schedules`, or `events`.
+- At least one item in `tools`, `schedules`, `commands`, or `events`.
 - Tool `execute()` functions that always resolve to a string, including recoverable errors.
 
 This example uses `exposure: "match"`, so Furet offers the tool schema only when the request matches its keywords or aliases. Use `on-demand` for catalog-only tools and reserve `native` for small tools needed on nearly every turn.
@@ -210,8 +210,9 @@ Furet does not currently publish a separate plugin SDK package. Authors can use 
 
 - **Tool:** the model invokes an operation in response to a conversation or another agent task.
 - **Schedule:** Furet runs a recurring background callback declared by the plugin.
+- **Slash command:** Furet registers a Discord command declared by the plugin and routes executions back to it.
 - **Event:** Furet runs the plugin after a supported core event, currently `journal:completed`.
-- **Lifecycle:** `manifest.start()` opens clients or validates configuration; `manifest.stop()` performs graceful cleanup.
+- **Lifecycle:** `manifest.start(context)` opens clients or validates configuration; `manifest.stop(context)` performs graceful cleanup.
 
 A plugin may combine these capabilities. The complete example in the next section shows one tool, one schedule, and one event together; the reference sections explain every field and failure rule.
 
@@ -312,13 +313,14 @@ interface PluginModule {
   manifest: PluginManifest;
   tools?: PluginToolRegistration[];
   schedules?: PluginScheduleRegistration[];
+  commands?: PluginSlashCommandRegistration[];
   events?: PluginEventRegistration[];
 }
 
 interface PluginManifest {
   name: string;
-  start?: () => Promise<void> | void;
-  stop?: () => Promise<void> | void;
+  start?: (context: PluginRuntimeContext) => Promise<void> | void;
+  stop?: (context: PluginRuntimeContext) => Promise<void> | void;
 }
 
 interface PluginRuntimeContext {
@@ -330,10 +332,11 @@ interface PluginRuntimeContext {
       model?: string;
     },
   ): Promise<AgentResponse>;
+  config: PluginConfigStore;
 }
 ```
 
-At least one of `tools`, `schedules`, or `events` must contain a capability. The canonical TypeScript definitions are in `src/tools/plugin-types.ts`.
+At least one of `tools`, `schedules`, `commands`, or `events` must contain a capability. The canonical TypeScript definitions are in `src/tools/plugin-types.ts`.
 
 ### Manifest
 
@@ -404,6 +407,41 @@ interface PluginScheduleRegistration {
 - A thrown error is logged and isolated. It does not stop the scheduler or gateway.
 - `/status` shows the number of registered and currently running plugin jobs.
 
+## Discord slash commands
+
+Plugins may declare top-level Discord slash commands. Furet validates them during plugin loading, combines commands from every started plugin with the built-in command list, and registers the complete list when the Discord gateway becomes ready. Installing or updating a command therefore requires a gateway restart.
+
+```typescript
+interface PluginSlashCommandRegistration {
+  name: string;
+  description: string;
+  options?: Array<{
+    name: string;
+    description: string;
+    type: "string" | "integer" | "boolean" | "channel";
+    required?: boolean;
+    choices?: Array<{ name: string; value: string | number }>;
+  }>;
+  ownerOnly?: boolean;
+  ephemeral?: boolean;
+  execute(
+    args: Record<string, string | number | boolean | undefined>,
+    context: {
+      userId: string;
+      channelId: string;
+      guildId?: string;
+      config: PluginConfigStore;
+    },
+  ): Promise<string> | string;
+}
+```
+
+- Command names are globally unique across plugins. A name that conflicts with a built-in Furet command is not registered.
+- `ownerOnly` defaults to `true`; `ephemeral` defaults to `true`.
+- Handlers return the text Furet sends as the interaction result. Non-string results become recoverable command errors.
+- Options use Discord-native string, integer, boolean, and channel inputs. Static choices are supported for string and integer options.
+- Commands are suitable for plugin settings and explicit operations. They do not expose the agent tool registry or bypass tool authorization.
+
 ## Event handlers
 
 ```typescript
@@ -448,22 +486,48 @@ The wrapper is intended for private workflows such as post-processing a journal.
 
 ## Secrets and configuration
 
-Do not put private credentials in `config.example.yaml`, committed files, tool descriptions, error messages, or returned tool text.
+Every loaded plugin receives a private YAML configuration store at:
 
-A plugin can read deployment secrets from environment variables:
+```text
+workspace/config/plugins/<manifest.name>.yaml
+```
+
+The host creates an empty file when the plugin loads, uses mode `0600`, and replaces later writes atomically. Configuration stays outside managed source checkouts, so `/plugin update` cannot overwrite it and plugin repositories do not accidentally commit deployment values.
+
+```typescript
+const defaults = { channel_id: "", feature: { enabled: true } };
+
+const current = context.config.read(defaults);
+context.config.update(defaults, value => ({
+  ...value,
+  channel_id: "123456789012345678",
+}));
+```
+
+The reserved `schedules` object can override declarative jobs at the next gateway start:
+
+```yaml
+schedules:
+  daily-check:
+    enabled: true
+    schedule: "30 8 * * *"
+    timezone: "Asia/Taipei"
+```
+
+A plugin slash command can write this configuration and tell the owner to run `/restart`. Schedule expressions and timezones are revalidated while the plugin loads; invalid overrides fail that plugin without crashing the gateway.
+
+Do not put private credentials in `config.example.yaml`, committed files, tool descriptions, error messages, or returned tool text. Environment variables remain appropriate for secrets that should not be written to disk:
 
 ```javascript
 const apiToken = process.env.PRIVATE_SERVICE_TOKEN;
 if (!apiToken) throw new Error("PRIVATE_SERVICE_TOKEN is not configured");
 ```
 
-For larger private configuration, keep a separate ignored file outside the public repository and resolve its path explicitly.
-
 ## Loading and failure behavior
 
 Plugin loading is fail-soft and all-or-nothing:
 
-- Missing files, import errors, invalid manifests, duplicate plugin names, invalid tools, invalid schedules, unsupported events, and duplicate IDs are logged.
+- Missing files, import errors, invalid manifests, duplicate plugin names, invalid tools, invalid schedules, invalid slash commands, unsupported events, and duplicate IDs are logged.
 - One broken plugin does not prevent the gateway from starting.
 - If any declared capability is invalid, none of that plugin's capabilities are activated.
 - Tool names may be reserved during loading, but tools and background capabilities remain inactive until startup succeeds.
