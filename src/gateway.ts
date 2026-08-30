@@ -11,12 +11,37 @@ import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt, authoritativeNowBlock } f
 import { loadConfig } from "./config.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { chunkMessage } from "./utils/chunk-message.js";
-import { v2Message } from "./utils/discord-components.js";
+import { v2Edit, v2Message } from "./utils/discord-components.js";
 import { NO_REPLY_TOKEN, isNoReplySentinel } from "./utils/no-reply.js";
 import { resolveEmojiMarkup } from "./emoji.js";
 import { ROOT } from "./paths.js";
 import { stamp, today } from "./utils/time.js";
 import { emitPluginEvent, loadPlugins, startPlugins, stopPlugins } from "./tools/plugin-loader.js";
+
+async function pluginTextChannel(channelId: string) {
+  const client = getDiscordClient();
+  if (!client) throw new Error("Discord client is not initialized");
+  const channel = await client.channels.fetch(channelId);
+  if (!channel || !channel.isTextBased() || !("send" in channel)) {
+    throw new Error(`channel ${channelId} not found or not text-based`);
+  }
+  return { client, channel };
+}
+
+async function sendPluginText(input: { channelId: string; content: string }): Promise<{ messageId: string }> {
+  if (!input.content) throw new Error("plugin message content must not be empty");
+  const { channel } = await pluginTextChannel(input.channelId);
+  const message = await channel.send(v2Message(resolveEmojiMarkup(input.content)));
+  return { messageId: message.id };
+}
+
+async function editPluginText(input: { channelId: string; messageId: string; content: string }): Promise<void> {
+  if (!input.content) throw new Error("plugin message content must not be empty");
+  const { client, channel } = await pluginTextChannel(input.channelId);
+  const message = await channel.messages.fetch(input.messageId);
+  if (message.author.id !== client.user?.id) throw new Error("plugins can only edit the bot's own messages");
+  await message.edit(v2Edit(resolveEmojiMarkup(input.content)));
+}
 
 async function sendToChannel(channelId: string, text: string): Promise<string[]> {
   const client = getDiscordClient();
@@ -297,6 +322,10 @@ getDb();
 await loadPlugins();
 await startPlugins({
   ask: (prompt, options = {}) => ask(prompt, { ...options, trigger: "plugin" }),
+  messages: {
+    sendText: sendPluginText,
+    editText: editPluginText,
+  },
 });
 
 loadAndScheduleAll();

@@ -732,8 +732,14 @@ interface PluginEventRegistration {
   run: (payload: JournalCompletedEvent, context: PluginRuntimeContext) => Promise<void> | void;
 }
 
+interface PluginMessageTransport {
+  sendText(input: { channelId: string; content: string }): Promise<{ messageId: string }>;
+  editText(input: { channelId: string; messageId: string; content: string }): Promise<void>;
+}
+
 interface PluginRuntimeContext {
   ask(prompt: string, options?: { systemPrompt?: string; maxTurns?: number; model?: string }): Promise<AgentResponse>;
+  messages: PluginMessageTransport;
   config: PluginConfigStore;
 }
 ```
@@ -742,7 +748,8 @@ interface PluginRuntimeContext {
 - **Slash command 名稱全域唯一**：外掛之間撞名會拒絕後載入的外掛；與 Furet 內建指令撞名時主架構不註冊該外掛指令，內建行為保持權威。command 預設 owner-only、ephemeral，handler 回傳字串由主架構送出。
 - **Plugin manifest 名稱全域唯一**：它是 schedules／events 的 namespace，重名外掛整體跳過。
 - **`ownerOnly` 預設 true**：私有外掛工具預設鎖 owner；明確 `false` 才放給 `discord-other`。外掛背景 callback 本身是受信任的 in-process code，呼叫 `context.ask()` 時使用獨立的 `plugin` trigger，不冒充 Discord 使用者。
-- **Agent API 受限**：背景工作只拿到 `prompt`、`systemPrompt`、`maxTurns`、`model`；不能自行偽造 trigger、user ID、Discord session 或進度 callback。回傳完整 `AgentResponse`，附件是否送出由外掛自行決定。
+- **Agent API 受限**：背景工作只拿到 `prompt`、`systemPrompt`、`maxTurns`、`model`；不能自行偽造 trigger、user ID、Discord session 或進度 callback。回傳完整 `AgentResponse`。
+- **Plugin message transport**：背景工作與在 `manifest.start(context)` 初始化的外掛工具可保留 `context.messages`，以 `sendText()`／`editText()` 發送或更新指定頻道的純文字。主架構只提供 Components V2 傳輸與「僅能編輯 bot 自己訊息」的權限檢查，不把特定外掛的呈現格式或資料規則帶進核心，也不暴露 Discord client、token、raw interaction 或訊息讀取能力。
 
 ### 載入、排程與事件生命週期
 

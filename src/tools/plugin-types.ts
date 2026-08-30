@@ -26,10 +26,18 @@ export interface PluginAskOptions {
   model?: string;
 }
 
+/** Text-only Discord transport available to trusted plugin workflows. */
+export interface PluginMessageTransport {
+  sendText: (input: { channelId: string; content: string }) => Promise<{ messageId: string }>;
+  editText: (input: { channelId: string; messageId: string; content: string }) => Promise<void>;
+}
+
 /** Host capabilities passed to plugin lifecycle hooks and callbacks. */
 export interface PluginRuntimeContext {
   /** Run an isolated agent request under the trusted `plugin` trigger. */
   ask: (prompt: string, options?: PluginAskOptions) => Promise<AgentResponse>;
+  /** Send or edit a text message without exposing the Discord client or raw interactions. */
+  messages: PluginMessageTransport;
   /** Private YAML configuration at `workspace/config/plugins/<plugin>.yaml`. */
   config: PluginConfigStore;
 }
