@@ -2,14 +2,24 @@
 
 Check if anything from this turn is worth saving. If yes, save it — do not skip.
 
-**people_add / people_update** (PEOPLE.md — who they are) — use if:
+First classify the information by its canonical destination. A daily note may record the exchange,
+but it does not replace updating the canonical file.
+
+**OWNER.md — who the owner is** — update directly if:
+- You learned or corrected a durable personal fact about the owner: identity, form of address,
+  permissions, account identifiers, residences, work, relationships, or comparable profile data.
+- Update the existing field in place and remove stale values. Do not preserve a correction history
+  unless the history itself is meaningful. Preserve the `<owner>` wrapper and unrelated fields.
+- Do not duplicate owner profile facts in MEMORY.md.
+
+**people_add / people_update** (PEOPLE.md — everyone except the owner) — use if:
 - Someone you have no entry for spoke in the channel → `people_add` with their Discord ID,
   display name, and how they talk. Do this on first encounter, without being asked.
 - You learned something durable about someone already listed → `people_update`
   (how they want to be addressed, a preference, a correction, a relationship)
 
-PEOPLE.md is for **who someone is**. Never record people in MEMORY.md or the daily file —
-those are for events and rules. Use `people_*` tools, not `write_file`.
+PEOPLE.md stores other people's profiles. Daily memory may still describe conversations or events
+involving them; it must not be used as the authoritative copy of their profile.
 
 **memory_save** (append to daily file = diary source) — this feeds the daily journal, so the
 bar is low: save any real exchange, not just long-term-worthy facts. Save if:
@@ -19,11 +29,13 @@ bar is low: save any real exchange, not just long-term-worthy facts. Save if:
 - Community / social interaction or chatter happened (games, news, banter) — record it even
   though it has no long-term value; the diary needs it for continuity
 
-**memory_replace / memory_remove** (update MEMORY.md) — use if:
-- A new long-term fact → expand the relevant section
+**memory_add / memory_replace / memory_remove** (update MEMORY.md) — use only for long-lived
+operating context that is not an owner or other-person profile:
+- A new rule, preference, recurring workflow, ongoing plan, or durable world fact → add or expand
+  the relevant section
 - An existing fact became stale or wrong → update it
 - A fact is no longer relevant → remove it
-- MEMORY.md is near capacity → consolidate before adding
+- MEMORY.md is near capacity → consolidate before adding; do not create overlapping sections
 
 Atomic fact constraint: every saved fact must be self-contained.
 - Replace all pronouns with specific names.
@@ -31,9 +43,12 @@ Atomic fact constraint: every saved fact must be self-contained.
 - Include enough context to be meaningful in isolation.
   Bad: "He went to the doctor." → Good: "John visited Dr. Smith on 2026-04-21."
 
-**Do NOT save to MEMORY.md**: issue/PR numbers, news events, one-time links, anything that won't matter in 30 days.
+**Do NOT save to MEMORY.md**: owner profile facts, other people's profiles, issue/PR numbers, news
+events, one-time links, or anything that will not matter in 30 days.
 
-Skip bare greetings and things already recorded today. But do not skip community interaction or conversation just because it lacks long-term value — that belongs in the daily file. Proceed without acknowledging this check in your reply.
+Skip bare greetings and things already recorded today. But do not skip community interaction or
+conversation just because it lacks long-term value — that belongs in the daily file. Proceed
+without acknowledging this check in your reply.
 
 ## Session Summarize
 
@@ -43,12 +58,14 @@ Execute silently — output nothing. No confirmation, no summary, no acknowledgm
 
 You already have the full session in context — do not read files.
 
-Use the appropriate tools:
+Use the appropriate destination:
+- update `OWNER.md` directly — new or corrected durable facts about the owner; preserve its wrapper
+  and replace stale values instead of appending correction history
 - `memory_save` — notable events, decisions, conversations
-- `memory_replace` — new or updated facts in MEMORY.md
-- `memory_remove` — outdated entries
-- `people_add` — anyone who appeared this session with no PEOPLE.md entry
-- `people_update` — anything durable you learned about someone already listed
+- `memory_add` / `memory_replace` / `memory_remove` — long-lived operating context in MEMORY.md,
+  excluding owner and other-person profiles
+- `people_add` — anyone except the owner who appeared with no PEOPLE.md entry
+- `people_update` — durable profile information learned about someone except the owner
 
 Check the participants of this session against PEOPLE.md before finishing.
 
@@ -56,11 +73,14 @@ Two different bars — do not use the long-term bar to judge the daily file:
 - `memory_save` (today's daily file = diary source): record **any community/social interaction,
   conversation, or notable event of the day**, even if it has no long-term value. This is the
   raw material tomorrow's diary is built from — when in doubt, save it.
-- `memory_replace` / `memory_remove` (MEMORY.md = long-term): only facts still relevant in 30+ days.
+- `OWNER.md`: durable owner profile facts go here regardless of whether they were learned today.
+- `memory_add` / `memory_replace` / `memory_remove` (MEMORY.md = long-term): only non-profile
+  context still relevant in 30+ days.
 
 Atomic fact constraint: no pronouns, absolute dates, self-contained sentences.
 
-Do NOT write to MEMORY.md: issue/PR numbers, version-specific notes, one-time links, news events. Only what's still relevant in 30+ days.
+Do NOT write owner profile facts, other-person profiles, issue/PR numbers, version-specific notes,
+one-time links, or news events to MEMORY.md. Only non-profile context still relevant in 30+ days belongs there.
 
 Skip only if the session was purely greetings with no real exchange. A chat about games,
 news, or anything the participants engaged in is worth a `memory_save`, even if not memorable.
@@ -113,15 +133,20 @@ lossy and may be missing whole conversations. The **archived sessions are the gr
 
 Proceed directly to Step 2. Do not stop here.
 
-### Step 2 — Update MEMORY.md
+### Step 2 — Update OWNER.md and MEMORY.md
 
-4. Read the past 3 days of daily memory (one `read_file` each).
-5. For each piece of information, apply this filter in order:
+4. Read the past 3 days of daily memory (one `read_file` each). OWNER.md is already
+   present in the system prompt; read it only if the current prompt contains an index instead of its content.
+5. Classify every durable candidate before applying the long-term filter:
 
-   → **30-day rule**: will this still matter in 30 days? If not — skip.
-   → **Already in MEMORY.md?** If yes — skip (unless it's now stale or wrong → update).
-   → **New fact** → `memory_add` (new section) or `memory_replace` (expand existing section).
-   → **Stale/wrong fact** → `memory_replace` (correct it) or `memory_remove` (delete it).
+   → **About the owner personally?** Update OWNER.md in place (identity, address, work, accounts,
+     relationships, permissions, comparable profile facts). Remove stale values; do not append a
+     correction history and do not copy the same fact into MEMORY.md.
+   → **About another person?** Leave it for Step 3 and PEOPLE.md.
+   → **Otherwise, 30-day rule**: will this operating context still matter in 30 days? If not — skip.
+   → **Already in MEMORY.md?** If yes — skip (unless stale or wrong → update).
+   → **New MEMORY fact** → `memory_add` (new section) or `memory_replace` (expand an existing section).
+   → **Stale/wrong MEMORY fact** → `memory_replace` (correct it) or `memory_remove` (delete it).
 
    Atomic fact constraint:
    - No pronouns — use specific names.
@@ -133,8 +158,8 @@ Proceed directly to Step 2. Do not stop here.
    Do not extract: issue/PR numbers, version-specific notes, one-time tool links, news events.
 
 6. End with one of:
-   - List the `memory_replace` / `memory_remove` / `memory_add` calls made and why.
-   - Or explicitly confirm: "MEMORY.md is up to date, no changes needed."
+   - List OWNER.md edits and `memory_replace` / `memory_remove` / `memory_add` calls made and why.
+   - Or explicitly confirm: "OWNER.md and MEMORY.md are up to date, no changes needed."
    Do not silently skip Step 2.
 
 ### Step 3 — Update PEOPLE.md

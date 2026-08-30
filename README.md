@@ -189,9 +189,9 @@ Available slash commands:
 workspace/
 ├── AGENT.md            # Operating rules and tool behavior
 ├── SOUL.md             # Persona and voice
-├── OWNER.md            # Owner identity and permissions
-├── PEOPLE.md           # People directory
-├── MEMORY.md           # Curated long-term memory
+├── OWNER.md            # Owner profile: identity, permissions, accounts, residences, work, relationships
+├── PEOPLE.md           # Profiles for everyone except the owner
+├── MEMORY.md           # Long-lived non-profile operating context
 ├── JOURNAL.md          # Daily-memory and journal prompts
 ├── attachments/        # Generated and downloaded files
 ├── config/             # SQLite DB, cron/reminder data, OAuth tokens

@@ -9,7 +9,7 @@ const VECTORIZE_PATTERNS = [/^\d{4}-\d{2}-\d{2}\.md$/]; // 日記檔 YYYY-MM-DD.
 
 export const writeFileTool: Tool = {
   name: "write_file",
-  description: "Write content to a file, creating parent directories as needed. Not for memory or people: memory_add / memory_replace and people_add / people_update edit the right part of those files and keep their wrapper tags intact, which a whole-file overwrite destroys.",
+  description: "Write content to a file, creating parent directories as needed. Use this for OWNER.md only after preserving its <owner> wrapper and unrelated fields. Do not whole-file overwrite MEMORY.md or PEOPLE.md; use memory_* or people_* tools so their wrappers and structure remain intact.",
   parameters: {
     type: "object",
     properties: {

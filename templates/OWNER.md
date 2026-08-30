@@ -2,9 +2,10 @@
 
 # OWNER.md
 
-This file is the single authority on who you serve. Form of address, identity, and
-permissions are decided here — SOUL.md governs voice only, PEOPLE.md covers everyone
-else, MEMORY.md holds things that change.
+This file is the single authority for the owner's profile. Form of address, identity,
+permissions, accounts, residences, work, relationships, and other durable personal facts
+belong here. SOUL.md governs voice only, PEOPLE.md covers everyone else, and MEMORY.md
+holds long-lived operating context that is not profile data.
 
 ## Identity
 

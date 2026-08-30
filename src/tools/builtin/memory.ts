@@ -13,7 +13,7 @@ import type { Tool } from "../../types.js";
 
 export const memorySave: Tool = {
   name: "memory_save",
-  description: "Save a memory. Appends to today's memory file (workspace/memory/yyyy-MM-dd.md). Use this to remember user preferences, facts, decisions, or anything worth recalling in future conversations.",
+  description: "Append an event or conversation note to today's daily memory file (workspace/memory/yyyy-MM-dd.md) for diary continuity. This is not the canonical store for owner or people profiles and does not replace updating OWNER.md, PEOPLE.md, or long-term MEMORY.md when appropriate.",
   parameters: {
     type: "object",
     properties: {
@@ -145,7 +145,7 @@ function memoryUsageInfo(content: string): string {
 
 export const memoryAdd: Tool = {
   name: "memory_add",
-  description: "Append a new entry or section to long-term memory (MEMORY.md). Use when the content has no existing match in MEMORY.md. To update existing content, use memory_replace instead.",
+  description: "Append new long-lived operating context to MEMORY.md: rules, preferences, recurring workflows, ongoing plans, or durable world facts that are not owner/people profile data. Use only when no matching section exists; otherwise use memory_replace.",
   parameters: {
     type: "object",
     properties: {
@@ -175,7 +175,7 @@ export const memoryAdd: Tool = {
 
 export const memoryReplace: Tool = {
   name: "memory_replace",
-  description: "Replace text in long-term memory (MEMORY.md). Finds old_text by substring match and replaces with new_text. Use to update facts, add new entries to existing sections (replace the section content with an expanded version), or consolidate entries. MEMORY.md is already in your system prompt — no need to read it first.",
+  description: "Replace text in MEMORY.md to update or consolidate long-lived operating context. Do not use it for owner or other-person profile facts; those belong in OWNER.md or PEOPLE.md. MEMORY.md is already in your system prompt — no need to read it first.",
   parameters: {
     type: "object",
     properties: {
@@ -208,7 +208,7 @@ export const memoryReplace: Tool = {
 
 export const memoryRemove: Tool = {
   name: "memory_remove",
-  description: "Remove text from long-term memory (MEMORY.md). Finds and deletes the matching text. Use to clean up outdated or duplicate entries.",
+  description: "Remove outdated, duplicate, or misclassified text from MEMORY.md. Owner and other-person profile facts should be removed from MEMORY.md after their canonical files are updated.",
   parameters: {
     type: "object",
     properties: {
