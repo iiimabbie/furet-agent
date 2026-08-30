@@ -413,7 +413,7 @@ Tool call 執行時即時顯示進度（`→` / `✓` / `✗`），完成後替�
 Agent 在 tool call 之間產生的文字以 `> 引用` 併進同一則進度訊息（`ProgressEvent` 的 `text`）。
 這些文字只存在於 session，不在 `ask()` 的回傳值裡——回傳的是最後一輪、沒有 tool call 的文字。
 純過場，最終回覆會覆蓋整則訊息，不另發訊息。emit 點在執行工具之前，順序才與實際動作一致。
-單段上限 300 字，整則超過 3900 字截尾；`text` 事件不套用防抖。
+單段上限 300 字，整則超過 1900 字截尾，保留在 Discord V1 的 2000 字元上限內；`text` 事件不套用防抖。
 
 ### 靜默回覆哨符（`[no_reply]`）
 一般 Discord 對話與排程 / 提醒**共用同一套哨符判定**：當模型**最終**文字回覆整則就是
@@ -500,7 +500,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 | Reminder | 一次性提醒，每 15 秒輪詢 reminders.json 掃到期的，觸發後自動刪除 |
 | Journal | 每天固定時間：silent flush 所有 active session → 歸檔 → 重寫日記 → 更新 MEMORY.md |
 | Discord Bot | 有 token 且 enabled 時啟動 |
-| Plugins | 背景服務接流量前 `loadPlugins()` + `startPlugins()`；自動註冊外掛 schedules／events，shutdown 時 `stopPlugins()`（見 Plugin 系統） |
+| Plugins | 背景服務接流量前先 `loadPlugins()`；Discord 啟用時待 client ready 後才 `startPlugins()`，再註冊含外掛在內的 slash commands。Discord 停用或登入失敗時仍啟動非 Discord 能力，message transport 會明確拒絕。shutdown 時 `stopPlugins()`（見 Plugin 系統） |
 | PID file | `furet.pid`，啟動時殺掉舊進程確保單實例 |
 
 日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日記憶檔的 memory_save 筆記只當輔助。只讀每日檔會漏掉未被 memory_save 的對話（例如純聊天的社群互動）——flush 那步用的是「長期記憶」的門檻，而日記要的是連續性。兩道門檻因此分開：MEMORY.md 留 30 天長期濾網，每日檔／日記照收社群互動。
@@ -733,7 +733,10 @@ interface PluginEventRegistration {
 
 interface PluginMessageTransport {
   sendText(input: { channelId: string; content: string }): Promise<{ messageId: string }>;
-  editText(input: { channelId: string; messageId: string; content: string }): Promise<void>;
+  editText(input: { channelId: string; messageId: string; content: string }): Promise<{
+    messageId: string;
+    migrated: boolean;
+  }>;
 }
 
 interface PluginRuntimeContext {
@@ -748,12 +751,12 @@ interface PluginRuntimeContext {
 - **Plugin manifest 名稱全域唯一**：它是 schedules／events 的 namespace，重名外掛整體跳過。
 - **`ownerOnly` 預設 true**：私有外掛工具預設鎖 owner；明確 `false` 才放給 `discord-other`。外掛背景 callback 本身是受信任的 in-process code，呼叫 `context.ask()` 時使用獨立的 `plugin` trigger，不冒充 Discord 使用者。
 - **Agent API 受限**：背景工作只拿到 `prompt`、`systemPrompt`、`maxTurns`、`model`；不能自行偽造 trigger、user ID、Discord session 或進度 callback。回傳完整 `AgentResponse`。
-- **Plugin message transport**：背景工作與在 `manifest.start(context)` 初始化的外掛工具可保留 `context.messages`，以 `sendText()`／`editText()` 發送或更新指定頻道的純文字。主架構只提供標準 Discord V1 純文字傳輸與「僅能編輯 bot 自己訊息」的權限檢查，不把特定外掛的呈現格式或資料規則帶進核心，也不暴露 Discord client、token、raw interaction 或訊息讀取能力。
+- **Plugin message transport**：背景工作與在 `manifest.start(context)` 初始化的外掛工具可保留 `context.messages`，以 `sendText()`／`editText()` 發送或更新指定頻道的純文字。Discord 啟用時 `manifest.start()` 只會在 client ready 後執行，因此 lifecycle 當下即可使用 transport；Discord 停用或登入失敗時仍啟動外掛的非 Discord 能力，但 message operation 會明確回報 unavailable。主架構只提供標準 Discord V1 純文字傳輸與「僅能編輯 bot 自己訊息」的權限檢查，不把特定外掛的呈現格式或資料規則帶進核心，也不暴露 Discord client、token、raw interaction 或訊息讀取能力。transport 不做 Application Emoji 展開、ANSI 修復、Markdown 格式化或其他內容改寫，並明確拒絕超過 2000 字元的單則內容。`editText()` 對一般 V1 原地編輯；歷史 Components V2 則建立 V1 替代訊息、刪除舊訊息，回傳新的權威 `messageId` 與 `migrated: true`，外掛必須保存回傳 ID。
 
 ### 載入、排程與事件生命週期
 
 - `loadPlugins()`：驗證 manifest、tools、schedules、slash commands 與 events；任一能力無效就整個外掛不載入。schedule ID／event ID 必須是穩定安全字串，cron expression 先用 `node-cron.validate()` 檢查。目前事件白名單只有 `journal:completed`。
-- `startPlugins(runtime)`：先執行可選的 `manifest.start()`；成功後才啟用工具並註冊外掛 schedules。無 `start()` 的外掛也要等 gateway 呼叫 `startPlugins()` 才會真正開始背景排程，確保服務尚未準備好時不會提早觸發。
+- `startPlugins(runtime)`：先執行可選的 `manifest.start()`；成功後才啟用工具並註冊外掛 schedules。Discord 啟用時，gateway 先載入 manifest，待 Discord client ready 後才呼叫 `startPlugins()`，完成後才註冊 slash commands；因此 lifecycle 與剛啟動的 schedule 不會撞上尚未初始化的 client。無 `start()` 的外掛也要等 gateway 呼叫 `startPlugins()` 才會真正開始背景排程。Discord 停用或登入失敗時仍會呼叫 `startPlugins()`，但 message transport 會回傳明確的 unavailable error。
 - **Schedule ownership**：外掛 schedule 不寫入 `workspace/config/crons.json`，也不受 `cron_*` 工具修改；它跟著外掛設定與程序生命週期，自動啟動、自動停止。`workspace/config/plugins/<name>.yaml` 可覆寫排程，重啟後套用。`/status` 以 `Plugin Jobs` 顯示已註冊數與正在執行數，並列出 plugin state。
 - **Slash command ownership**：只有 `started` 外掛的 command 會在 Discord ready 時與內建清單一起註冊；安裝、更新或設定 command 後需重啟。輸入由主架構轉成純值 args，handler 只取得 caller/channel/guild 與自己的 config store，不接觸 Discord token 或原始 interaction。
 - **不重疊**：同一個 plugin job 上一輪尚未結束時，新 tick 會略過並記 warning。預設 10 分鐘後記 timeout warning；JavaScript callback 無法安全強殺，因此仍保持 running 狀態直到實際 settle，避免 timeout 後下一 tick 反而重疊。

@@ -331,7 +331,7 @@ function sessionIdForMessage(msg: Message): string {
     : `discord-dm-${msg.author.id}`;
 }
 
-export async function startBot(token: string): Promise<void> {
+export async function startBot(token: string, beforeCommandRegistration?: () => Promise<void>): Promise<void> {
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
@@ -342,36 +342,49 @@ export async function startBot(token: string): Promise<void> {
   });
 
   setDiscordClient(client);
+  let acceptingTraffic = false;
 
-  client.once(Events.ClientReady, async (c) => {
-    logger.info({ user: c.user.tag }, "discord bot ready");
-    console.log(`Discord bot logged in as ${c.user.tag}`);
+  const readyInitialization = new Promise<void>((resolve, reject) => {
+    client.once(Events.ClientReady, async (c) => {
+      try {
+        logger.info({ user: c.user.tag }, "discord bot ready");
+        console.log(`Discord bot logged in as ${c.user.tag}`);
 
-    const config = loadConfig();
-    c.user.setPresence({
-      status: (config.discord.status || "online") as PresenceStatusData,
-      activities: [{ name: config.discord.activity || "Burrowing around", type: ActivityType.Custom }],
+        const config = loadConfig();
+        c.user.setPresence({
+          status: (config.discord.status || "online") as PresenceStatusData,
+          activities: [{ name: config.discord.activity || "Burrowing around", type: ActivityType.Custom }],
+        });
+
+        await completePendingRestart(c.user.username).catch(err =>
+          logger.error({ err: (err as Error).message }, "failed to update restart completion message")
+        );
+
+        // Plugin lifecycle hooks may publish messages, so they start only after the
+        // Discord client is ready. Their commands are registered immediately after.
+        await beforeCommandRegistration?.();
+        const guildIds = c.guilds.cache.map(g => g.id);
+        await registerSlashCommands(token, c.user.id, guildIds);
+
+        // Sync Application Emojis into the in-memory cache. Failure is non-fatal: the
+        // helper logs the original Error and leaves the cache empty (safe no-emoji mode),
+        // so the bot never fails to start over this.
+        await syncApplicationEmojis(c);
+
+        if (!config.discord.owner_id) {
+          console.log("Discord owner is not configured. Run `furet onbord` locally, then use the bot in Discord.");
+          logger.warn("fresh install awaiting local onboarding command");
+        }
+        acceptingTraffic = true;
+        resolve();
+      } catch (err) {
+        reject(err);
+      }
     });
-
-    await completePendingRestart(c.user.username).catch(err =>
-      logger.error({ err: (err as Error).message }, "failed to update restart completion message")
-    );
-
-    const guildIds = c.guilds.cache.map(g => g.id);
-    await registerSlashCommands(token, c.user.id, guildIds);
-
-    // Sync Application Emojis into the in-memory cache. Failure is non-fatal: the
-    // helper logs the original Error and leaves the cache empty (safe no-emoji mode),
-    // so the bot never fails to start over this.
-    await syncApplicationEmojis(c);
-
-    if (!config.discord.owner_id) {
-      console.log("Discord owner is not configured. Run `furet onbord` locally, then use the bot in Discord.");
-      logger.warn("fresh install awaiting local onboarding command");
-    }
   });
 
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
+    if (!acceptingTraffic) return;
     try {
       const handled = await handleDiscordButtonInteraction(
         interaction,
@@ -742,6 +755,7 @@ export async function startBot(token: string): Promise<void> {
   });
 
   client.on(Events.MessageCreate, async (message) => {
+    if (!acceptingTraffic) return;
     // 自己的訊息不處理
     if (message.author.id === client.user?.id) return;
 
@@ -832,6 +846,7 @@ export async function startBot(token: string): Promise<void> {
   });
 
   await client.login(token);
+  await readyInitialization;
 }
 
 interface FormattedMessage {
@@ -900,7 +915,7 @@ export function renderProgress(lines: ProgressLine[]): string {
     })
     .join("\n");
   // 過場訊息，超長時保留尾端即可
-  return body.length > 3900 ? `${body.slice(-3900)}` : body;
+  return body.length > 1900 ? `${body.slice(-1900)}` : body;
 }
 
 // 靜默哨符判定集中在 utils/no-reply.ts，一般對話與排程共用同一套語意。

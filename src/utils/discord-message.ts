@@ -5,9 +5,19 @@ import {
   type InteractionReplyOptions,
   type MessageCreateOptions,
   type MessageEditOptions,
+  type Message,
 } from "discord.js";
 
 type MessageComponent = NonNullable<MessageCreateOptions["components"]>[number];
+
+export const DISCORD_TEXT_LIMIT = 2000;
+
+export function assertDiscordV1Text(content: string, label = "message content"): void {
+  if (!content) throw new Error(`${label} must not be empty`);
+  if (content.length > DISCORD_TEXT_LIMIT) {
+    throw new Error(`${label} exceeds Discord's ${DISCORD_TEXT_LIMIT}-character V1 limit (${content.length})`);
+  }
+}
 
 export interface DiscordMessageOptions {
   files?: readonly string[];
@@ -77,6 +87,56 @@ export function editPayload(content?: string, options: DiscordMessageOptions = {
     ...buildCore(content, options),
     ...(options.allowedMentions ? { allowedMentions: options.allowedMentions } : {}),
     ...(options.replaceAttachments ? { attachments: [] } : {}),
+  };
+}
+
+
+export interface TextMessageEditResult {
+  messageId: string;
+  migratedFromComponentsV2: boolean;
+  historicalMessageDeleted: boolean;
+}
+
+/**
+ * Edit a normal V1 message in place. Historical Components V2 messages cannot
+ * accept legacy `content`, so migrate them by creating a V1 replacement first
+ * and deleting the old message only after the replacement succeeds.
+ */
+export async function editTextMessageAsV1(
+  message: Message,
+  content: string | undefined,
+  options: DiscordMessageOptions = {},
+): Promise<TextMessageEditResult> {
+  if (!message.flags.has(MessageFlags.IsComponentsV2)) {
+    await message.edit(editPayload(content, options));
+    return {
+      messageId: message.id,
+      migratedFromComponentsV2: false,
+      historicalMessageDeleted: true,
+    };
+  }
+
+  const migratedContent = content ?? extractMessageText(message);
+  if (!migratedContent && !options.files?.length) {
+    throw new Error("historical Components V2 message has no text or files to migrate");
+  }
+
+  if (!("send" in message.channel)) {
+    throw new Error("historical Components V2 message channel cannot send a V1 replacement");
+  }
+  const replacement = await message.channel.send(messagePayload(migratedContent || undefined, options));
+  let historicalMessageDeleted = true;
+  try {
+    await message.delete();
+  } catch {
+    // The V1 replacement is already authoritative. Return its ID instead of
+    // throwing, so callers do not retry by creating another replacement.
+    historicalMessageDeleted = false;
+  }
+  return {
+    messageId: replacement.id,
+    migratedFromComponentsV2: true,
+    historicalMessageDeleted,
   };
 }
 

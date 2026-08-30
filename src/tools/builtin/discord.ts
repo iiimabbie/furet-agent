@@ -6,7 +6,7 @@ import { normalizeMentions, formatName } from "../../utils/discord-mentions.js";
 import { queueAttachment } from "../context.js";
 import { createDiscordButtonMessage, type DiscordButtonDefinition } from "../../discord-buttons.js";
 import { resolveEmojiMarkup } from "../../emoji.js";
-import { extractMessageAttachments, extractMessageText, editPayload, messagePayload } from "../../utils/discord-message.js";
+import { editTextMessageAsV1, extractMessageAttachments, extractMessageText, messagePayload } from "../../utils/discord-message.js";
 
 let discordClient: Client | null = null;
 
@@ -412,13 +412,17 @@ export const discordEditMessage: Tool = {
       const channel = await getTextChannel(channel_id);
       const msg = await channel.messages.fetch(message_id);
       if (msg.author.id !== getClient().user?.id) return "Error: can only edit own messages";
-      const existingText = extractMessageText(msg);
-      const nextText = content !== undefined ? resolveEmojiMarkup(content) : existingText;
-      await msg.edit(editPayload(nextText || undefined, {
+      const nextText = content !== undefined ? resolveEmojiMarkup(content) : undefined;
+      const result = await editTextMessageAsV1(msg, nextText, {
         files,
         replaceAttachments: Boolean(files?.length),
-      }));
-      return `Message edited`;
+      });
+      if (result.migratedFromComponentsV2 && !result.historicalMessageDeleted) {
+        return `Message migrated to V1 and edited (msg:${result.messageId}), but the historical message could not be deleted`;
+      }
+      return result.migratedFromComponentsV2
+        ? `Message migrated to V1 and edited (msg:${result.messageId})`
+        : `Message edited (msg:${result.messageId})`;
     } catch (err) {
       return `Error: ${(err as Error).message}`;
     }

@@ -29,7 +29,7 @@ export interface PluginAskOptions {
 /** Text-only Discord transport available to trusted plugin workflows. */
 export interface PluginMessageTransport {
   sendText: (input: { channelId: string; content: string }) => Promise<{ messageId: string }>;
-  editText: (input: { channelId: string; messageId: string; content: string }) => Promise<void>;
+  editText: (input: { channelId: string; messageId: string; content: string }) => Promise<{ messageId: string; migrated: boolean }>;
 }
 
 /** Host capabilities passed to plugin lifecycle hooks and callbacks. */

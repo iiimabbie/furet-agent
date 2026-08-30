@@ -11,7 +11,7 @@ import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt, authoritativeNowBlock } f
 import { loadConfig } from "./config.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { chunkMessage } from "./utils/chunk-message.js";
-import { editPayload, messagePayload } from "./utils/discord-message.js";
+import { assertDiscordV1Text, editTextMessageAsV1, messagePayload } from "./utils/discord-message.js";
 import { NO_REPLY_TOKEN, isNoReplySentinel } from "./utils/no-reply.js";
 import { resolveEmojiMarkup } from "./emoji.js";
 import { ROOT } from "./paths.js";
@@ -20,7 +20,7 @@ import { emitPluginEvent, loadPlugins, startPlugins, stopPlugins } from "./tools
 
 async function pluginTextChannel(channelId: string) {
   const client = getDiscordClient();
-  if (!client) throw new Error("Discord client is not initialized");
+  if (!client?.isReady()) throw new Error("Discord message transport is unavailable because the client is not ready");
   const channel = await client.channels.fetch(channelId);
   if (!channel || !channel.isTextBased() || !("send" in channel)) {
     throw new Error(`channel ${channelId} not found or not text-based`);
@@ -28,19 +28,33 @@ async function pluginTextChannel(channelId: string) {
   return { client, channel };
 }
 
+function assertPluginText(content: string): void {
+  assertDiscordV1Text(content, "plugin message content");
+}
+
 async function sendPluginText(input: { channelId: string; content: string }): Promise<{ messageId: string }> {
-  if (!input.content) throw new Error("plugin message content must not be empty");
+  assertPluginText(input.content);
   const { channel } = await pluginTextChannel(input.channelId);
-  const message = await channel.send(messagePayload(resolveEmojiMarkup(input.content)));
+  // Plugin output is already final. Do not expand emoji aliases or otherwise
+  // rewrite the string before handing it to Discord.
+  const message = await channel.send(messagePayload(input.content));
   return { messageId: message.id };
 }
 
-async function editPluginText(input: { channelId: string; messageId: string; content: string }): Promise<void> {
-  if (!input.content) throw new Error("plugin message content must not be empty");
+async function editPluginText(input: {
+  channelId: string;
+  messageId: string;
+  content: string;
+}): Promise<{ messageId: string; migrated: boolean }> {
+  assertPluginText(input.content);
   const { client, channel } = await pluginTextChannel(input.channelId);
   const message = await channel.messages.fetch(input.messageId);
   if (message.author.id !== client.user?.id) throw new Error("plugins can only edit the bot's own messages");
-  await message.edit(editPayload(resolveEmojiMarkup(input.content)));
+  const result = await editTextMessageAsV1(message, input.content);
+  if (!result.historicalMessageDeleted) {
+    logger.warn({ oldMessageId: input.messageId, newMessageId: result.messageId }, "historical V2 plugin message migrated but old message could not be deleted");
+  }
+  return { messageId: result.messageId, migrated: result.migratedFromComponentsV2 };
 }
 
 async function sendToChannel(channelId: string, text: string): Promise<string[]> {
@@ -316,32 +330,41 @@ logger.info("gateway start");
 import { getDb } from "./db.js";
 getDb();
 
-// Load & start private plugins BEFORE background services accept traffic (cron/reminder/
-// journal/Discord). A plugin's failure is isolated and logged inside the loader; it never
-// crashes the gateway.
+// Load plugin manifests before Discord connects so their slash-command definitions are
+// available. Lifecycle hooks and schedules start only after Discord is ready, which makes
+// context.messages safe to use during manifest.start().
 await loadPlugins();
-await startPlugins({
-  ask: (prompt, options = {}) => ask(prompt, { ...options, trigger: "plugin" }),
+
+const pluginRuntime = {
+  ask: (prompt: string, options = {}) => ask(prompt, { ...options, trigger: "plugin" as const }),
   messages: {
     sendText: sendPluginText,
     editText: editPluginText,
   },
-});
+};
+
+const config = loadConfig();
+if (config.discord.enabled && config.discord.token) {
+  try {
+    await startBot(config.discord.token, async () => {
+      await startPlugins(pluginRuntime);
+    });
+  } catch (err) {
+    logger.error({ err }, "discord bot failed to start");
+    console.error("Discord bot failed:", (err as Error).message);
+    // Keep non-Discord plugin capabilities available. Any use of messages gets a
+    // clear readiness error from pluginTextChannel().
+    await startPlugins(pluginRuntime);
+  }
+} else {
+  console.log("Discord bot disabled; plugin Discord message transport is unavailable.");
+  await startPlugins(pluginRuntime);
+}
 
 loadAndScheduleAll();
 console.log(`Loaded ${loadReminders().length} reminders`);
 scheduleJournal();
 startWatcher();
-
-const config = loadConfig();
-if (config.discord.enabled && config.discord.token) {
-  await startBot(config.discord.token).catch(err => {
-    logger.error({ err }, "discord bot failed to start");
-    console.error("Discord bot failed:", err.message);
-  });
-} else {
-  console.log("Discord bot disabled.");
-}
 
 console.log("Furet Gateway running. Press Ctrl+C to stop.");
 
