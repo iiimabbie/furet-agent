@@ -16,7 +16,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { DISCORD_BUTTONS_FILE, WORKSPACE_CONFIG_DIR } from "./paths.js";
 import { resolveEmojiMarkup } from "./emoji.js";
-import { editPayload, interactionPayload, messagePayload } from "./utils/discord-message.js";
+import { editPayload, editTextMessageAsV1, interactionPayload, messagePayload } from "./utils/discord-message.js";
 
 const CUSTOM_ID_PREFIX = "furet_button";
 const MAX_CONTENT_LENGTH = 1600;
@@ -187,10 +187,32 @@ async function fetchButtonMessage(client: Client, record: DiscordButtonMessageRe
 
 async function editButtonMessage(client: Client, record: DiscordButtonMessageRecord): Promise<void> {
   const message = await fetchButtonMessage(client, record);
-  await message.edit(editPayload(resolveEmojiMarkup(renderContent(record)), {
+  const result = await editTextMessageAsV1(message, resolveEmojiMarkup(renderContent(record)), {
     components: buildComponents(record),
     allowedMentions: { parse: [] },
-  }));
+  });
+
+  if (result.messageId !== record.messageId) {
+    const oldMessageId = record.messageId;
+    record.messageId = result.messageId;
+    await withButtonLock(async () => {
+      const store = await loadStore();
+      const current = store.messages.find(item => item.id === record.id);
+      if (!current) return;
+      current.messageId = result.messageId;
+      await saveStore(store);
+    });
+    logger.info(
+      { buttonMessageId: record.id, oldMessageId, newMessageId: result.messageId },
+      "historical V2 button message migrated to V1",
+    );
+  }
+  if (!result.historicalMessageDeleted) {
+    logger.warn(
+      { buttonMessageId: record.id, oldMessageId: message.id, newMessageId: result.messageId },
+      "historical V2 button message migrated but old message could not be deleted",
+    );
+  }
 }
 
 function parseCustomId(customId: string): { recordId: string; buttonId: string; modal: boolean } | undefined {

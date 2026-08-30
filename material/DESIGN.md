@@ -191,13 +191,15 @@ PEOPLE.md 的 owner 條目、MEMORY.md 的 Owner 段。三處都不具權威，�
 更關鍵的是 PEOPLE.md 有大小門檻：超過 `peopleInlineLimit` 就退化成一行指標，
 owner 的稱呼規則會整個從 prompt 消失，而程式不會察覺。
 
-`OWNER.md` 因此**不套大小門檻**——它只放不會過期的身分資訊，本來就不該長到需要設限；
-會長大的是 PEOPLE.md 和 MEMORY.md。職責嚴格劃分：
+`OWNER.md` 因此**不套大小門檻**——它是單一 owner 的精簡權威檔，本來就不該長到需要設限；
+會長大的是 PEOPLE.md 和 MEMORY.md。OWNER 的地址、工作或關係等資料可以改變，但應在同一欄位
+原地更新並移除舊值，不把修正歷史或重複副本散到 MEMORY.md。職責嚴格劃分：
 
 - `SOUL.md` 只管人格語氣，不寫稱呼
-- `OWNER.md` 是稱呼與身分的唯一權威
-- `PEOPLE.md` 只放 owner 以外的人
-- `MEMORY.md` 只放會變動的事（行程、近況、開發方向）
+- `OWNER.md` 是 owner 稱呼、身分、帳號、住處、工作、關係、權限等個人檔案的唯一權威
+- `PEOPLE.md` 只放 owner 以外的人物檔案
+- `MEMORY.md` 只放非人物檔案的長期操作脈絡：規則、偏好、反覆流程、持續計畫與世界事實
+- `memory/yyyy-MM-dd.md` 記錄當天發生的事；可記「今天得知某資料」，但不能取代權威檔更新
 
 `soul_guardian` 一併監控 OWNER.md。
 
@@ -309,7 +311,7 @@ agent 要能在非 owner 講話時記下對方是誰，鎖起來等於永遠記�
 
 觸發時機寫在 `JOURNAL.md` 的三個 hook 裡（Memory Hook / Session Summarize / Daily Journal Step 3），
 以及 AGENT.md 的 User Hierarchy 一節。三者都明確劃分：
-**PEOPLE.md 記「人是誰」，MEMORY.md 記規則與長期事實，日記記發生了什麼**。
+**OWNER.md 記 owner 是誰，PEOPLE.md 記其他人是誰，MEMORY.md 記非人物檔案的規則與長期脈絡，日記記發生了什麼**。
 
 ### PEOPLE.md 的大小門檻
 
@@ -406,6 +408,7 @@ Furet 的 Discord 輸出統一使用標準 V1 訊息 payload：
 - 本機檔案以 Discord V1 的一般 attachments 上傳；圖片和其他檔案都由 Discord 的原生附件顯示處理。
 - Discord 輸入解析涵蓋一般 `message.content`、Embed 的 author/title/description/fields/footer，以及一般 uploads 與 Embed image/thumbnail。為了讓重啟前的歷史 component-only 訊息仍可被引用，`extractMessageText()` 另有唯讀遞迴文字相容解析；它不參與任何新訊息輸出。極少數重啟中的舊 interaction response 若被 Discord 拒絕以 `content` 編輯，會只針對該既存 response 以原格式完成「重啟成功」更新。`discord_fetch_message`、channel history、Forum starter、回覆圖片與輸入格式化共用 `extractMessageText()` / `extractMessageAttachments()`。
 - Modal、autocomplete、reaction、typing 與 pin 不屬於 message payload。
+- 按鈕狀態更新也共用 V1 migration policy：若按鈕訊息是歷史 Components V2，第一次狀態更新會建立帶相同 custom IDs 的 V1 替代訊息、刪除舊訊息，並把新的 message ID 寫回按鈕狀態檔；工具動作只會在遷移成功後執行。
 
 ### 漸進式進度訊息
 Tool call 執行時即時顯示進度（`→` / `✓` / `✗`），完成後替換成最終回覆。防抖 1 秒避免 Discord rate limit。
@@ -778,13 +781,14 @@ interface PluginRuntimeContext {
 
 ## 記憶系統
 
-### 三層設計
+### 四層設計
 
 | 層 | 檔案 | 用途 |
 |----|------|------|
-| 長期記憶 | `workspace/MEMORY.md` | 持久事實，自動載入 system prompt。有字數上限（config `memoryCharLimit`），滿了需整合 |
-| 每日記憶 | `workspace/memory/yyyy-MM-dd.md` | 當日事件、對話紀錄 |
-| 人物檔 | `workspace/PEOPLE.md` | 人物權威資料（名字、Discord ID、關係） |
+| Owner 檔 | `workspace/OWNER.md` | owner 個人資料的唯一權威：稱呼、身分、帳號、住處、工作、關係、權限；變更時原地更新 |
+| 長期記憶 | `workspace/MEMORY.md` | 非人物檔案的規則、偏好、流程、持續計畫與世界事實；有字數上限（config `memoryCharLimit`），滿了需整合 |
+| 每日記憶 | `workspace/memory/yyyy-MM-dd.md` | 當日事件、對話與修正紀錄；是日記來源，不代替其他權威檔 |
+| 人物檔 | `workspace/PEOPLE.md` | owner 以外人物的權威資料（名字、Discord ID、關係、稱呼與權限） |
 
 ### 儲存層
 
@@ -802,9 +806,9 @@ interface PluginRuntimeContext {
 
 ### 記憶工具
 
-- `memory_save`：追加到當日檔案 + 存 SQLite 向量
+- `memory_save`：追加事件／對話筆記到當日檔案 + 存 SQLite 向量；不是 owner／人物檔案或 MEMORY.md 的替代品
 - `memory_search`：語意搜尋（sqlite-vec KNN）+ 全文搜尋（FTS5）
-- `memory_replace/remove`：操作 MEMORY.md，同時重建 MEMORY.md 的向量
+- `memory_add/replace/remove`：操作非人物檔案的長期脈絡 MEMORY.md，同時重建 MEMORY.md 的向量
 - `session_search`：FTS5 搜尋歸檔的歷史對話
 - 自動召回：每次對話時用 user message 做語意搜尋，結果注入 system prompt
 
