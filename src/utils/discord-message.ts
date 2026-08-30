@@ -1,0 +1,190 @@
+import { basename, extname } from "node:path";
+import {
+  AttachmentBuilder,
+  MessageFlags,
+  type InteractionReplyOptions,
+  type MessageCreateOptions,
+  type MessageEditOptions,
+} from "discord.js";
+
+type MessageComponent = NonNullable<MessageCreateOptions["components"]>[number];
+
+export interface DiscordMessageOptions {
+  files?: readonly string[];
+  components?: readonly MessageComponent[];
+  allowedMentions?: MessageCreateOptions["allowedMentions"];
+  reply?: MessageCreateOptions["reply"];
+  ephemeral?: boolean;
+  replaceAttachments?: boolean;
+}
+
+interface MessageCorePayload {
+  content?: string;
+  components?: readonly MessageComponent[];
+  files?: AttachmentBuilder[];
+}
+
+function uniqueAttachmentName(path: string, used: Set<string>): string {
+  const original = basename(path) || "attachment";
+  const extension = extname(original);
+  const stem = extension ? original.slice(0, -extension.length) : original;
+  let candidate = original;
+  let suffix = 2;
+  while (used.has(candidate)) {
+    candidate = `${stem}-${suffix}${extension}`;
+    suffix++;
+  }
+  used.add(candidate);
+  return candidate;
+}
+
+function buildCore(content: string | undefined, options: DiscordMessageOptions): MessageCorePayload {
+  const payload: MessageCorePayload = {};
+  if (content !== undefined) payload.content = content;
+  if (options.components !== undefined) payload.components = options.components;
+
+  if (!options.files?.length) return payload;
+  if (options.files.length > 10) throw new Error("Discord messages support at most 10 attachments");
+
+  const usedNames = new Set<string>();
+  payload.files = options.files.map(path =>
+    new AttachmentBuilder(path).setName(uniqueAttachmentName(path, usedNames)),
+  );
+  return payload;
+}
+
+/** Build a standard Discord (legacy/V1) channel-message payload. */
+export function messagePayload(content?: string, options: DiscordMessageOptions = {}): MessageCreateOptions {
+  return {
+    ...buildCore(content, options),
+    ...(options.allowedMentions ? { allowedMentions: options.allowedMentions } : {}),
+    ...(options.reply ? { reply: options.reply } : {}),
+  };
+}
+
+/** Build a standard Discord (legacy/V1) interaction response payload. */
+export function interactionPayload(content?: string, options: DiscordMessageOptions = {}): InteractionReplyOptions {
+  return {
+    ...buildCore(content, options),
+    ...(options.ephemeral ? { flags: MessageFlags.Ephemeral } : {}),
+    ...(options.allowedMentions ? { allowedMentions: options.allowedMentions } : {}),
+  };
+}
+
+/** Build a standard Discord (legacy/V1) message edit payload. */
+export function editPayload(content?: string, options: DiscordMessageOptions = {}): MessageEditOptions {
+  return {
+    ...buildCore(content, options),
+    ...(options.allowedMentions ? { allowedMentions: options.allowedMentions } : {}),
+    ...(options.replaceAttachments ? { attachments: [] } : {}),
+  };
+}
+
+/** Raw JSON body for direct Discord webhook PATCH requests. */
+export function webhookEditBody(content: string): Record<string, unknown> {
+  return { content };
+}
+
+/**
+ * Compatibility body for an interaction response created before the V1 rollback.
+ * This is deliberately limited to replacing one historical Text Display during
+ * restart completion; all current outbound message paths use `content` payloads.
+ */
+export function legacyComponentWebhookEditBody(content: string): Record<string, unknown> {
+  return {
+    components: [{ type: 10, content }],
+    flags: 1 << 15,
+  };
+}
+
+/** Read all user-visible text from standard messages, embeds, and historical component-only messages. */
+export function extractMessageText(message: {
+  content?: string | null;
+  embeds?: readonly { toJSON?: () => unknown }[];
+  components?: readonly { toJSON?: () => unknown }[];
+}): string {
+  const texts: string[] = [];
+  const addText = (value: unknown): void => {
+    if (typeof value === "string" && value.trim()) texts.push(value);
+  };
+
+  addText(message.content);
+
+  for (const embedValue of message.embeds ?? []) {
+    const embed = (embedValue.toJSON ? embedValue.toJSON() : embedValue) as {
+      author?: { name?: unknown };
+      title?: unknown;
+      description?: unknown;
+      fields?: unknown;
+      footer?: { text?: unknown };
+    };
+    addText(embed.author?.name);
+    addText(embed.title);
+    addText(embed.description);
+    if (Array.isArray(embed.fields)) {
+      for (const fieldValue of embed.fields) {
+        if (!fieldValue || typeof fieldValue !== "object") continue;
+        const field = fieldValue as { name?: unknown; value?: unknown };
+        addText(field.name);
+        addText(field.value);
+      }
+    }
+    addText(embed.footer?.text);
+  }
+
+  // Read-only backwards compatibility for messages emitted before all outbound
+  // paths returned to V1. No outbound builder calls this traversal or produces
+  // component-only payloads.
+  const visitHistoricalComponent = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    const component = value as { type?: unknown; content?: unknown; components?: unknown };
+    if (component.type === 10) addText(component.content);
+    if (Array.isArray(component.components)) {
+      for (const child of component.components) visitHistoricalComponent(child);
+    }
+  };
+  for (const component of message.components ?? []) {
+    visitHistoricalComponent(component.toJSON ? component.toJSON() : component);
+  }
+
+  return texts.join("\n");
+}
+
+export interface ExtractedMessageAttachment {
+  url: string;
+  name?: string;
+  contentType?: string;
+}
+
+/** Read user-visible attachments from standard Discord uploads and embeds. */
+export function extractMessageAttachments(message: {
+  attachments?: { values?: () => Iterable<{ url: string; name?: string | null; contentType?: string | null }> };
+  embeds?: readonly { toJSON?: () => unknown }[];
+}): ExtractedMessageAttachment[] {
+  const results: ExtractedMessageAttachment[] = [];
+  const seen = new Set<string>();
+  const add = (url: unknown, name?: unknown, contentType?: unknown): void => {
+    if (typeof url !== "string" || seen.has(url)) return;
+    seen.add(url);
+    results.push({
+      url,
+      ...(typeof name === "string" ? { name } : {}),
+      ...(typeof contentType === "string" ? { contentType } : {}),
+    });
+  };
+
+  const attachmentValues = message.attachments?.values?.();
+  if (attachmentValues) {
+    for (const attachment of attachmentValues) add(attachment.url, attachment.name, attachment.contentType);
+  }
+
+  for (const embedValue of message.embeds ?? []) {
+    const embed = (embedValue.toJSON ? embedValue.toJSON() : embedValue) as {
+      image?: { url?: unknown };
+      thumbnail?: { url?: unknown };
+    };
+    add(embed.image?.url);
+    add(embed.thumbnail?.url);
+  }
+  return results;
+}

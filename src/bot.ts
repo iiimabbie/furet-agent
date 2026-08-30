@@ -14,7 +14,7 @@ import { runWithContext } from "./tools/context.js";
 import { handleDiscordButtonInteraction } from "./discord-buttons.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { chunkMessage } from "./utils/chunk-message.js";
-import { extractMessageAttachments, extractMessageText, v2Edit, v2Interaction, v2Message, v2WebhookBody } from "./utils/discord-components.js";
+import { extractMessageAttachments, extractMessageText, editPayload, interactionPayload, legacyComponentWebhookEditBody, messagePayload, webhookEditBody } from "./utils/discord-message.js";
 import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
 import { stamp } from "./utils/time.js";
 import { isNoReplySentinel } from "./utils/no-reply.js";
@@ -200,7 +200,7 @@ async function savePendingRestart(applicationId: string, token: string): Promise
   await writeFile(RESTART_STATE_FILE, JSON.stringify(state), { mode: 0o600 });
 }
 
-async function completePendingRestart(): Promise<void> {
+async function completePendingRestart(botName: string): Promise<void> {
   let state: PendingRestart;
   try {
     state = JSON.parse(await readFile(RESTART_STATE_FILE, "utf8")) as PendingRestart;
@@ -221,17 +221,36 @@ async function completePendingRestart(): Promise<void> {
   }
 
   const url = `https://discord.com/api/v10/webhooks/${encodeURIComponent(state.applicationId)}/${encodeURIComponent(state.token)}/messages/@original`;
-  const response = await fetch(url, {
+  const completion = `${botName} says Hi again 🫶🏻`;
+  let response = await fetch(url, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(v2WebhookBody("重啟成功，已經回來了。")),
+    body: JSON.stringify(webhookEditBody(completion)),
   });
+
+  // A restart started before the V1 rollback has a component-only interaction
+  // response. Discord rejects `content` for that historical response, so retry
+  // only this completion edit with its original representation. New /restart
+  // responses never take this branch.
   if (!response.ok) {
-    throw new Error(`Discord interaction edit failed: ${response.status} ${await response.text()}`);
+    const failure = await response.text();
+    if (!failure.includes("MESSAGE_CANNOT_USE_LEGACY_FIELDS_WITH_COMPONENTS_V2")) {
+      throw new Error(`Discord interaction edit failed: ${response.status} ${failure}`);
+    }
+    response = await fetch(url, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(legacyComponentWebhookEditBody(completion)),
+    });
+    if (!response.ok) {
+      throw new Error(`Discord historical interaction edit failed: ${response.status} ${await response.text()}`);
+    }
+    logger.info("pending historical restart message updated successfully");
+  } else {
+    logger.info("pending restart message updated successfully");
   }
 
   await unlink(RESTART_STATE_FILE).catch(() => {});
-  logger.info("pending restart message updated successfully");
 }
 
 /** 讓 process 退出，由 systemd (Restart=always) 負責重啟。 */
@@ -302,7 +321,7 @@ async function parseGitHubPluginSource(source: string): Promise<{ repository: st
 }
 
 function truncateInteractionReply(content: string): string {
-  const limit = 3_900;
+  const limit = 1_900;
   return content.length <= limit ? content : `${content.slice(0, limit)}\n…output truncated`;
 }
 
@@ -334,7 +353,7 @@ export async function startBot(token: string): Promise<void> {
       activities: [{ name: config.discord.activity || "Burrowing around", type: ActivityType.Custom }],
     });
 
-    await completePendingRestart().catch(err =>
+    await completePendingRestart(c.user.username).catch(err =>
       logger.error({ err: (err as Error).message }, "failed to update restart completion message")
     );
 
@@ -371,7 +390,7 @@ export async function startBot(token: string): Promise<void> {
     } catch (err) {
       logger.error({ err, customId: "customId" in interaction ? interaction.customId : undefined }, "Discord button interaction failed");
       if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-        await interaction.reply(v2Interaction("處理按鈕互動時發生錯誤，請先不要重複操作；可查看原訊息狀態或日誌確認結果。", { ephemeral: true })).catch(() => {});
+        await interaction.reply(interactionPayload("處理按鈕互動時發生錯誤，請先不要重複操作；可查看原訊息狀態或日誌確認結果。", { ephemeral: true })).catch(() => {});
       }
       return;
     }
@@ -412,7 +431,7 @@ export async function startBot(token: string): Promise<void> {
     // Before the local installer records owner_id, reject every Discord command.
     // This is intentionally before any session write or owner-only command check.
     if (!loadConfig().discord.owner_id) {
-      await interaction.reply(v2Interaction("請在主機本機執行 `furet onbord` 完成 Discord owner 設定。", { ephemeral: true }));
+      await interaction.reply(interactionPayload("請在主機本機執行 `furet onbord` 完成 Discord owner 設定。", { ephemeral: true }));
       return;
     }
 
@@ -421,12 +440,12 @@ export async function startBot(token: string): Promise<void> {
       : isPluginSlashCommandOwnerOnly(interaction.commandName);
     if (pluginOwnerOnly !== undefined) {
       if (pluginOwnerOnly && interaction.user.id !== loadConfig().discord.owner_id) {
-        await interaction.reply(v2Interaction(OWNER_ONLY_MSG, { ephemeral: true }));
+        await interaction.reply(interactionPayload(OWNER_ONLY_MSG, { ephemeral: true }));
         return;
       }
       const registration = getPluginSlashCommands().find(command => command.name === interaction.commandName);
       if (!registration) {
-        await interaction.reply(v2Interaction("外掛指令目前不可用", { ephemeral: true }));
+        await interaction.reply(interactionPayload("外掛指令目前不可用", { ephemeral: true }));
         return;
       }
       const args = Object.fromEntries(
@@ -442,11 +461,11 @@ export async function startBot(token: string): Promise<void> {
         });
         if (!result) throw new Error("外掛指令目前不可用");
         const text = truncateInteractionReply(fixMarkdownLinks(resolveEmojiMarkup(result.content)));
-        await interaction.editReply(v2Edit(text));
+        await interaction.editReply(editPayload(text));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error({ err, command: interaction.commandName, user: interaction.user.id }, "plugin slash command failed");
-        await interaction.editReply(v2Edit(`外掛指令失敗：${msg}`));
+        await interaction.editReply(editPayload(`外掛指令失敗：${msg}`));
       }
       return;
     }
@@ -454,7 +473,7 @@ export async function startBot(token: string): Promise<void> {
     if (interaction.commandName === "new") {
       const config = loadConfig();
       if (isWorkspaceUnconfigured() && interaction.user.id !== config.discord.owner_id) {
-        await interaction.reply(v2Interaction("首次設定尚未完成，只有已設定的 owner 能重開 onboarding session。", { ephemeral: true }));
+        await interaction.reply(interactionPayload("首次設定尚未完成，只有已設定的 owner 能重開 onboarding session。", { ephemeral: true }));
         return;
       }
       const sessionId = interaction.guild
@@ -496,10 +515,10 @@ export async function startBot(token: string): Promise<void> {
           const response = await ask(null, { session, systemPrompt: channelContext, trigger: "discord-owner" });
           const text = response.text || "（新對話開始）";
           const formatted = fixMarkdownLinks(resolveEmojiMarkup(text));
-          const chunks = chunkMessage(formatted, 4000);
-          await interaction.editReply(v2Edit(chunks[0]));
+          const chunks = chunkMessage(formatted, 2000);
+          await interaction.editReply(editPayload(chunks[0]));
           for (let i = 1; i < chunks.length; i++) {
-            await interaction.followUp(v2Interaction(chunks[i], { ephemeral: true }));
+            await interaction.followUp(interactionPayload(chunks[i], { ephemeral: true }));
           }
         } catch (err) {
           logger.error({ err: (err as Error).message }, "/new failed");
@@ -548,16 +567,16 @@ export async function startBot(token: string): Promise<void> {
     if (interaction.commandName === "restart") {
       const config = loadConfig();
       if (config.discord.owner_id && interaction.user.id !== config.discord.owner_id) {
-        await interaction.reply(v2Interaction(OWNER_ONLY_MSG, { ephemeral: true }));
+        await interaction.reply(interactionPayload(OWNER_ONLY_MSG, { ephemeral: true }));
         return;
       }
       logger.info({ user: interaction.user.id }, "/restart triggered");
-      await interaction.reply(v2Interaction("重啟中... 等個幾秒就回來。", { ephemeral: true }));
+      await interaction.reply(interactionPayload("Restarting... wait for me!", { ephemeral: true }));
       try {
         await savePendingRestart(interaction.applicationId, interaction.token);
       } catch (err) {
         logger.error({ err: (err as Error).message }, "failed to save pending restart state");
-        await interaction.editReply(v2Edit("重啟取消：無法保存重啟狀態。"));
+        await interaction.editReply(editPayload("重啟取消：無法保存重啟狀態。"));
         return;
       }
       selfRestart();
@@ -566,12 +585,12 @@ export async function startBot(token: string): Promise<void> {
     if (interaction.commandName === "model") {
       const config = loadConfig();
       if (config.discord.owner_id && interaction.user.id !== config.discord.owner_id) {
-        await interaction.reply(v2Interaction(OWNER_ONLY_MSG, { ephemeral: true }));
+        await interaction.reply(interactionPayload(OWNER_ONLY_MSG, { ephemeral: true }));
         return;
       }
       const name = interaction.options.getString("name", true);
       if (config.llm.modelList.length > 0 && !config.llm.modelList.includes(name)) {
-        await interaction.reply(v2Interaction(`不在 modelList 裡：\`${name}\``, { ephemeral: true }));
+        await interaction.reply(interactionPayload(`不在 modelList 裡：\`${name}\``, { ephemeral: true }));
         return;
       }
       const effort = (interaction.options.getString("effort") ?? "default") as ReasoningEffort;
@@ -579,7 +598,7 @@ export async function startBot(token: string): Promise<void> {
       const prevEffort = config.llm.reasoningEffort;
       setModelConfig(name, effort);
       logger.info({ prev, next: name, prevEffort, effort, user: interaction.user.id }, "/model switched");
-      await interaction.reply(v2Interaction(
+      await interaction.reply(interactionPayload(
         `模型已切換：\`${prev} (${prevEffort})\` → \`${name} (${effort})\``,
         { ephemeral: true },
       ));
@@ -588,32 +607,32 @@ export async function startBot(token: string): Promise<void> {
     if (interaction.commandName === "google-auth") {
       const config = loadConfig();
       if (config.discord.owner_id && interaction.user.id !== config.discord.owner_id) {
-        await interaction.reply(v2Interaction(OWNER_ONLY_MSG, { ephemeral: true }));
+        await interaction.reply(interactionPayload(OWNER_ONLY_MSG, { ephemeral: true }));
         return;
       }
       const callback = interaction.options.getString("callback");
       if (!callback) {
         const authed = getAuthClient();
         if (authed) {
-          await interaction.reply(v2Interaction("Google API 已經授權過了。", { ephemeral: true }));
+          await interaction.reply(interactionPayload("Google API 已經授權過了。", { ephemeral: true }));
           return;
         }
         const url = getAuthUrl();
         if (!url) {
-          await interaction.reply(v2Interaction("請先在 .env 設定 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET 後重啟。", { ephemeral: true }));
+          await interaction.reply(interactionPayload("請先在 .env 設定 GOOGLE_CLIENT_ID 和 GOOGLE_CLIENT_SECRET 後重啟。", { ephemeral: true }));
           return;
         }
-        await interaction.reply(v2Interaction(
+        await interaction.reply(interactionPayload(
           `點這個連結授權：\n${url}\n\n授權後瀏覽器會跳到 \`http://localhost?code=xxx\`，把整個網址貼回來：\n\`/google-auth callback:<貼上整個網址>\``,
           { ephemeral: true },
         ));
       } else {
         try {
           await exchangeCode(callback);
-          await interaction.reply(v2Interaction("Google API 授權成功！", { ephemeral: true }));
+          await interaction.reply(interactionPayload("Google API 授權成功！", { ephemeral: true }));
           logger.info({ user: interaction.user.id }, "google oauth completed via /google-auth");
         } catch (err) {
-          await interaction.reply(v2Interaction(`授權失敗：${(err as Error).message}`, { ephemeral: true }));
+          await interaction.reply(interactionPayload(`授權失敗：${(err as Error).message}`, { ephemeral: true }));
         }
       }
     }
@@ -621,7 +640,7 @@ export async function startBot(token: string): Promise<void> {
     if (interaction.commandName === "task") {
       const auth = getAuthClient();
       if (!auth) {
-        await interaction.reply(v2Interaction("Google API 未授權，請先用 /google-auth 授權。", { ephemeral: true }));
+        await interaction.reply(interactionPayload("Google API 未授權，請先用 /google-auth 授權。", { ephemeral: true }));
         return;
       }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -635,7 +654,7 @@ export async function startBot(token: string): Promise<void> {
         });
         const items = res.data.items || [];
         if (items.length === 0) {
-          await interaction.editReply(v2Edit("沒有待辦事項 🎉"));
+          await interaction.editReply(editPayload("沒有待辦事項 🎉"));
           return;
         }
         const lines = items.map(t => {
@@ -646,9 +665,9 @@ export async function startBot(token: string): Promise<void> {
           .setTitle("Google Tasks")
           .setDescription(lines.join("\n"))
           .setTimestamp();
-        await interaction.editReply({ content: null, components: [], embeds: [embed] });
+        await interaction.editReply({ embeds: [embed] });
       } catch (err) {
-        await interaction.editReply(v2Edit(`取得 Tasks 失敗：${(err as Error).message}`));
+        await interaction.editReply(editPayload(`取得 Tasks 失敗：${(err as Error).message}`));
       }
     }
 
@@ -660,25 +679,25 @@ export async function startBot(token: string): Promise<void> {
       await discordSessionQueue.enqueue(sessionId, async () => {
         const session = new Session(sessionId);
         if (session.length === 0) {
-          await interaction.editReply(v2Edit("Session 是空的，不需要壓縮。"));
+          await interaction.editReply(editPayload("Session 是空的，不需要壓縮。"));
           return;
         }
         const summary = await compactSession(session);
         if (summary) {
-          await interaction.editReply(v2Edit(`Session 已壓縮（${session.length} 則訊息保留）。`));
+          await interaction.editReply(editPayload(`Session 已壓縮（${session.length} 則訊息保留）。`));
         } else {
-          await interaction.editReply(v2Edit("Session 太短，不需要壓縮。"));
+          await interaction.editReply(editPayload("Session 太短，不需要壓縮。"));
         }
       }).catch(async err => {
         logger.error({ err, sessionId }, "queued /compact handling failed");
-        await interaction.editReply(v2Edit("Session 壓縮失敗，請查看日誌。")).catch(() => {});
+        await interaction.editReply(editPayload("Session 壓縮失敗，請查看日誌。")).catch(() => {});
       });
     }
 
     if (interaction.commandName === "plugin") {
       const config = loadConfig();
       if (interaction.user.id !== config.discord.owner_id) {
-        await interaction.reply(v2Interaction(OWNER_ONLY_MSG, { ephemeral: true }));
+        await interaction.reply(interactionPayload(OWNER_ONLY_MSG, { ephemeral: true }));
         return;
       }
 
@@ -691,7 +710,7 @@ export async function startBot(token: string): Promise<void> {
           const source = await parseGitHubPluginSource(target);
           const result = await installPlugin(source.repository, { workspace: source.workspace, ref: source.ref });
           logger.info({ operation: "install", user: interaction.user.id }, "/plugin interaction completed");
-          await interaction.editReply(v2Edit(truncateInteractionReply(result)));
+          await interaction.editReply(editPayload(truncateInteractionReply(result)));
           return;
         }
 
@@ -701,7 +720,7 @@ export async function startBot(token: string): Promise<void> {
           }
           const result = await updatePlugins(target);
           logger.info({ operation: "update", plugin: target, user: interaction.user.id }, "/plugin interaction completed");
-          await interaction.editReply(v2Edit(truncateInteractionReply(result)));
+          await interaction.editReply(editPayload(truncateInteractionReply(result)));
           return;
         }
 
@@ -712,12 +731,12 @@ export async function startBot(token: string): Promise<void> {
         }
         const result = removeManagedPlugin(target);
         logger.info({ operation: "remove", plugin: target, user: interaction.user.id }, "/plugin interaction completed");
-        await interaction.editReply(v2Edit(truncateInteractionReply(result)));
+        await interaction.editReply(editPayload(truncateInteractionReply(result)));
       } catch (err) {
         const message = (err as Error).message;
         logger.error({ err, operation: action, user: interaction.user.id }, "/plugin interaction failed");
         const label = action === "install" ? "外掛安裝失敗" : action === "update" ? "外掛更新失敗" : "外掛卸載失敗";
-        await interaction.editReply(v2Edit(truncateInteractionReply(`${label}：${message}`)));
+        await interaction.editReply(editPayload(truncateInteractionReply(`${label}：${message}`)));
       }
     }
   });
@@ -920,9 +939,9 @@ async function handleTrigger(message: Message, session: Session, images?: string
     const body = renderProgress(progressLines);
     try {
       if (!progressMsg) {
-        progressMsg = await message.reply(v2Message(body));
+        progressMsg = await message.reply(messagePayload(body));
       } else {
-        await progressMsg.edit(v2Edit(body));
+        await progressMsg.edit(editPayload(body));
       }
     } catch {
       // 編輯失敗不影響，最終回覆才是權威
@@ -978,13 +997,13 @@ async function handleTrigger(message: Message, session: Session, images?: string
     // 在 chunk 前對整段文字做，才能正確跳過跨行的 code fence；名稱不存在則保留原文。
     const withEmojis = resolveEmojiMarkup(stripped);
     const formatted = fixMarkdownLinks(withEmojis);
-    const chunks = chunkMessage(formatted, 4000);
+    const chunks = chunkMessage(formatted, 2000);
     const sentIds: string[] = [];
     const attachments = response.attachments;
 
     // 第一個 chunk：編輯進度訊息或發新訊息（附件跟第一個 chunk 一起發）
-    const firstMessagePayload = v2Message(chunks[0], { files: attachments });
-    const firstEditPayload = v2Edit(chunks[0], { files: attachments });
+    const firstMessagePayload = messagePayload(chunks[0], { files: attachments });
+    const firstEditPayload = editPayload(chunks[0], { files: attachments });
 
     if (progressMsg) {
       try {
@@ -1008,7 +1027,7 @@ async function handleTrigger(message: Message, session: Session, images?: string
 
     // 剩餘 chunks：用 reply 發新訊息
     for (let i = 1; i < chunks.length; i++) {
-      const sent = await message.reply(v2Message(chunks[i]));
+      const sent = await message.reply(messagePayload(chunks[i]));
       sentIds.push(sent.id);
     }
 

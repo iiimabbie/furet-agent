@@ -1,12 +1,12 @@
 import { existsSync } from "node:fs";
-import { ComponentType, type Client } from "discord.js";
+import type { Client } from "discord.js";
 import { logger } from "../../logger.js";
 import type { Tool } from "../../types.js";
 import { normalizeMentions, formatName } from "../../utils/discord-mentions.js";
 import { queueAttachment } from "../context.js";
 import { createDiscordButtonMessage, type DiscordButtonDefinition } from "../../discord-buttons.js";
 import { resolveEmojiMarkup } from "../../emoji.js";
-import { extractMessageAttachments, extractMessageText, v2Edit, v2Message } from "../../utils/discord-components.js";
+import { extractMessageAttachments, extractMessageText, editPayload, messagePayload } from "../../utils/discord-message.js";
 
 let discordClient: Client | null = null;
 
@@ -90,7 +90,7 @@ export const discordSendMessage: Tool = {
     logger.info({ channel_id, content: content?.slice(0, 100), reply_to, files }, "discord_send_message");
     try {
       const channel = await getTextChannel(channel_id);
-      const sent = await channel.send(v2Message(
+      const sent = await channel.send(messagePayload(
         content ? resolveEmojiMarkup(content) : undefined,
         {
           files,
@@ -327,7 +327,7 @@ export const discordCreateForumPost: Tool = {
       if (!channel || !("threads" in channel)) return `Error: channel ${channel_id} is not a forum channel`;
       const thread = await (channel as import("discord.js").ForumChannel).threads.create({
         name: title,
-        message: v2Message(resolveEmojiMarkup(content)),
+        message: messagePayload(resolveEmojiMarkup(content)),
       });
       return `Forum post created: "${thread.name}" (thread:${thread.id})`;
     } catch (err) {
@@ -414,14 +414,8 @@ export const discordEditMessage: Tool = {
       if (msg.author.id !== getClient().user?.id) return "Error: can only edit own messages";
       const existingText = extractMessageText(msg);
       const nextText = content !== undefined ? resolveEmojiMarkup(content) : existingText;
-      const preservedComponents = msg.components.filter(component => {
-        if (component.type === ComponentType.TextDisplay) return false;
-        if (files?.length && (component.type === ComponentType.File || component.type === ComponentType.MediaGallery)) return false;
-        return true;
-      });
-      await msg.edit(v2Edit(nextText || undefined, {
+      await msg.edit(editPayload(nextText || undefined, {
         files,
-        components: preservedComponents,
         replaceAttachments: Boolean(files?.length),
       }));
       return `Message edited`;

@@ -392,21 +392,20 @@ Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 
 - Thread/論壇貼文首次進入時以 `[System]` user message 存入 starter message
 
 ### 長訊息分段
-Components V2 的單則訊息所有 `TextDisplay` 合計上限為 4,000 字元。一般回覆、slash command 回覆與 Gateway 主動推送共用
-`utils/chunk-message.ts` 以 4,000 字元分段；若切點落在 fenced code block 內，前一段會自動補上關閉 fence，
+Discord V1 的 `content` 單則上限為 2,000 字元。一般回覆、slash command 回覆與 Gateway 主動推送共用
+`utils/chunk-message.ts` 以 2,000 字元分段；若切點落在 fenced code block 內，前一段會自動補上關閉 fence，
 下一段以相同語言標記重新開啟，避免 diff、log 等長 code block 吞掉後續文字。
 
 ### Discord 訊息模型
 
-Furet 依訊息用途使用兩種 Discord 訊息模型：
+Furet 的 Discord 輸出統一使用標準 V1 訊息 payload：
 
-- 一般文字與互動流程使用 Components V2。`src/utils/discord-components.ts` 是 payload builder：一般訊息、interaction reply、message edit 與重啟後的 raw webhook PATCH 都帶 `MessageFlags.IsComponentsV2`，文字使用 `TextDisplay`。
-- Slash command 的一般文字回覆、`/new`、聊天、工具進度、cron、reminder、Forum starter、Discord send/edit tool 與按鈕訊息共用 V2 輸出層。`deferReply()` 只負責 interaction acknowledgement，內容由後續的回覆 payload 提供。
+- `src/utils/discord-message.ts` 統一建立一般訊息、interaction reply、message edit 與重啟後 raw webhook PATCH 的 `content`、附件、legacy action-row buttons 與 allowed mentions payload；文字一律放在標準 `content`，不採用 component-only message payload。
+- Slash command 的一般文字回覆、`/new`、聊天、工具進度、cron、reminder、Forum starter、Discord send/edit tool、外掛 text transport 與按鈕訊息共用這個 V1 輸出層。`deferReply()` 只負責 interaction acknowledgement，內容由後續的回覆 payload 提供。
 - 需要卡片欄位、橫向 inline 資訊格或 Embed 排版的輸出使用 Legacy Embed；目前 `/status` 與有內容的 `/task` 屬於此類。一般聊天與純文字狀態不為了視覺一致性硬套 Embed。
-- V2 的本機圖片附件使用 `MediaGallery`，其他檔案使用 `File`，並包在 attachment `Container`；上傳檔名以 `attachment://...` 對應。
-- V2 訊息的編輯 payload 持續保留 `IsComponentsV2`。編輯既有非 V2 訊息時，payload 同時清空 `content` 與 `embeds`，再由 component tree 提供完整內容；Embed 卡片則維持 Legacy payload，不設定 `IsComponentsV2`。
-- Discord 輸入解析同時涵蓋一般 `message.content`、Embed 的 author/title/description/fields/footer、Embed image/thumbnail，以及 Components V2 的 `TextDisplay`、`MediaGallery` 與 `File`。`discord_fetch_message`、channel history、Forum starter、回覆圖片與輸入格式化共用 `extractMessageText()` / `extractMessageAttachments()`，因此不依賴訊息由哪一種 Discord 格式產生。
-- Modal、autocomplete、reaction、typing 與 pin 不屬於 message payload，不套用 `IsComponentsV2`。
+- 本機檔案以 Discord V1 的一般 attachments 上傳；圖片和其他檔案都由 Discord 的原生附件顯示處理。
+- Discord 輸入解析涵蓋一般 `message.content`、Embed 的 author/title/description/fields/footer，以及一般 uploads 與 Embed image/thumbnail。為了讓重啟前的歷史 component-only 訊息仍可被引用，`extractMessageText()` 另有唯讀遞迴文字相容解析；它不參與任何新訊息輸出。極少數重啟中的舊 interaction response 若被 Discord 拒絕以 `content` 編輯，會只針對該既存 response 以原格式完成「重啟成功」更新。`discord_fetch_message`、channel history、Forum starter、回覆圖片與輸入格式化共用 `extractMessageText()` / `extractMessageAttachments()`。
+- Modal、autocomplete、reaction、typing 與 pin 不屬於 message payload。
 
 ### 漸進式進度訊息
 Tool call 執行時即時顯示進度（`→` / `✓` / `✗`），完成後替換成最終回覆。防抖 1 秒避免 Discord rate limit。
@@ -749,7 +748,7 @@ interface PluginRuntimeContext {
 - **Plugin manifest 名稱全域唯一**：它是 schedules／events 的 namespace，重名外掛整體跳過。
 - **`ownerOnly` 預設 true**：私有外掛工具預設鎖 owner；明確 `false` 才放給 `discord-other`。外掛背景 callback 本身是受信任的 in-process code，呼叫 `context.ask()` 時使用獨立的 `plugin` trigger，不冒充 Discord 使用者。
 - **Agent API 受限**：背景工作只拿到 `prompt`、`systemPrompt`、`maxTurns`、`model`；不能自行偽造 trigger、user ID、Discord session 或進度 callback。回傳完整 `AgentResponse`。
-- **Plugin message transport**：背景工作與在 `manifest.start(context)` 初始化的外掛工具可保留 `context.messages`，以 `sendText()`／`editText()` 發送或更新指定頻道的純文字。主架構只提供 Components V2 傳輸與「僅能編輯 bot 自己訊息」的權限檢查，不把特定外掛的呈現格式或資料規則帶進核心，也不暴露 Discord client、token、raw interaction 或訊息讀取能力。
+- **Plugin message transport**：背景工作與在 `manifest.start(context)` 初始化的外掛工具可保留 `context.messages`，以 `sendText()`／`editText()` 發送或更新指定頻道的純文字。主架構只提供標準 Discord V1 純文字傳輸與「僅能編輯 bot 自己訊息」的權限檢查，不把特定外掛的呈現格式或資料規則帶進核心，也不暴露 Discord client、token、raw interaction 或訊息讀取能力。
 
 ### 載入、排程與事件生命週期
 

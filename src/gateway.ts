@@ -11,7 +11,7 @@ import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt, authoritativeNowBlock } f
 import { loadConfig } from "./config.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { chunkMessage } from "./utils/chunk-message.js";
-import { v2Edit, v2Message } from "./utils/discord-components.js";
+import { editPayload, messagePayload } from "./utils/discord-message.js";
 import { NO_REPLY_TOKEN, isNoReplySentinel } from "./utils/no-reply.js";
 import { resolveEmojiMarkup } from "./emoji.js";
 import { ROOT } from "./paths.js";
@@ -31,7 +31,7 @@ async function pluginTextChannel(channelId: string) {
 async function sendPluginText(input: { channelId: string; content: string }): Promise<{ messageId: string }> {
   if (!input.content) throw new Error("plugin message content must not be empty");
   const { channel } = await pluginTextChannel(input.channelId);
-  const message = await channel.send(v2Message(resolveEmojiMarkup(input.content)));
+  const message = await channel.send(messagePayload(resolveEmojiMarkup(input.content)));
   return { messageId: message.id };
 }
 
@@ -40,7 +40,7 @@ async function editPluginText(input: { channelId: string; messageId: string; con
   const { client, channel } = await pluginTextChannel(input.channelId);
   const message = await channel.messages.fetch(input.messageId);
   if (message.author.id !== client.user?.id) throw new Error("plugins can only edit the bot's own messages");
-  await message.edit(v2Edit(resolveEmojiMarkup(input.content)));
+  await message.edit(editPayload(resolveEmojiMarkup(input.content)));
 }
 
 async function sendToChannel(channelId: string, text: string): Promise<string[]> {
@@ -55,9 +55,9 @@ async function sendToChannel(channelId: string, text: string): Promise<string[]>
     // Application Emoji 引用（:name:）在分段前對整段解析，才能正確跳過跨行 code fence。
     const formatted = fixMarkdownLinks(resolveEmojiMarkup(text));
     const sentIds: string[] = [];
-    // Components V2 的 Text Display 上限為 4000 字元；跨段時維持 fenced code block 完整。
-    for (const chunk of chunkMessage(formatted, 4000)) {
-      const sent = await channel.send(v2Message(chunk));
+    // Discord V1 content 上限為 2000 字元；跨段時維持 fenced code block 完整。
+    for (const chunk of chunkMessage(formatted, 2000)) {
+      const sent = await channel.send(messagePayload(chunk));
       sentIds.push(sent.id);
     }
     return sentIds;
