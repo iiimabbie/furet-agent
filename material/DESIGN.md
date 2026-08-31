@@ -58,9 +58,11 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
 
 `config.llm.currentModel` 保存基礎模型名稱，`config.llm.reasoningEffort` 保存思考等級；兩者不混寫，避免模型清單驗證、工具 model gate 與價格估算把 router transport suffix 誤認成模型名稱。思考等級可為 `default`、`none`、`auto`、`minimal`、`low`、`medium`、`high`、`xhigh`：`default` 不加後綴，其餘只在 `callAnthropic()` 送出請求時組成 `<model>(<effort>)`。`/model` 會原子地更新兩個欄位；省略 `effort` 時重設為 `default`，避免切到不支援既有思考等級的模型後直接失敗。`/status` 分開顯示基礎模型與思考等級。
 
-### API 錯誤可觀測性
+### API 錯誤可觀測性與暫時性重試
 
 `callAnthropic()` 的 transport-level `fetch()` 失敗會包成帶 `cause` 的 Error，保留請求 endpoint 與底層錯誤鏈。`src/logger.ts` 對 `err` 欄位使用遞迴 serializer，記錄 Error 的 `type`、`message`、`stack`、自有屬性（如 `code`）與 `cause`；呼叫端應傳入原始 Error（`{ err }`），不要只留下 `err.message`，否則會遺失 `ECONNREFUSED`、`ECONNRESET`、DNS 等真正原因。
+
+短暫的網路錯誤，以及 HTTP `408`、`429`、`500`、`502`、`503`、`504`、`529`，會在 `callAnthropic()` 內最多嘗試 3 次。等待時間優先採用標準 `Retry-After`，否則使用約 1 秒、2 秒的 exponential backoff 加少量 jitter；其他 4xx 等明確請求錯誤不重試。重試邊界刻意放在單次 Messages API 呼叫內：若前一個 agent turn 已經成功執行本地工具，下一次模型整理回覆時遇到 502，只會重送同一份 messages 給模型，**不會重新進入已完成的本地工具執行迴圈**，避免寄信、寫檔或 Discord 操作等副作用重複發生。provider-side 的 web search／fetch／code execution 屬該 API request 內部能力，遇到 transport-level 不確定結果時仍可能由上游重做，但不會重跑 Furet 本地工具。
 
 整個 `ask()` 跑在獨立的 request context（AsyncLocalStorage）裡，見「Request Context」一節。
 

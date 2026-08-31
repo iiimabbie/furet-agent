@@ -319,6 +319,28 @@ function transportModel(model: string, reasoningEffort: ReasoningEffort): string
   return reasoningEffort === "default" ? model : `${model}(${reasoningEffort})`;
 }
 
+const ANTHROPIC_MAX_ATTEMPTS = 3;
+const ANTHROPIC_RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function retryDelayMs(attempt: number, retryAfter: string | null): number {
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 30_000);
+
+    const retryAt = Date.parse(retryAfter);
+    if (Number.isFinite(retryAt)) return Math.min(Math.max(0, retryAt - Date.now()), 30_000);
+  }
+
+  // attempt is one-based: after attempt 1 wait ~1s, after attempt 2 wait ~2s.
+  const exponential = 1000 * 2 ** (attempt - 1);
+  const jitter = Math.floor(Math.random() * 250);
+  return exponential + jitter;
+}
+
 async function callAnthropic(
   system: string,
   messages: Message[],
@@ -335,33 +357,62 @@ async function callAnthropic(
   const endpoint = `${llm.base_url || "https://api.anthropic.com/v1"}/messages`;
   const baseModel = model ?? llm.currentModel;
   const requestModel = transportModel(baseModel, llm.reasoningEffort);
-  let res: Response;
-  try {
-    res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": llm.api_key,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: requestModel,
-        max_tokens: 8192,
-        system,
-        messages,
-        // Tool definitions are computed per turn by the caller (see getToolDefinitions).
-        // withTools=false (compact path) sends no tools at all.
-        ...(withTools && tools ? { tools } : {}),
-      }),
-    });
-  } catch (err) {
-    throw new Error(`Anthropic API request failed (${endpoint})`, { cause: err });
-  }
-  if (!res.ok) {
+  const body = JSON.stringify({
+    model: requestModel,
+    max_tokens: 8192,
+    system,
+    messages,
+    // Tool definitions are computed per turn by the caller (see getToolDefinitions).
+    // withTools=false (compact path) sends no tools at all.
+    ...(withTools && tools ? { tools } : {}),
+  });
+
+  for (let attempt = 1; attempt <= ANTHROPIC_MAX_ATTEMPTS; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": llm.api_key,
+          "anthropic-version": "2023-06-01",
+        },
+        body,
+      });
+    } catch (err) {
+      if (attempt >= ANTHROPIC_MAX_ATTEMPTS) {
+        throw new Error(`Anthropic API request failed after ${attempt} attempts (${endpoint})`, { cause: err });
+      }
+
+      const delayMs = retryDelayMs(attempt, null);
+      logger.warn({ err, attempt, maxAttempts: ANTHROPIC_MAX_ATTEMPTS, delayMs, endpoint }, "Anthropic API transport error, retrying");
+      await sleep(delayMs);
+      continue;
+    }
+
+    if (res.ok) {
+      return res.json() as Promise<{ content: ContentBlock[]; stop_reason: string; usage: { input_tokens: number; output_tokens: number } }>;
+    }
+
     const errText = await res.text();
-    throw new Error(`Anthropic API ${res.status}: ${errText}`);
+    const retryable = ANTHROPIC_RETRYABLE_STATUSES.has(res.status);
+    if (!retryable || attempt >= ANTHROPIC_MAX_ATTEMPTS) {
+      throw new Error(`Anthropic API ${res.status} after ${attempt} attempt(s): ${errText}`);
+    }
+
+    const delayMs = retryDelayMs(attempt, res.headers.get("retry-after"));
+    logger.warn({
+      status: res.status,
+      attempt,
+      maxAttempts: ANTHROPIC_MAX_ATTEMPTS,
+      delayMs,
+      endpoint,
+      response: errText.slice(0, 500),
+    }, "Anthropic API temporary error, retrying");
+    await sleep(delayMs);
   }
-  return res.json() as Promise<{ content: ContentBlock[]; stop_reason: string; usage: { input_tokens: number; output_tokens: number } }>;
+
+  throw new Error("Anthropic API retry loop exited unexpectedly");
 }
 
 const COMPACT_THRESHOLD = 0.8; // 80% of maxContextTokens triggers compaction
