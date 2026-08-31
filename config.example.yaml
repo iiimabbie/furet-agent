@@ -21,6 +21,7 @@ discord:
   token: "${DISCORD_TOKEN}"             # bot token from Discord Developer Portal
   allowed_channels: []                  # `furet onbord` can set the first allowed channel
   ambient_channels: []                  # channel IDs where the bot replies without being @mentioned (threads do not inherit)
+  ignored_channels: []                  # channel/thread IDs to fully ignore: no trigger and no recording, even on mention/reply/DM/ambient (threads do not inherit)
   allowed_guilds: []                    # Empty means all guilds; set IDs manually if needed
   owner_id: ""                          # set locally by `furet onbord`
   respond_to_bots: false                # whether to process messages from other bots
@@ -33,6 +34,14 @@ journal:
   minute: 0                             # 0-59
 
 soul_guardian:                           # file integrity monitor
+  enabled: false                        # enable the gateway's built-in integrity scheduler.
+                                        # When on, the gateway runs deterministic checks itself
+                                        # and sends drift alerts directly — no LLM decides
+                                        # whether to check or notify.
+  schedule: "0 8,20 * * *"              # node-cron expression driving the built-in scheduler.
+  timezone: ""                          # IANA timezone for the schedule. Empty = global timezone.
+  channel_id: ""                        # Discord channel/thread ID for drift alerts.
+                                        # Empty = never notify (safe default).
   targets:                              # files to monitor (paths relative to workspace/)
     - path: SOUL.md
       mode: alert                       # restore = auto-revert, alert = warn only, ignore = skip

@@ -371,6 +371,13 @@ Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 
 `src/bot.ts` — Discord.js client，整合進 Gateway。
 
 ### 觸發條件
+- **完全忽略頻道**：`discord.ignored_channels` 列到的 channel / thread ID，在 `MessageCreate`
+  handler **最早期**（自己訊息判斷之後、任何觸發判定與 session 建立之前）就 `return`，
+  透過 `src/utils/ignored-channels.ts` 的 `isIgnoredChannel()` 精確比對 `message.channelId`。
+  命中時既不觸發也不記錄，即使該訊息 @ bot、reply bot、來自 DM，或該頻道之後被列入
+  `ambient_channels`。thread **不繼承** parent（thread 有自己的 ID）。此清單優先權高於所有
+  其他觸發條件，是最高優先的靜默閘門。開源核心不寫死任何頻道 ID，實際 ID 只放在正式
+  `config.yaml`。
 - 被 `@mention` 或收到 DM
 - **Ambient 頻道**：`discord.ambient_channels` 列到的 channel ID，不用 `@` bot 直接講話就會回。
   只精確比對 `message.channelId`，底下開的 thread **不繼承**（thread 有自己的 ID，要就自己列進去）。
@@ -452,7 +459,7 @@ session 照常記錄該回合。
 
 ### Discord 按鈕工具
 
-`discord_send_buttons` 是通用的 Discord component 工具，不把「確認流程」、私人外掛或特定服務寫死在主程式。呼叫端自行提供訊息內容、1–5 顆按鈕、標籤、樣式與行為；「確認／修改／拒絕」只是其中一種組合，不是工具固定的 UI 或語意。
+`discord_send_buttons` 是通用的 Discord component 工具，不把「確認流程」、私人外掛或特定服務寫死在主程式。呼叫端自行提供訊息內容、1–25 顆按鈕、標籤、樣式與行為；每列最多 5 顆、每則訊息最多 5 列。「確認／修改／拒絕」只是其中一種組合，不是工具固定的 UI 或語意。
 
 每顆按鈕支援三種底層行為：
 
@@ -460,9 +467,9 @@ session 照常記錄該回合。
 - **`edit`**：開啟 Discord Modal，修改指定 `execute` 按鈕之 action args 內一個 top-level string 欄位，修改後按鈕組保持可操作。可選擇把該欄位設為動態 preview，讓原訊息同步更新。
 - **`close`**：關閉整組按鈕，不執行外部 action。顯示文字由呼叫端提供，不預設代表拒絕或取消。
 
-按鈕狀態持久化在 `workspace/config/discord-buttons.json`（mode `0600`），因此訊息建立後即使 Gateway 重啟，既有按鈕仍能找到對應 action。每組按鈕有到期時間；執行、關閉、失敗或過期後會移除 components 並在原訊息顯示最終狀態。每組按鈕可指定 `allowed_user_ids`；省略時只允許 `config.discord.owner_id`。未列入者只收到 ephemeral 拒絕訊息。允許非 owner 點擊時，action 會以 `discord-other` request context 執行，因此仍不能繞過 owner-only tool 權限。
+按鈕狀態持久化在 `workspace/config/discord-buttons.json`（mode `0600`），因此訊息建立後即使 Gateway 重啟，既有按鈕仍能找到對應 action。每組按鈕有到期時間，並支援兩種互動模式：預設 `group` 在第一個 execute／close 後結束整組；`independent` 則讓每顆 execute 各自執行，完成後只停用該顆並保留其他按鈕，全部處理完才把整組標成完成。每組按鈕可指定 `allowed_user_ids`；省略時只允許 `config.discord.owner_id`。未列入者只收到 ephemeral 拒絕訊息。允許非 owner 點擊時，action 會以 `discord-other` request context 執行，因此仍不能繞過 owner-only tool 權限。
 
-Button message 會停用 allowed mentions，避免外部文字或草稿意外 ping 使用者。執行 action 前先把整組狀態改為 `processing` 並移除按鈕，再透過 process-local serialized queue 保護持久化狀態轉換，防止快速重複點擊造成同一 action 執行兩次，也避免並行寫入互相覆蓋。第一版每則訊息限制單列最多 5 顆按鈕、Modal 只修改一個字串欄位；多列 components 與多欄表單留待實際需求再擴充。
+Button message 會停用 allowed mentions，避免外部文字或草稿意外 ping 使用者。`group` 模式執行 action 前先把整組狀態改為 `processing` 並移除按鈕；`independent` 模式用 process-local execution set 鎖住單顆按鈕，顯示暫時的處理中狀態，成功或失敗後再持久化該顆結果。兩者都透過 serialized queue 保護狀態轉換，防止快速重複點擊造成同一 action 執行兩次，也避免並行寫入互相覆蓋。Modal 目前只修改一個字串欄位。
 
 ### Slash Commands
 - `/new` — silent memory flush + 歸檔 session + AI 重新打招呼
@@ -502,6 +509,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 | Cron 排程 | 每 1 小時重新載入 crons.json，執行到期任務 |
 | Reminder | 一次性提醒，每 15 秒輪詢 reminders.json 掃到期的，觸發後自動刪除 |
 | Journal | 每天固定時間：silent flush 所有 active session → 歸檔 → 重寫日記 → 更新 MEMORY.md |
+| Soul Guardian | 可選的 deterministic 內建排程，直接執行完整性檢查並把 drift 送到指定 Discord 頻道；不經 LLM，重複未處理 drift 以 fingerprint 去重 |
 | Discord Bot | 有 token 且 enabled 時啟動 |
 | Plugins | 背景服務接流量前先 `loadPlugins()`；Discord 啟用時待 client ready 後才 `startPlugins()`，再註冊含外掛在內的 slash commands。Discord 停用或登入失敗時仍啟動非 Discord 能力，message transport 會明確拒絕。shutdown 時 `stopPlugins()`（見 Plugin 系統） |
 | PID file | `furet.pid`，啟動時殺掉舊進程確保單實例 |

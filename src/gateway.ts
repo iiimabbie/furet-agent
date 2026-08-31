@@ -1,7 +1,11 @@
 import { schedule, type ScheduledTask } from "node-cron";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { resolve } from "node:path";
 import { logger } from "./logger.js";
 import { ask } from "./agent.js";
+import { runSoulGuardianCheck, type SoulGuardianCheckResult } from "./tools/builtin/soul-guardian.js";
+import { createDiscordButtonMessage, type DiscordButtonDefinition } from "./discord-buttons.js";
+import { WORKSPACE_CONFIG_DIR } from "./paths.js";
 import { loadCrons, type CronJob } from "./tools/builtin/cron.js";
 import { loadReminders, saveReminders, type Reminder } from "./tools/builtin/reminder.js";
 import { getDiscordClient } from "./tools/builtin/discord.js";
@@ -303,6 +307,198 @@ function scheduleJournal(): void {
   console.log(`Journal scheduled at ${config.journal.hour}:${String(config.journal.minute).padStart(2, "0")} daily`);
 }
 
+// --- Soul Guardian (deterministic built-in scheduler) ---
+
+/**
+ * Where the last-notified fingerprint is persisted, so an already-open drift
+ * notification is not re-sent every scheduled tick. The fingerprint changes only when the
+ * actionable drift/error set changes (see runSoulGuardianCheck), so as long as the owner
+ * has not resolved the drift (approve/restore), we stay quiet.
+ */
+const SG_NOTIFY_STATE_FILE = resolve(WORKSPACE_CONFIG_DIR, "soul-guardian-notify.json");
+
+let sgTask: ScheduledTask | undefined;
+
+function loadSgLastFingerprint(): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(SG_NOTIFY_STATE_FILE, "utf-8")) as { fingerprint?: string };
+    return typeof parsed.fingerprint === "string" ? parsed.fingerprint : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveSgLastFingerprint(fingerprint: string | null): void {
+  try {
+    mkdirSync(WORKSPACE_CONFIG_DIR, { recursive: true });
+    const tmp = `${SG_NOTIFY_STATE_FILE}.tmp`;
+    writeFileSync(tmp, `${JSON.stringify({ fingerprint, updatedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
+    renameSync(tmp, SG_NOTIFY_STATE_FILE);
+  } catch (err) {
+    logger.error({ err }, "failed to persist Soul Guardian notify state");
+  }
+}
+
+/** Count added/removed lines in a unified-diff patch file, ignoring the +++/--- headers. */
+function patchLineDelta(patchPath: string | undefined): number | null {
+  if (!patchPath || !existsSync(patchPath)) return null;
+  try {
+    const text = readFileSync(patchPath, "utf-8");
+    let changed = 0;
+    for (const line of text.split("\n")) {
+      if (line.startsWith("+++") || line.startsWith("---")) continue;
+      if (line.startsWith("+") || line.startsWith("-")) changed++;
+    }
+    return changed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Deterministic scheduled integrity check. No LLM: run the typed check, and if there is
+ * something to report, assemble the notification directly. Notifications are deduplicated
+ * by fingerprint so an unhandled drift is not repeated every tick.
+ */
+async function runSoulGuardianScheduledCheck(): Promise<void> {
+  const config = loadConfig();
+  const channelId = config.soul_guardian.channel_id;
+  if (!channelId) return;
+
+  let result: SoulGuardianCheckResult;
+  try {
+    result = runSoulGuardianCheck();
+  } catch (err) {
+    logger.error({ err }, "Soul Guardian scheduled check failed");
+    return;
+  }
+
+  // restore-mode files auto-restored this run: report them as plain text (no buttons).
+  if (result.restoredFiles.length > 0) {
+    const lines = [
+      "🛡️ Soul Guardian — files auto-restored",
+      "",
+      "These restore-mode files drifted and were automatically reverted to their approved baseline:",
+      "",
+      ...result.restoredFiles.map(f => `• \`${f}\``),
+    ];
+    await sendToChannel(channelId, lines.join("\n"));
+  }
+
+  // Nothing actionable to notify about.
+  if (result.driftFiles.length === 0 && result.errorFiles.length === 0) {
+    // Clean state — forget any previous open notification so the next drift notifies again.
+    if (loadSgLastFingerprint() !== null) saveSgLastFingerprint(null);
+    return;
+  }
+
+  // Dedup: identical unresolved drift/error set → do not re-notify.
+  const lastFingerprint = loadSgLastFingerprint();
+  if (lastFingerprint === result.fingerprint) {
+    logger.info({ fingerprint: result.fingerprint }, "Soul Guardian drift unchanged; skipping duplicate notification");
+    return;
+  }
+
+  const client = getDiscordClient();
+  if (!client?.isReady()) {
+    logger.warn("Soul Guardian drift detected but Discord client is not ready; will retry next tick");
+    return;
+  }
+
+  const driftItems = result.items.filter(i => i.status === "drift" && i.canApprove);
+  const errorItems = result.items.filter(i => i.status === "error");
+
+  const lines = [
+    "🛡️ Soul Guardian — drift detected",
+    "",
+    "The following monitored files have changed since last approval:",
+    "",
+  ];
+  for (const item of driftItems) {
+    const delta = patchLineDelta(item.patchPath);
+    lines.push(delta !== null ? `• \`${item.path}\` — ${delta} lines changed` : `• \`${item.path}\``);
+  }
+  if (errorItems.length > 0) {
+    lines.push("", "Files reported as errors (no approve button — resolve manually):");
+    for (const item of errorItems) lines.push(`• \`${item.path}\` — ${item.error ?? "error"}`);
+  }
+  lines.push("", "Review the changes. Approve a new baseline with the buttons, or restore the file manually if the change is unwanted.");
+
+  // One independent approve button per drift file; an Approve All button only when >1.
+  const ownerId = config.discord.owner_id;
+  const buttons: DiscordButtonDefinition[] = driftItems.map((item, idx) => ({
+    id: `approve_${idx}`,
+    label: `Approve ${item.path}`,
+    style: "success",
+    behavior: "execute",
+    actionTool: "soul_guardian_approve",
+    actionArgs: { file: item.path, note: "Approved via SG scheduler notification" },
+  }));
+  if (driftItems.length > 1) {
+    buttons.push({
+      id: "approve_all",
+      label: "Approve All",
+      style: "primary",
+      behavior: "execute",
+      actionTool: "soul_guardian_approve",
+      actionArgs: { all: true, note: "Approved via SG scheduler notification" },
+      disableAllOnComplete: true,
+    });
+  }
+
+  if (buttons.length === 0) {
+    // Only error files (no approvable drift): plain text notification.
+    await sendToChannel(channelId, lines.join("\n"));
+    saveSgLastFingerprint(result.fingerprint);
+    return;
+  }
+
+  try {
+    await createDiscordButtonMessage(client, {
+      channelId,
+      content: lines.join("\n"),
+      buttons,
+      allowedUserIds: ownerId ? [ownerId] : undefined,
+      interactionMode: "independent",
+      expiresInMinutes: 10080,
+    });
+    saveSgLastFingerprint(result.fingerprint);
+    logger.info({ fingerprint: result.fingerprint, driftCount: driftItems.length, errorCount: errorItems.length }, "Soul Guardian drift notification sent");
+  } catch (err) {
+    logger.error({ err }, "failed to send Soul Guardian drift notification");
+  }
+}
+
+/**
+ * Start the deterministic Soul Guardian scheduler when enabled and a channel is set. The
+ * schedule runs runSoulGuardianScheduledCheck() directly — no cron → LLM → tool → LLM
+ * round-trip. Disabled or channel-less configurations are safe no-ops.
+ */
+function scheduleSoulGuardian(): void {
+  if (sgTask) { sgTask.stop(); sgTask = undefined; }
+  const config = loadConfig();
+  const sg = config.soul_guardian;
+  if (!sg.enabled) {
+    console.log("Soul Guardian scheduler disabled");
+    return;
+  }
+  if (!sg.channel_id) {
+    console.log("Soul Guardian scheduler has no channel_id; notifications disabled");
+    return;
+  }
+  const tz = sg.timezone || config.timezone || undefined;
+  sgTask = schedule(sg.schedule, async () => {
+    logger.info("Soul Guardian scheduled check triggered");
+    try {
+      await runSoulGuardianScheduledCheck();
+    } catch (err) {
+      logger.error({ err }, "Soul Guardian scheduled check threw");
+    }
+  }, tz ? { timezone: tz } : undefined);
+  logger.info({ schedule: sg.schedule, timezone: tz ?? "system" }, "Soul Guardian scheduled");
+  console.log(`Soul Guardian scheduled: ${sg.schedule} (tz: ${tz || 'system'})`);
+}
+
 // --- PID file: kill old instance before starting ---
 const PID_FILE = `${ROOT}/furet.pid`;
 
@@ -364,6 +560,7 @@ if (config.discord.enabled && config.discord.token) {
 loadAndScheduleAll();
 console.log(`Loaded ${loadReminders().length} reminders`);
 scheduleJournal();
+scheduleSoulGuardian();
 startWatcher();
 
 console.log("Furet Gateway running. Press Ctrl+C to stop.");

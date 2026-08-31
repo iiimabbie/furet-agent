@@ -18,6 +18,7 @@ import { extractMessageAttachments, extractMessageText, editPayload, interaction
 import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
 import { stamp } from "./utils/time.js";
 import { isNoReplySentinel } from "./utils/no-reply.js";
+import { isIgnoredChannel } from "./utils/ignored-channels.js";
 import {
   executePluginSlashCommand,
   getPluginRuntimeStatus,
@@ -760,6 +761,12 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
     if (message.author.id === client.user?.id) return;
 
     const config = loadConfig();
+
+    // 完全忽略的頻道 / thread：在任何觸發判定、session 建立或記錄之前最早期放棄。
+    // 命中時即使訊息 @ bot、reply bot、來自 DM，或該頻道之後被列入 ambient，也一律不觸發
+    // 也不記錄。只精確比對 channel/thread ID 本身，thread 不繼承 parent。
+    if (isIgnoredChannel(message.channelId, config)) return;
+
     const sessionId = sessionIdForMessage(message);
     const isMentioned = client.user ? message.mentions.has(client.user) : false;
     const isDM = !message.guild;

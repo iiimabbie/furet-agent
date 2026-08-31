@@ -131,10 +131,12 @@ export const discordSendButtons: Tool = {
             editable_field: { type: "string", description: "For edit: top-level string field in the target button's action_args" },
             editable_label: { type: "string", description: "For edit: modal title/input label" },
             result_text: { type: "string", description: "Optional text shown after execute or close; otherwise the tool result/button label is shown" },
+            disable_all_on_complete: { type: "boolean", description: "Independent mode only: when this execute button succeeds, disable every actionable button in the set (e.g. an Approve All button)" },
           },
           required: ["id", "label", "style", "behavior"],
         },
       },
+      interaction_mode: { type: "string", enum: ["group", "independent"], description: "'group' (default): the first execute/close ends the whole set. 'independent': each button acts on its own; acted-on buttons grey out while the rest stay clickable until all are done." },
       preview_button_id: { type: "string", description: "Optional execute button ID whose string argument should be previewed in the message" },
       preview_field: { type: "string", description: "Optional string field from preview_button_id action_args to display and refresh after edits" },
       preview_label: { type: "string", description: "Optional label above the dynamic preview" },
@@ -144,7 +146,7 @@ export const discordSendButtons: Tool = {
   },
   execute: async (args) => {
     const {
-      channel_id, content, allowed_user_ids, buttons, preview_button_id, preview_field, preview_label, expires_in_minutes,
+      channel_id, content, allowed_user_ids, buttons, interaction_mode, preview_button_id, preview_field, preview_label, expires_in_minutes,
     } = args as {
       channel_id: string;
       content: string;
@@ -160,7 +162,9 @@ export const discordSendButtons: Tool = {
         editable_field?: string;
         editable_label?: string;
         result_text?: string;
+        disable_all_on_complete?: boolean;
       }>;
+      interaction_mode?: "group" | "independent";
       preview_button_id?: string;
       preview_field?: string;
       preview_label?: string;
@@ -177,6 +181,7 @@ export const discordSendButtons: Tool = {
       editableField: button.editable_field,
       editableLabel: button.editable_label,
       resultText: button.result_text,
+      disableAllOnComplete: button.disable_all_on_complete,
     }));
     logger.info({ channel_id, buttonCount: definitions.length }, "discord_send_buttons");
     try {
@@ -185,6 +190,7 @@ export const discordSendButtons: Tool = {
         content,
         buttons: definitions,
         allowedUserIds: allowed_user_ids,
+        interactionMode: interaction_mode,
         previewButtonId: preview_button_id,
         previewField: preview_field,
         previewLabel: preview_label,

@@ -34,6 +34,13 @@ export interface FuretConfig {
      * 是否回應其他 bot 仍依 `respond_to_bots`。
      */
     ambient_channels: string[];
+    /**
+     * 完全忽略的 channel / thread ID。命中時在訊息入口最早期直接放棄，
+     * 既不觸發也不記錄——即使該訊息 @ bot、reply bot、來自 DM，或該頻道
+     * 之後被列入 `ambient_channels`。只精確比對 channel/thread ID 本身，
+     * thread 不繼承 parent。優先權高於所有其他觸發條件。
+     */
+    ignored_channels: string[];
     allowed_guilds: string[];
     owner_id: string;
     status: string;
@@ -46,6 +53,19 @@ export interface FuretConfig {
     minute: number;
   };
   soul_guardian: {
+    /**
+     * Deterministic built-in integrity monitor. When enabled, the gateway schedules
+     * file-integrity checks itself (no cron -> LLM -> tool -> LLM -> Discord round-trip).
+     * The LLM never decides whether to check or whether to notify.
+     * Safe defaults: disabled, and no notification is attempted while channel_id is empty.
+     */
+    enabled: boolean;
+    /** node-cron expression driving the built-in scheduler (e.g. "0 8,20 * * *"). */
+    schedule: string;
+    /** IANA timezone for the schedule. Empty falls back to the global `timezone`. */
+    timezone: string;
+    /** Discord channel/thread ID that drift/error alerts are sent to. Empty = never notify. */
+    channel_id: string;
     targets: { path: string; mode: "restore" | "alert" | "ignore" }[];
   };
   tools: {
@@ -106,6 +126,7 @@ const DEFAULTS: FuretConfig = {
     token: "",
     allowed_channels: [],
     ambient_channels: [],
+    ignored_channels: [],
     allowed_guilds: [],
     owner_id: "",
     status: "online",
@@ -118,6 +139,10 @@ const DEFAULTS: FuretConfig = {
     minute: 0,
   },
   soul_guardian: {
+    enabled: false,
+    schedule: "0 8,20 * * *",
+    timezone: "",
+    channel_id: "",
     targets: [],
   },
   tools: {
@@ -226,6 +251,40 @@ function mergePluginsConfig(resolvedPlugins: unknown): PluginConfig[] {
   return out;
 }
 
+/**
+ * Merge the `soul_guardian` block. Top-level scalar fields fall back to defaults; the
+ * `targets` list is validated entry-by-entry so a malformed target cannot crash config
+ * load (or worse, silently monitor nothing). An entry must have a non-empty string
+ * `path` and a valid `mode`; anything else is dropped. Missing/invalid `targets` keeps
+ * the default (empty) list rather than throwing.
+ */
+function mergeSoulGuardianConfig(resolved: unknown): FuretConfig["soul_guardian"] {
+  const top = defined(resolved);
+  const rawTargets = top.targets;
+  delete top.targets;
+  const merged = { ...DEFAULTS.soul_guardian, ...top } as FuretConfig["soul_guardian"];
+
+  const validModes = ["restore", "alert", "ignore"] as const;
+  const targets: FuretConfig["soul_guardian"]["targets"] = [];
+  if (Array.isArray(rawTargets)) {
+    for (const entry of rawTargets) {
+      if (entry === null || typeof entry !== "object") continue;
+      const e = entry as Record<string, unknown>;
+      const path = typeof e.path === "string" ? e.path.trim() : "";
+      const mode = e.mode as FuretConfig["soul_guardian"]["targets"][number]["mode"];
+      if (!path || !validModes.includes(mode)) continue;
+      targets.push({ path, mode });
+    }
+  }
+  merged.targets = targets;
+  // Normalize scalar string fields (yaml may hand back non-strings).
+  merged.enabled = typeof merged.enabled === "boolean" ? merged.enabled : DEFAULTS.soul_guardian.enabled;
+  merged.schedule = typeof merged.schedule === "string" && merged.schedule.trim() ? merged.schedule : DEFAULTS.soul_guardian.schedule;
+  merged.timezone = typeof merged.timezone === "string" ? merged.timezone : DEFAULTS.soul_guardian.timezone;
+  merged.channel_id = typeof merged.channel_id === "string" ? merged.channel_id.trim() : DEFAULTS.soul_guardian.channel_id;
+  return merged;
+}
+
 let cached: FuretConfig | null = null;
 let cachedMtimeMs = 0;
 
@@ -256,7 +315,7 @@ export function loadConfig(): FuretConfig {
     llm: mergeLlmConfig(resolved.llm),
     discord: { ...DEFAULTS.discord, ...defined(resolved.discord) } as FuretConfig["discord"],
     journal: { ...DEFAULTS.journal, ...defined(resolved.journal) } as FuretConfig["journal"],
-    soul_guardian: { ...DEFAULTS.soul_guardian, ...defined(resolved.soul_guardian) } as FuretConfig["soul_guardian"],
+    soul_guardian: mergeSoulGuardianConfig(resolved.soul_guardian),
     tools: mergeToolsConfig(resolved.tools),
     image_generation: { ...DEFAULTS.image_generation, ...defined(resolved.image_generation) } as FuretConfig["image_generation"],
     prompt: { ...DEFAULTS.prompt, ...defined(resolved.prompt) } as FuretConfig["prompt"],
