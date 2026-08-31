@@ -18,6 +18,8 @@ export interface CatalogDeps {
 }
 
 const MAX_SEARCH_RESULTS = 12;
+const MAX_BATCH_QUERIES = 8;
+const MAX_BATCH_RESULTS_PER_QUERY = 6;
 
 function tokenize(query: string): string[] {
   return query.toLowerCase().split(/[\s,，、]+/).map(t => t.trim()).filter(Boolean);
@@ -45,6 +47,37 @@ function scoreRegistration(reg: ToolRegistration, tokens: string[]): number {
   return score;
 }
 
+function searchRegistrations(regs: ToolRegistration[], query: string, limit = MAX_SEARCH_RESULTS): ToolRegistration[] {
+  const tokens = tokenize(query);
+  return regs
+    .filter(r => r.exposure !== "native")
+    .map(r => ({ reg: r, score: scoreRegistration(r, tokens) }))
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(x => x.reg);
+}
+
+function formatSearchResult(query: string, matches: ToolRegistration[]): string {
+  if (matches.length === 0) return `No tools matched "${query}".`;
+  const lines = matches.map(reg => {
+    const desc = reg.tool.description.replace(/\s+/g, " ").slice(0, 120);
+    return `- ${reg.tool.name} [${reg.group}, ${reg.exposure}]: ${desc}`;
+  });
+  return `Tools matching "${query}":\n${lines.join("\n")}`;
+}
+
+function searchQueries(args: Record<string, unknown>): string[] | string {
+  const single = typeof args.query === "string" ? args.query.trim() : "";
+  const batch = Array.isArray(args.queries)
+    ? args.queries.filter((q): q is string => typeof q === "string").map(q => q.trim()).filter(Boolean)
+    : [];
+  const queries = [...new Set([...(single ? [single] : []), ...batch])];
+  if (queries.length === 0) return "search requires a non-empty 'query' or 'queries'.";
+  if (queries.length > MAX_BATCH_QUERIES) return `search accepts at most ${MAX_BATCH_QUERIES} independent queries.`;
+  return queries;
+}
+
 /**
  * Build the always-`native` tool_catalog tool. It is the unified discovery + proxy
  * entry point for any tool not directly exposed this turn.
@@ -70,7 +103,13 @@ export function createToolCatalog(deps: CatalogDeps): Tool {
           enum: ["list_groups", "search", "describe", "call"],
           description: "What to do.",
         },
-        query: { type: "string", description: "For search: keywords to find tools." },
+        query: { type: "string", description: "For search: one keyword query (backward-compatible single-query form)." },
+        queries: {
+          type: "array",
+          items: { type: "string" },
+          maxItems: MAX_BATCH_QUERIES,
+          description: "For search: multiple independent keyword queries evaluated separately in one call.",
+        },
         tool_name: { type: "string", description: "For describe/call: the target tool name." },
         arguments: {
           type: "object",
@@ -101,22 +140,16 @@ export function createToolCatalog(deps: CatalogDeps): Tool {
       }
 
       if (action === "search") {
-        const query = String(args.query ?? "").trim();
-        if (!query) return "search requires a non-empty 'query'.";
-        const tokens = tokenize(query);
-        // Search ALL non-native registrations, including on-demand.
-        const scored = regs
-          .filter(r => r.exposure !== "native")
-          .map(r => ({ reg: r, score: scoreRegistration(r, tokens) }))
-          .filter(x => x.score > 0)
-          .sort((a, b) => b.score - a.score)
-          .slice(0, MAX_SEARCH_RESULTS);
-        if (scored.length === 0) return `No tools matched "${query}".`;
-        const lines = scored.map(({ reg }) => {
-          const desc = reg.tool.description.replace(/\s+/g, " ").slice(0, 120);
-          return `- ${reg.tool.name} [${reg.group}, ${reg.exposure}]: ${desc}`;
-        });
-        return `Tools matching "${query}":\n${lines.join("\n")}\nUse action=describe to see a tool's input schema, then action=call to run it.`;
+        const queries = searchQueries(args);
+        if (typeof queries === "string") return queries;
+        // Each query is scored independently. This preserves separate intent instead of
+        // flattening unrelated capability searches into one noisy token bag.
+        const perQueryLimit = queries.length === 1 ? MAX_SEARCH_RESULTS : MAX_BATCH_RESULTS_PER_QUERY;
+        const blocks = queries.map(query => formatSearchResult(query, searchRegistrations(regs, query, perQueryLimit)));
+        const body = queries.length === 1
+          ? blocks[0]
+          : `Batched tool search (${queries.length} independent queries):\n\n${blocks.join("\n\n")}`;
+        return `${body}\nUse action=describe to see a tool's input schema, then action=call to run it.`;
       }
 
       if (action === "describe") {

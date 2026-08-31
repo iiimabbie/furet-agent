@@ -6,7 +6,7 @@ import { runWithContext, drainAttachments, queueAttachment } from "./tools/conte
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { ATTACHMENTS_DIR } from "./paths.js";
-import { searchVectors } from "./embedding.js";
+import { addSessionSummaryVector, searchVectors } from "./embedding.js";
 import { stamp } from "./utils/time.js";
 import { filterStaleOnboarding } from "./onboarding.js";
 import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions, ToolHistoryEvent } from "./types.js";
@@ -438,11 +438,15 @@ export async function compactSession(session: import("./session.js").Session, mo
     const summary = extractText(response.content as ContentBlock[]).trim();
     if (!summary) return null;
 
-    if (!session.archiveForCompaction(toSummarize)) {
+    if (!session.archiveForCompaction(toSummarize, summary)) {
       logger.error({ sessionId: session.id, summarizedMessages: toSummarize.length }, "compaction aborted because archive write failed");
       return null;
     }
 
+    // Index the compact summary for semantic session search. This is best-effort and
+    // cannot block compaction: the immutable archive JSON above already contains the
+    // summary as the durable source of truth.
+    await addSessionSummaryVector(summary, session.id);
     session.compact(summary, COMPACT_KEEP_RECENT);
     logger.info({ sessionId: session.id, summarizedMessages: toSummarize.length, summaryLength: summary.length }, "compaction done");
     return summary;

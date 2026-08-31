@@ -652,7 +652,9 @@ trigger + 各工具確認規則負責。隱藏工具不等於降權，surface �
 `tool_catalog`（`tools/builtin/tool-catalog.ts`）是統一探索／代理入口，永遠 `native`：
 
 - `list_groups` 列 index+match 可見能力群（on-demand 不列）；`search` 搜尋**所有**非 native
-  註冊（含 on-demand），回精簡結果；`describe` 回 description + input schema；`call` 代理執行。
+  註冊（含 on-demand），可用 `query` 查單一意圖，也可用 `queries` 在一次 tool call 內分別評分最多
+  8 個互不相關的查詢，避免把不同能力需求壓成同一袋關鍵字；`describe` 回 description + input schema；
+  `call` 代理執行。
 - **`call` 一律委派回注入的 `executeTool()`**，不碰 executor map，因此 owner-only、bash
   allowlist、read_file guard、寄信/刪除確認全部照舊生效；`call` 拒絕呼叫自己（不遞迴）；
   unknown tool / 權限不足 / schema 錯以純字串回給模型。輸出視為 untrusted metadata。
@@ -811,13 +813,15 @@ interface PluginRuntimeContext {
 | `fts_meta` | FTS 索引的內容格式版本，版本不符就在開機時重建 |
 | `session_archive` | 歸檔的 session messages |
 | `session_fts` | FTS5 session 全文搜尋（存 CJK bigram token，非原文） |
+| `session_summary_vectors` | compact continuation summary 與 session ID |
+| `session_summary_vectors_vec_cos` | compact summary 的 cosine 向量索引 |
 
 ### 記憶工具
 
 - `memory_save`：追加事件／對話筆記到當日檔案 + 存 SQLite 向量；不是 owner／人物檔案或 MEMORY.md 的替代品
 - `memory_search`：語意搜尋（sqlite-vec KNN）+ 全文搜尋（FTS5）
 - `memory_add/replace/remove`：操作非人物檔案的長期脈絡 MEMORY.md，同時重建 MEMORY.md 的向量
-- `session_search`：FTS5 搜尋歸檔的歷史對話
+- `session_search`：混合搜尋歸檔歷史；FTS5 查所有原始訊息的字面內容，語意搜尋查 compact continuation summary
 - 自動召回：每次對話時用 user message 做語意搜尋，結果注入 system prompt
 
 ### 向量維護
@@ -1003,8 +1007,8 @@ owner 稍後在同頻道觸發時 trigger 是 `discord-owner`、權限全開，�
 非 owner 的 bash 指令跑在限制環境（timeout + 禁止寫入敏感路徑 + 禁止讀 .env）。目前 bash 完全開放給所有人。
 
 ### Session Archive 語意搜尋
-目前 `session_archive`（歸檔的歷史對話）只有 FTS5 全文搜尋，無法做語意召回。
-
-方向：在 session 歸檔時，把 Session Summarize 輸出的 assistant 最後一則回應（摘要）embed 存向量，而不是 embed 全部 8000+ 則原始訊息（成本過高）。這樣可以用語意搜尋找「哪個 session 討論過 X 主題」。
-
-等架構穩定後實作。
+`session_search` 採混合搜尋：原始歸檔訊息維持 FTS5 字面搜尋；每次 compact 產生的 continuation summary
+則寫入同一份 immutable compact archive JSON，並 best-effort embed 到獨立的 cosine 向量表。這樣不必替
+全部原始訊息付 embedding 成本，仍能依概念找到曾討論過某主題的 session。舊資料若當時沒有保存
+summary，無法事後憑空回填；語意覆蓋範圍會隨新的 compaction 逐步增加。向量索引失敗不會阻止
+compaction，因為 JSON archive 才是耐久 source of truth，SQLite 只是可重建的搜尋投影。

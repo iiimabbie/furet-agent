@@ -11,6 +11,7 @@ let db: Database.Database | null = null;
 
 /** 向量表名稱（cosine 版）。embedding.ts 一律走這張。 */
 export const VEC_TABLE = "memory_vectors_vec_cos";
+export const SESSION_SUMMARY_VEC_TABLE = "session_summary_vectors_vec_cos";
 
 /**
  * 把 L2 向量表的內容搬到 cosine 表。
@@ -94,6 +95,24 @@ export function getDb(): Database.Database {
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
       content, session_id
+    )
+  `);
+
+  // Semantic session search indexes compact continuation summaries rather than every
+  // raw message. The JSON compact archive remains the durable source; these tables are
+  // a rebuildable search projection.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_summary_vectors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(session_id, summary)
+    )
+  `);
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS session_summary_vectors_vec_cos USING vec0(
+      embedding FLOAT[3072] distance_metric=cosine
     )
   `);
 

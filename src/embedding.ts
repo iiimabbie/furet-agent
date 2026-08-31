@@ -1,5 +1,5 @@
 import { logger } from "./logger.js";
-import { getDb, VEC_TABLE } from "./db.js";
+import { getDb, SESSION_SUMMARY_VEC_TABLE, VEC_TABLE } from "./db.js";
 import { toSearchTokens } from "./utils/cjk.js";
 import { today } from "./utils/time.js";
 
@@ -160,6 +160,93 @@ export async function searchVectors(query: string, topK = 10, options: SearchOpt
       });
   } catch (err) {
     logger.error({ err: (err as Error).message }, "vector search failed");
+    return [];
+  }
+}
+
+
+const SESSION_SUMMARY_SCORE_THRESHOLD = 0.55;
+
+export interface SessionSummarySearchResult {
+  sessionId: string;
+  summary: string;
+  createdAt: string;
+  score: number;
+}
+
+/**
+ * Add one compact continuation summary to the semantic session index. Raw messages are
+ * deliberately not embedded: the compact archive JSON is the durable source, while this
+ * small SQLite projection keeps embedding cost and index size bounded.
+ */
+export async function addSessionSummaryVector(summary: string, sessionId: string): Promise<void> {
+  const text = summary.trim();
+  if (!text || !sessionId || !getApiKey()) return;
+
+  try {
+    const db = getDb();
+    const exists = db.prepare(
+      "SELECT 1 FROM session_summary_vectors WHERE session_id = ? AND summary = ?",
+    ).get(sessionId, text);
+    if (exists) return;
+
+    const blob = vectorToBlob(await embed(text));
+    const insertMain = db.prepare(
+      "INSERT INTO session_summary_vectors (session_id, summary) VALUES (?, ?)",
+    );
+    const insertVec = db.prepare(
+      `INSERT INTO ${SESSION_SUMMARY_VEC_TABLE} (rowid, embedding) VALUES (?, ?)`,
+    );
+
+    const id = db.transaction(() => {
+      const rowId = Number(insertMain.run(sessionId, text).lastInsertRowid);
+      insertVec.run(BigInt(rowId), blob);
+      return rowId;
+    })();
+    logger.info({ sessionId, id, summaryLength: text.length }, "session summary vector added");
+  } catch (err) {
+    // Semantic indexing is an optional search projection. A failure must never abort
+    // compaction after its immutable JSON archive has already been written.
+    logger.error({ err: (err as Error).message, sessionId }, "session summary embedding failed");
+  }
+}
+
+/** Search compact continuation summaries by meaning. */
+export async function searchSessionSummaryVectors(
+  query: string,
+  topK = 8,
+): Promise<SessionSummarySearchResult[]> {
+  if (!query.trim() || !getApiKey()) return [];
+
+  try {
+    const db = getDb();
+    const count = (db.prepare("SELECT count(*) AS c FROM session_summary_vectors").get() as { c: number }).c;
+    if (count === 0) return [];
+
+    const blob = vectorToBlob(await embed(query));
+    const k = Math.min(Math.max(Math.floor(topK), 1), count);
+    const rows = db.prepare(`
+      SELECT s.session_id, s.summary, s.created_at, v.distance
+      FROM ${SESSION_SUMMARY_VEC_TABLE} v
+      JOIN session_summary_vectors s ON s.id = v.rowid
+      WHERE v.embedding MATCH ? AND k = ?
+    `).all(blob, k) as Array<{
+      session_id: string;
+      summary: string;
+      created_at: string;
+      distance: number;
+    }>;
+
+    return rows
+      .map(row => ({
+        sessionId: row.session_id,
+        summary: row.summary,
+        createdAt: row.created_at,
+        score: 1 - row.distance,
+      }))
+      .filter(row => row.score >= SESSION_SUMMARY_SCORE_THRESHOLD);
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, "semantic session search failed");
     return [];
   }
 }

@@ -150,10 +150,10 @@ export class Session {
    * Returns false when the JSON archive could not be written; callers must then
    * leave the active history untouched.
    */
-  archiveForCompaction(messages: Message[]): boolean {
+  archiveForCompaction(messages: Message[], summary: string): boolean {
     const originalMessages = messages.filter(m => !isCompactSummary(m));
     if (originalMessages.length === 0) return true;
-    return this.persistArchive(originalMessages, "compaction") !== null;
+    return this.persistArchive(originalMessages, "compaction", summary) !== null;
   }
 
   /** 壓縮 session：用摘要替換前半段 messages，保留最近的 keepRecent 則 */
@@ -178,7 +178,7 @@ ${summary}`,
   }
 
   /** Write an immutable archive segment and index it for session search. */
-  private persistArchive(messages: Message[], kind: "session" | "compaction"): string | null {
+  private persistArchive(messages: Message[], kind: "session" | "compaction", summary?: string): string | null {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const suffix = kind === "compaction" ? "-compact" : "";
     const archivePath = resolve(ARCHIVE_DIR, `${this.id}${suffix}-${timestamp}.json`);
@@ -190,6 +190,7 @@ ${summary}`,
         sessionId: this.id,
         archivedAt,
         kind,
+        ...(summary ? { summary } : {}),
         messages,
         usage: this.usage,
         toolHistory: this.toolHistory,

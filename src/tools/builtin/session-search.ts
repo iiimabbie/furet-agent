@@ -1,6 +1,7 @@
 import { logger } from "../../logger.js";
 import { getDb } from "../../db.js";
 import { toSearchQuery, highlightMatches } from "../../utils/cjk.js";
+import { searchSessionSummaryVectors } from "../../embedding.js";
 import type { ContentBlock, Tool } from "../../types.js";
 
 interface ArchivedSessionRow {
@@ -87,41 +88,67 @@ export function formatJournalTranscript(rows: ArchivedSessionRow[]): string {
 
 export const sessionSearch: Tool = {
   name: "session_search",
-  description: "Full-text search over archived conversations — the literal words people said. Only archived sessions are indexed: the current session and anything said today are not in here yet, so finding nothing means it is not in the archive — never that it did not happen. Use it to find when something was discussed or decided. For what you concluded and wrote down about a topic use memory_search instead (that one is semantic and searches your notes, not the transcript); to read a whole day end to end use sessions_by_date.",
+  description: "Hybrid search over archived conversations. Full-text search finds the literal words people said across all archived messages; semantic search finds conceptually related compact continuation summaries when available. The current session and unarchived messages are not indexed, so finding nothing never proves something did not happen. Use memory_search for conclusions saved in memory notes, or sessions_by_date to read a whole archived day.",
   parameters: {
     type: "object",
     properties: {
       query: { type: "string", description: "Search query (supports FTS5 syntax: AND, OR, NOT, phrases)" },
-      limit: { type: "number", description: "Max results to return (default 20)" },
+      limit: { type: "number", description: "Max full-text results to return (default 20)" },
+      semantic: { type: "boolean", description: "Also search compact summaries by meaning (default true)." },
+      semantic_limit: { type: "number", description: "Max semantic summary matches to return (default 8)." },
     },
     required: ["query"],
   },
   execute: async (args) => {
-    const { query, limit = 20 } = args as { query: string; limit?: number };
-    logger.info({ query, limit }, "session search");
+    const { query, limit = 20, semantic = true, semantic_limit = 8 } = args as {
+      query: string;
+      limit?: number;
+      semantic?: boolean;
+      semantic_limit?: number;
+    };
+    logger.info({ query, limit, semantic, semantic_limit }, "session search");
 
+    const fullTextLimit = Number.isFinite(limit) ? Math.min(Math.max(Math.floor(limit), 1), 100) : 20;
+    const semanticLimit = Number.isFinite(semantic_limit)
+      ? Math.min(Math.max(Math.floor(semantic_limit), 1), 20)
+      : 8;
     const ftsQuery = toSearchQuery(query);
-    if (!ftsQuery) return "No matching sessions found.";
+    if (!ftsQuery && !semantic) return "No matching sessions found.";
 
     try {
       const db = getDb();
-      const results = db.prepare(`
-        SELECT sa.session_id, sa.role, sa.content, sa.time, sa.msg_id
-        FROM session_fts sf
-        JOIN session_archive sa ON sa.id = sf.rowid
-        WHERE session_fts MATCH ?
-        ORDER BY sf.rank
-        LIMIT ?
-      `).all(ftsQuery, limit) as ArchivedSessionRow[];
+      const results = ftsQuery
+        ? db.prepare(`
+            SELECT sa.session_id, sa.role, sa.content, sa.time, sa.msg_id
+            FROM session_fts sf
+            JOIN session_archive sa ON sa.id = sf.rowid
+            WHERE session_fts MATCH ?
+            ORDER BY sf.rank
+            LIMIT ?
+          `).all(ftsQuery, fullTextLimit) as ArchivedSessionRow[]
+        : [];
+      const semanticResults = semantic
+        ? await searchSessionSummaryVectors(query, semanticLimit)
+        : [];
 
-      if (results.length === 0) return "No matching sessions found.";
+      if (results.length === 0 && semanticResults.length === 0) return "No matching sessions found.";
 
-      const formatted = results.map(r => {
-        const time = r.time ? `[${r.time}]` : "";
-        return `[${r.session_id}] ${time} ${r.role}: ${highlightMatches(r.content, query)}`;
-      });
+      const sections: string[] = [];
+      if (results.length > 0) {
+        const formatted = results.map(r => {
+          const time = r.time ? `[${r.time}]` : "";
+          return `[${r.session_id}] ${time} ${r.role}: ${highlightMatches(r.content, query)}`;
+        });
+        sections.push(`Full-text results (${results.length}):\n${formatted.join("\n")}`);
+      }
+      if (semanticResults.length > 0) {
+        const formatted = semanticResults.map(r =>
+          `[${r.sessionId}] [semantic ${(r.score * 100).toFixed(0)}% · ${r.createdAt}] ${r.summary}`,
+        );
+        sections.push(`Semantic matches from compact summaries (${semanticResults.length}):\n${formatted.join("\n")}`);
+      }
 
-      return `Found ${results.length} results:\n${formatted.join("\n")}`;
+      return sections.join("\n\n");
     } catch (err) {
       logger.error({ err: (err as Error).message }, "session search failed");
       return `Error: ${(err as Error).message}`;
