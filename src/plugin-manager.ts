@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { loadConfig, type PluginConfig } from "./config.js";
+import { createPluginConfigStore, pluginConfigPath } from "./plugin-config.js";
 import { PLUGINS_DIR, PLUGIN_REGISTRY_FILE, ROOT, TRASH_DIR } from "./paths.js";
 
 interface PackageJson {
@@ -313,7 +314,11 @@ function buildPackage(sourceRoot: string, packageRoot: string, packageName: stri
 async function checkoutSource(source: string, destination: string, ref?: string): Promise<boolean> {
   const local = isLocalDirectory(source);
   if (local) {
-    cpSync(realpathSync(resolve(source)), destination, { recursive: true });
+    const realSource = realpathSync(resolve(source));
+    if (isInside(realSource, destination)) {
+      throw new Error("Local plugin source cannot contain its managed destination (recursive copy would occur)");
+    }
+    cpSync(realSource, destination, { recursive: true });
   } else {
     const args = ["clone", "--depth", "1"];
     if (ref) args.push("--branch", ref);
@@ -340,24 +345,39 @@ export async function installPlugin(source: string, options: InstallPluginOption
     const registry = readRegistry();
     const normalizedSource = isLocalDirectory(source) ? realpathSync(resolve(source)) : source;
     const requestedRef = options.ref?.trim() || undefined;
-    let sourceRecord = registry.sources.find((item) => item.source === normalizedSource && item.ref === requestedRef);
-    let createdSource = false;
-
-    if (!sourceRecord) {
-      const base = sourceBaseName(source);
-      let id = base;
-      let suffix = 2;
-      while (registry.sources.some((item) => item.id === id) || existsSync(resolve(PLUGINS_DIR, id))) {
-        id = `${base}-${suffix++}`;
-      }
-      const directory = resolve(PLUGINS_DIR, id);
-      const local = await checkoutSource(source, directory, requestedRef);
-      sourceRecord = { id, source: normalizedSource, directory: displayPath(directory), local, ...(requestedRef ? { ref: requestedRef } : {}) };
-      registry.sources.push(sourceRecord);
-      createdSource = true;
+    // Each installation owns its checkout. Reusing one monorepo checkout for several
+    // plugins makes uninstall ambiguous: removing one registration cannot remove the
+    // package source, node_modules link, or lockfile entries while another plugin still
+    // depends on that same tree.
+    const base = sourceBaseName(source);
+    let id = base;
+    let suffix = 2;
+    while (registry.sources.some((item) => item.id === id) || existsSync(resolve(PLUGINS_DIR, id))) {
+      id = `${base}-${suffix++}`;
+    }
+    const directory = resolve(PLUGINS_DIR, id);
+    let local: boolean;
+    try {
+      local = await checkoutSource(source, directory, requestedRef);
+    } catch (error) {
+      // cpSync/git clone may leave a partially populated destination. An install that
+      // never reached registry creation still owns that path, so remove it from the
+      // active plugin area before surfacing the failure.
+      moveToTrash(directory, `plugin-install-checkout-failed-${id}`);
+      throw error;
     }
 
+    const sourceRecord: ManagedPluginSource = {
+      id,
+      source: normalizedSource,
+      directory: displayPath(directory),
+      local,
+      ...(requestedRef ? { ref: requestedRef } : {}),
+    };
+    registry.sources.push(sourceRecord);
+
     const sourceRoot = assertManagedPath(sourceRecord.directory, `source ${sourceRecord.id}`);
+    let createdConfigPath: string | undefined;
     try {
       const packageRoot = resolvePackageRoot(sourceRoot, options.workspace);
       installDependencies(sourceRoot);
@@ -367,6 +387,12 @@ export async function installPlugin(source: string, options: InstallPluginOption
       assertEntryExists(packageRoot, metadata.entryPath);
       if (registry.plugins.some((item) => item.name === metadata.name)) {
         throw new Error(`Plugin ${metadata.name} is already installed`);
+      }
+
+      const configPath = pluginConfigPath(metadata.name);
+      if (!existsSync(configPath)) {
+        createPluginConfigStore(metadata.name);
+        createdConfigPath = configPath;
       }
 
       const now = new Date().toISOString();
@@ -383,11 +409,10 @@ export async function installPlugin(source: string, options: InstallPluginOption
       writeRegistry(registry);
       return `已安裝外掛「${metadata.name}」。請執行 /restart 載入外掛。`;
     } catch (error) {
-      if (createdSource) {
-        const index = registry.sources.findIndex((item) => item.id === sourceRecord.id);
-        if (index >= 0) registry.sources.splice(index, 1);
-        moveToTrash(sourceRoot, `plugin-install-failed-${sourceRecord.id}`);
-      }
+      const index = registry.sources.findIndex((item) => item.id === sourceRecord.id);
+      if (index >= 0) registry.sources.splice(index, 1);
+      moveToTrash(sourceRoot, `plugin-install-failed-${sourceRecord.id}`);
+      if (createdConfigPath) moveToTrash(createdConfigPath, `plugin-install-failed-config-${sourceRecord.id}`);
       throw error;
     }
   });
@@ -518,39 +543,53 @@ export function removeManagedPlugin(name: string): string {
     const registry = readRegistry();
     const index = registry.plugins.findIndex((item) => item.name === name);
     if (index < 0) throw new Error(`Managed plugin ${name} is not installed`);
-    const [plugin] = registry.plugins.splice(index, 1);
-
-    const sourceStillUsed = registry.plugins.some((item) => item.sourceId === plugin.sourceId);
-    let moved: { original: string; trash: string } | undefined;
-    if (!sourceStillUsed) {
-      const sourceIndex = registry.sources.findIndex((item) => item.id === plugin.sourceId);
-      if (sourceIndex >= 0) {
-        const [source] = registry.sources.splice(sourceIndex, 1);
-        const sourceRoot = assertManagedPath(source.directory, `source ${source.id}`);
-        if (existsSync(sourceRoot)) {
-          const trash = resolve(TRASH_DIR, `plugin-${source.id}-${Date.now()}-${randomUUID().slice(0, 8)}`);
-          renameSync(sourceRoot, trash);
-          moved = { original: sourceRoot, trash };
-        }
-      }
+    const plugin = registry.plugins[index];
+    const sourceStillUsed = registry.plugins.some((item, itemIndex) =>
+      itemIndex !== index && item.sourceId === plugin.sourceId
+    );
+    if (sourceStillUsed) {
+      // Current installs always own a dedicated checkout. A shared source can only be
+      // legacy registry data; partially removing one package would leave source,
+      // node_modules or lockfile artifacts behind (and a later update could restore
+      // them). Fail without changing anything instead of reporting a partial uninstall.
+      throw new Error(
+        `Plugin ${name} uses a legacy shared checkout; remove the other plugins from that source together, then reinstall the ones you still need`,
+      );
     }
+    registry.plugins.splice(index, 1);
+
+    const moved: Array<{ original: string; trash: string }> = [];
+    const moveArtifact = (path: string, label: string): void => {
+      if (!existsSync(path)) return;
+      const trash = resolve(TRASH_DIR, `${label}-${Date.now()}-${randomUUID().slice(0, 8)}`);
+      renameSync(path, trash);
+      moved.push({ original: path, trash });
+    };
+
+    const sourceIndex = registry.sources.findIndex((item) => item.id === plugin.sourceId);
+    if (sourceIndex < 0) throw new Error(`Plugin ${name} has no managed source record`);
+    const [source] = registry.sources.splice(sourceIndex, 1);
+    const sourceRoot = assertManagedPath(source.directory, `source ${source.id}`);
+    moveArtifact(sourceRoot, `plugin-${source.id}`);
+    moveArtifact(pluginConfigPath(plugin.name), `plugin-config-${plugin.name}`);
 
     try {
       writeRegistry(registry);
     } catch (error) {
-      if (moved) {
+      const rollbackErrors: unknown[] = [];
+      for (const artifact of [...moved].reverse()) {
         try {
-          renameSync(moved.trash, moved.original);
+          renameSync(artifact.trash, artifact.original);
         } catch (rollbackError) {
-          throw new AggregateError([error, rollbackError], `Plugin removal failed and the checkout could not be restored from ${moved.trash}`);
+          rollbackErrors.push(rollbackError);
         }
+      }
+      if (rollbackErrors.length > 0) {
+        throw new AggregateError([error, ...rollbackErrors], "Plugin removal failed and one or more artifacts could not be restored");
       }
       throw error;
     }
 
-    const sourceNote = sourceStillUsed
-      ? "共用的來源仍有其他外掛使用，因此保留 checkout。"
-      : "未使用的來源已移到 workspace/.trash/。";
-    return `已卸載外掛「${name}」。${sourceNote}請執行 /restart 套用變更。`;
+    return `已卸載外掛「${name}」。專屬 checkout（含 package、node_modules 與 lockfile）及設定檔已移到 workspace/.trash/。請執行 /restart 套用變更。`;
   });
 }

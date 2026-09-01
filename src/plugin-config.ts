@@ -64,8 +64,12 @@ function writeYaml(path: string, value: Record<string, unknown>): void {
   }
 }
 
+export function pluginConfigPath(pluginName: string): string {
+  return resolve(PLUGIN_CONFIG_DIR, `${safePluginName(pluginName)}.yaml`);
+}
+
 export function createPluginConfigStore(pluginName: string): PluginConfigStore {
-  const path = resolve(PLUGIN_CONFIG_DIR, `${safePluginName(pluginName)}.yaml`);
+  const path = pluginConfigPath(pluginName);
   if (!existsSync(path)) writeYaml(path, {});
   return {
     path,

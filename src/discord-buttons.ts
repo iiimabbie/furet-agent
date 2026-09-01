@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename } from "node:fs/promises";
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -14,7 +14,8 @@ import {
 } from "discord.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
-import { DISCORD_BUTTONS_FILE, WORKSPACE_CONFIG_DIR } from "./paths.js";
+import { getDb } from "./db.js";
+import { DISCORD_BUTTONS_FILE, TRASH_DIR } from "./paths.js";
 import { resolveEmojiMarkup } from "./emoji.js";
 import { editPayload, editTextMessageAsV1, interactionPayload, messagePayload } from "./utils/discord-message.js";
 
@@ -27,7 +28,6 @@ const MAX_MESSAGE_LENGTH = 1950;
 const BUTTONS_PER_ROW = 5;
 const MAX_ROWS = 5;
 const MAX_BUTTONS = BUTTONS_PER_ROW * MAX_ROWS; // 25
-let buttonQueue: Promise<void> = Promise.resolve();
 const activeButtonExecutions = new Set<string>();
 
 export type DiscordButtonStyle = "primary" | "secondary" | "success" | "danger";
@@ -93,9 +93,24 @@ export interface DiscordButtonMessageRecord {
   result?: string;
 }
 
-interface ButtonStore {
-  version: 1;
-  messages: DiscordButtonMessageRecord[];
+interface DiscordButtonRow {
+  id: string;
+  channel_id: string;
+  message_id: string;
+  content: string;
+  buttons_json: string;
+  allowed_user_ids_json: string;
+  preview_button_id: string | null;
+  preview_field: string | null;
+  preview_label: string | null;
+  interaction_mode: string;
+  disabled_button_ids_json: string;
+  button_results_json: string;
+  status: DiscordButtonMessageStatus;
+  created_at: string;
+  expires_at: string;
+  decided_at: string | null;
+  result: string | null;
 }
 
 export interface CreateDiscordButtonMessageInput {
@@ -114,50 +129,150 @@ export interface DiscordButtonActionExecutor {
   (toolName: string, args: Record<string, unknown>): Promise<string>;
 }
 
-function emptyStore(): ButtonStore {
-  return { version: 1, messages: [] };
+let buttonStoreReady: Promise<void> | undefined;
+
+function normalizeRecord(record: DiscordButtonMessageRecord): DiscordButtonMessageRecord {
+  record.interactionMode = record.interactionMode === "independent" ? "independent" : "group";
+  if (!Array.isArray(record.disabledButtonIds)) record.disabledButtonIds = [];
+  if (record.buttonResults === null || typeof record.buttonResults !== "object") record.buttonResults = {};
+  delete record.processingButtonIds;
+  return record;
 }
 
-async function loadStore(): Promise<ButtonStore> {
-  try {
-    const parsed = JSON.parse(await readFile(DISCORD_BUTTONS_FILE, "utf8")) as Partial<ButtonStore>;
-    if (parsed.version !== 1 || !Array.isArray(parsed.messages)) return emptyStore();
-    // Backward compat: records written before independent mode lack these fields.
-    for (const m of parsed.messages) {
-      if (m.interactionMode !== "independent") m.interactionMode = "group";
-      if (!Array.isArray(m.disabledButtonIds)) m.disabledButtonIds = [];
-      if (m.buttonResults === null || typeof m.buttonResults !== "object") m.buttonResults = {};
-      // This field is only attached to a cloned record while rendering. Older versions
-      // could persist it, so always discard stale values read from disk.
-      delete m.processingButtonIds;
+function rowToRecord(row: DiscordButtonRow): DiscordButtonMessageRecord {
+  return normalizeRecord({
+    id: row.id,
+    channelId: row.channel_id,
+    messageId: row.message_id,
+    content: row.content,
+    buttons: JSON.parse(row.buttons_json) as DiscordButtonDefinition[],
+    allowedUserIds: JSON.parse(row.allowed_user_ids_json) as string[],
+    previewButtonId: row.preview_button_id ?? undefined,
+    previewField: row.preview_field ?? undefined,
+    previewLabel: row.preview_label ?? undefined,
+    interactionMode: row.interaction_mode === "independent" ? "independent" : "group",
+    disabledButtonIds: JSON.parse(row.disabled_button_ids_json) as string[],
+    buttonResults: JSON.parse(row.button_results_json) as Record<string, DiscordButtonResult>,
+    status: row.status,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    decidedAt: row.decided_at ?? undefined,
+    result: row.result ?? undefined,
+  });
+}
+
+function writeRecord(record: DiscordButtonMessageRecord): void {
+  getDb().prepare(`
+    INSERT INTO discord_button_messages (
+      id, channel_id, message_id, content, buttons_json, allowed_user_ids_json,
+      preview_button_id, preview_field, preview_label, interaction_mode,
+      disabled_button_ids_json, button_results_json, status, created_at, expires_at,
+      decided_at, result
+    ) VALUES (
+      @id, @channelId, @messageId, @content, @buttonsJson, @allowedUserIdsJson,
+      @previewButtonId, @previewField, @previewLabel, @interactionMode,
+      @disabledButtonIdsJson, @buttonResultsJson, @status, @createdAt, @expiresAt,
+      @decidedAt, @result
+    )
+    ON CONFLICT(id) DO UPDATE SET
+      channel_id = excluded.channel_id, message_id = excluded.message_id,
+      content = excluded.content, buttons_json = excluded.buttons_json,
+      allowed_user_ids_json = excluded.allowed_user_ids_json,
+      preview_button_id = excluded.preview_button_id, preview_field = excluded.preview_field,
+      preview_label = excluded.preview_label, interaction_mode = excluded.interaction_mode,
+      disabled_button_ids_json = excluded.disabled_button_ids_json,
+      button_results_json = excluded.button_results_json, status = excluded.status,
+      created_at = excluded.created_at, expires_at = excluded.expires_at,
+      decided_at = excluded.decided_at, result = excluded.result
+  `).run({
+    id: record.id,
+    channelId: record.channelId,
+    messageId: record.messageId,
+    content: record.content,
+    buttonsJson: JSON.stringify(record.buttons),
+    allowedUserIdsJson: JSON.stringify(record.allowedUserIds),
+    previewButtonId: record.previewButtonId ?? null,
+    previewField: record.previewField ?? null,
+    previewLabel: record.previewLabel ?? null,
+    interactionMode: record.interactionMode,
+    disabledButtonIdsJson: JSON.stringify(record.disabledButtonIds ?? []),
+    buttonResultsJson: JSON.stringify(record.buttonResults ?? {}),
+    status: record.status,
+    createdAt: record.createdAt,
+    expiresAt: record.expiresAt,
+    decidedAt: record.decidedAt ?? null,
+    result: record.result ?? null,
+  });
+}
+
+async function ensureButtonStoreReady(): Promise<void> {
+  buttonStoreReady ??= (async () => {
+    getDb();
+    try {
+      const parsed = JSON.parse(await readFile(DISCORD_BUTTONS_FILE, "utf8")) as { version?: number; messages?: DiscordButtonMessageRecord[] };
+      if (parsed.version !== 1 || !Array.isArray(parsed.messages)) {
+        throw new Error(`invalid legacy Discord button store: ${DISCORD_BUTTONS_FILE}`);
+      }
+      const records = parsed.messages.map(record => normalizeRecord(record));
+      getDb().transaction(() => {
+        for (const record of records) {
+          const exists = getDb().prepare("SELECT 1 FROM discord_button_messages WHERE id = ?").get(record.id);
+          if (!exists) writeRecord(record);
+        }
+      })();
+      await mkdir(TRASH_DIR, { recursive: true });
+      const archivedPath = `${TRASH_DIR}/discord-buttons.${Date.now()}.${randomUUID()}.json`;
+      await rename(DISCORD_BUTTONS_FILE, archivedPath);
+      logger.info({ count: records.length, archivedPath }, "legacy Discord button store migrated to SQLite");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      logger.error({ err }, "failed to migrate legacy Discord button store");
+      throw err;
     }
-    return { version: 1, messages: parsed.messages };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      logger.error({ err }, "failed to read Discord button store");
-    }
-    return emptyStore();
-  }
+  })();
+  await buttonStoreReady;
 }
 
-async function withButtonLock<T>(fn: () => Promise<T>): Promise<T> {
-  const previous = buttonQueue;
-  let release!: () => void;
-  buttonQueue = new Promise<void>(resolve => { release = resolve; });
-  await previous;
-  try {
-    return await fn();
-  } finally {
-    release();
-  }
+async function getButtonRecord(id: string): Promise<DiscordButtonMessageRecord | undefined> {
+  await ensureButtonStoreReady();
+  const row = getDb().prepare("SELECT * FROM discord_button_messages WHERE id = ?").get(id) as DiscordButtonRow | undefined;
+  return row ? rowToRecord(row) : undefined;
 }
 
-async function saveStore(store: ButtonStore): Promise<void> {
-  await mkdir(WORKSPACE_CONFIG_DIR, { recursive: true });
-  const tempPath = `${DISCORD_BUTTONS_FILE}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
-  await rename(tempPath, DISCORD_BUTTONS_FILE);
-  await chmod(DISCORD_BUTTONS_FILE, 0o600);
+interface ButtonMutationResult {
+  changed: boolean;
+  record?: DiscordButtonMessageRecord;
+}
+
+async function mutateButtonRecord(
+  id: string,
+  mutate: (record: DiscordButtonMessageRecord) => boolean,
+): Promise<ButtonMutationResult> {
+  await ensureButtonStoreReady();
+  return getDb().transaction(() => {
+    const row = getDb().prepare("SELECT * FROM discord_button_messages WHERE id = ?").get(id) as DiscordButtonRow | undefined;
+    if (!row) return { changed: false };
+    const record = rowToRecord(row);
+    const changed = mutate(record);
+    if (changed) writeRecord(record);
+    return { changed, record: structuredClone(record) };
+  })();
+}
+
+export async function initializeDiscordButtonStore(): Promise<void> {
+  await ensureButtonStoreReady();
+}
+
+async function insertButtonRecord(record: DiscordButtonMessageRecord): Promise<void> {
+  await ensureButtonStoreReady();
+  getDb().transaction(() => {
+    const retentionCutoff = new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString();
+    getDb().prepare(`
+      DELETE FROM discord_button_messages
+      WHERE status NOT IN ('pending', 'processing') AND created_at < ?
+    `).run(retentionCutoff);
+    writeRecord(record);
+  })();
 }
 
 function truncate(text: string, limit: number): string {
@@ -304,12 +419,9 @@ async function editButtonMessage(client: Client, record: DiscordButtonMessageRec
   if (result.messageId !== record.messageId) {
     const oldMessageId = record.messageId;
     record.messageId = result.messageId;
-    await withButtonLock(async () => {
-      const store = await loadStore();
-      const current = store.messages.find(item => item.id === record.id);
-      if (!current) return;
+    await mutateButtonRecord(record.id, current => {
       current.messageId = result.messageId;
-      await saveStore(store);
+      return true;
     });
     logger.info(
       { buttonMessageId: record.id, oldMessageId, newMessageId: result.messageId },
@@ -430,15 +542,7 @@ export async function createDiscordButtonMessage(
   record.messageId = sent.id;
 
   try {
-    await withButtonLock(async () => {
-      const store = await loadStore();
-      const retentionCutoff = Date.now() - 30 * 24 * 60 * 60_000;
-      store.messages = store.messages.filter(item =>
-        item.status === "pending" || item.status === "processing" || Date.parse(item.createdAt) >= retentionCutoff
-      );
-      store.messages.push(record);
-      await saveStore(store);
-    });
+    await insertButtonRecord(record);
   } catch (err) {
     await sent.edit(editPayload(resolveEmojiMarkup(`${record.content}\n\n狀態：**按鈕狀態保存失敗**`), { allowedMentions: { parse: [] } })).catch(() => {});
     throw err;
@@ -455,14 +559,7 @@ export async function handleDiscordButtonInteraction(
   if (!interaction.isButton() && !interaction.isModalSubmit()) return false;
   const parsed = parseCustomId(interaction.customId);
   if (!parsed) return false;
-  const getRecord = async (): Promise<DiscordButtonMessageRecord | undefined> =>
-    withButtonLock(async () => {
-      const store = await loadStore();
-      const record = store.messages.find(item => item.id === parsed.recordId);
-      return record ? structuredClone(record) : undefined;
-    });
-
-  let record = await getRecord();
+  let record = await getButtonRecord(parsed.recordId);
   if (!record) {
     await interaction.reply(interactionPayload("這組按鈕已不存在。", { ephemeral: true })).catch(() => {});
     return true;
@@ -470,17 +567,17 @@ export async function handleDiscordButtonInteraction(
   if (!(await requireAllowedUser(record, interaction))) return true;
 
   if (isExpired(record) && record.status === "pending") {
-    const expired = await withButtonLock(async () => {
-      const store = await loadStore();
-      const current = store.messages.find(item => item.id === parsed.recordId);
-      if (!current || current.status !== "pending") return current ? structuredClone(current) : undefined;
+    const expiration = await mutateButtonRecord(parsed.recordId, current => {
+      if (current.status !== "pending") return false;
       current.status = "expired";
       current.decidedAt = new Date().toISOString();
-      await saveStore(store);
-      return structuredClone(current);
+      return true;
     });
     await interaction.deferUpdate().catch(() => {});
-    if (expired) await editButtonMessage(client, expired).catch(err => logger.error({ err, buttonMessageId: parsed.recordId }, "failed to expire Discord buttons"));
+    if (expiration.changed && expiration.record) {
+      await editButtonMessage(client, expiration.record).catch(err =>
+        logger.error({ err, buttonMessageId: parsed.recordId }, "failed to expire Discord buttons"));
+    }
     return true;
   }
 
@@ -515,19 +612,19 @@ export async function handleDiscordButtonInteraction(
 
   if (interaction.isModalSubmit() && parsed.modal && button.behavior === "edit") {
     const value = interaction.fields.getTextInputValue("value");
-    const updated = await withButtonLock(async () => {
-      const store = await loadStore();
-      const current = store.messages.find(item => item.id === parsed.recordId);
-      if (!current || current.status !== "pending") return current ? structuredClone(current) : undefined;
+    const update = await mutateButtonRecord(parsed.recordId, current => {
+      if (current.status !== "pending") return false;
       const editButton = getButton(current, parsed.buttonId);
       const target = editButton?.targetButtonId ? getButton(current, editButton.targetButtonId) : undefined;
-      if (!editButton?.editableField || !target?.actionArgs) return undefined;
+      if (!editButton?.editableField || !target?.actionArgs) return false;
       target.actionArgs[editButton.editableField] = value;
-      await saveStore(store);
-      return structuredClone(current);
+      return true;
     });
-    if (!updated || updated.status !== "pending") {
-      await interaction.reply(interactionPayload(updated ? `這組按鈕目前是「${statusLabel(updated.status)}」。` : "無法更新這組按鈕。", { ephemeral: true }));
+    const updated = update.record;
+    if (!update.changed || !updated || updated.status !== "pending") {
+      await interaction.reply(interactionPayload(updated && updated.status !== "pending"
+        ? `這組按鈕目前是「${statusLabel(updated.status)}」。`
+        : "無法更新這組按鈕。", { ephemeral: true }));
       return true;
     }
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -540,17 +637,15 @@ export async function handleDiscordButtonInteraction(
   if (!interaction.isButton()) return true;
 
   if (button.behavior === "close") {
-    const closed = await withButtonLock(async () => {
-      const store = await loadStore();
-      const current = store.messages.find(item => item.id === parsed.recordId);
-      if (!current || current.status !== "pending") return current ? structuredClone(current) : undefined;
+    const closure = await mutateButtonRecord(parsed.recordId, current => {
+      if (current.status !== "pending") return false;
       current.status = "closed";
       current.result = button.resultText || button.label;
       current.decidedAt = new Date().toISOString();
-      await saveStore(store);
-      return structuredClone(current);
+      return true;
     });
-    if (!closed || closed.status !== "closed") {
+    const closed = closure.record;
+    if (!closure.changed || !closed || closed.status !== "closed") {
       await interaction.reply(interactionPayload(closed ? `這組按鈕目前是「${statusLabel(closed.status)}」。` : "這組按鈕已不存在。", { ephemeral: true }));
       return true;
     }
@@ -563,20 +658,18 @@ export async function handleDiscordButtonInteraction(
   if (button.behavior === "execute") {
     if (isIndependent(record)) return handleIndependentExecute(interaction, client, executeAction, parsed, button.id);
 
-    const transition = await withButtonLock(async () => {
-      const store = await loadStore();
-      const current = store.messages.find(item => item.id === parsed.recordId);
-      if (!current || current.status !== "pending") return current ? { transitioned: false, record: structuredClone(current) } : { transitioned: false };
+    const transition = await mutateButtonRecord(parsed.recordId, current => {
+      if (current.status !== "pending") return false;
       current.status = "processing";
-      await saveStore(store);
-      return { transitioned: true, record: structuredClone(current) };
+      return true;
     });
-    if (!transition.transitioned || !transition.record) {
-      await interaction.reply(interactionPayload(transition.record ? `這組按鈕目前是「${statusLabel(transition.record.status)}」。` : "這組按鈕已不存在。", { ephemeral: true }));
+    const transitionRecord = transition.record;
+    if (!transition.changed || !transitionRecord || transitionRecord.status !== "processing") {
+      await interaction.reply(interactionPayload(transitionRecord ? `這組按鈕目前是「${statusLabel(transitionRecord.status)}」。` : "這組按鈕已不存在。", { ephemeral: true }));
       return true;
     }
 
-    record = transition.record;
+    record = transitionRecord;
     const actionButton = getButton(record, button.id)!;
     await interaction.deferUpdate();
     await editButtonMessage(client, record);
@@ -592,17 +685,13 @@ export async function handleDiscordButtonInteraction(
       logger.error({ err, buttonMessageId: record.id, buttonId: button.id, actionTool: actionButton.actionTool }, "Discord button action failed");
     }
 
-    const finalized = await withButtonLock(async () => {
-      const store = await loadStore();
-      const current = store.messages.find(item => item.id === record!.id);
-      if (!current) return undefined;
+    const finalization = await mutateButtonRecord(record.id, current => {
       current.status = finalStatus;
       current.result = finalStatus === "completed" && actionButton.resultText ? actionButton.resultText : result;
       current.decidedAt = new Date().toISOString();
-      await saveStore(store);
-      return structuredClone(current);
+      return true;
     });
-    if (finalized) await editButtonMessage(client, finalized);
+    if (finalization.record) await editButtonMessage(client, finalization.record);
     logger.info({ buttonMessageId: record.id, buttonId: button.id, actionTool: actionButton.actionTool, status: finalStatus }, "Discord button action completed");
     return true;
   }
@@ -637,22 +726,23 @@ async function handleIndependentExecute(
   if (!interaction.isButton()) return true;
   const executionKey = `${parsed.recordId}:${buttonId}`;
 
-  // Claim the button (anti double-click) inside the lock.
-  const claim = await withButtonLock(async () => {
-    const store = await loadStore();
-    const current = store.messages.find(item => item.id === parsed.recordId);
-    if (!current || current.status !== "pending") {
-      return { ok: false as const, status: current?.status };
-    }
+  // Claim the button (anti double-click) before starting the action.
+  const current = await getButtonRecord(parsed.recordId);
+  let claim:
+    | { ok: true; record: DiscordButtonMessageRecord }
+    | { ok: false; status?: DiscordButtonMessageStatus; alreadyActed?: boolean };
+  if (!current || current.status !== "pending") {
+    claim = { ok: false, status: current?.status };
+  } else {
     const disabled = new Set(current.disabledButtonIds ?? []);
     if (disabled.has(buttonId) || activeButtonExecutions.has(executionKey)) {
-      return { ok: false as const, alreadyActed: true };
+      claim = { ok: false, alreadyActed: true };
+    } else {
+      activeButtonExecutions.add(executionKey);
+      current.processingButtonIds = [buttonId];
+      claim = { ok: true, record: current };
     }
-    activeButtonExecutions.add(executionKey);
-    const rendering = structuredClone(current);
-    rendering.processingButtonIds = [buttonId];
-    return { ok: true as const, record: rendering };
-  });
+  }
 
   if (!claim.ok) {
     const msg = claim.alreadyActed
@@ -682,11 +772,9 @@ async function handleIndependentExecute(
 
   const outcomeText = !failed && actionButton.resultText ? actionButton.resultText : result;
 
-  const finalized = await withButtonLock(async () => {
-    try {
-      const store = await loadStore();
-      const current = store.messages.find(item => item.id === parsed.recordId);
-      if (!current) return undefined;
+  let finalized: DiscordButtonMessageRecord | undefined;
+  try {
+    const finalization = await mutateButtonRecord(parsed.recordId, current => {
       const disabled = new Set(current.disabledButtonIds ?? []);
       disabled.add(buttonId);
       // A successful disableAllOnComplete button subsumes the rest.
@@ -699,12 +787,12 @@ async function handleIndependentExecute(
         current.status = "completed";
         current.decidedAt = new Date().toISOString();
       }
-      await saveStore(store);
-      return structuredClone(current);
-    } finally {
-      activeButtonExecutions.delete(executionKey);
-    }
-  });
+      return true;
+    });
+    finalized = finalization.record;
+  } finally {
+    activeButtonExecutions.delete(executionKey);
+  }
 
   if (finalized) {
     await editButtonMessage(client, finalized).catch(err =>

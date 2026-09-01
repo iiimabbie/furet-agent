@@ -77,6 +77,34 @@ export function getDb(): Database.Database {
     )
   `);
 
+  // Persistent Discord button state. Flexible button/action payloads remain JSON, while
+  // lifecycle fields stay queryable for atomic transitions and retention cleanup.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS discord_button_messages (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      buttons_json TEXT NOT NULL,
+      allowed_user_ids_json TEXT NOT NULL,
+      preview_button_id TEXT,
+      preview_field TEXT,
+      preview_label TEXT,
+      interaction_mode TEXT NOT NULL,
+      disabled_button_ids_json TEXT NOT NULL DEFAULT '[]',
+      button_results_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      decided_at TEXT,
+      result TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS discord_button_messages_message_id
+      ON discord_button_messages(message_id);
+    CREATE INDEX IF NOT EXISTS discord_button_messages_status_expires
+      ON discord_button_messages(status, expires_at);
+  `);
+
   // Session archive
   db.exec(`
     CREATE TABLE IF NOT EXISTS session_archive (

@@ -469,9 +469,9 @@ session 照常記錄該回合。
 - **`edit`**：開啟 Discord Modal，修改指定 `execute` 按鈕之 action args 內一個 top-level string 欄位，修改後按鈕組保持可操作。可選擇把該欄位設為動態 preview，讓原訊息同步更新。
 - **`close`**：關閉整組按鈕，不執行外部 action。顯示文字由呼叫端提供，不預設代表拒絕或取消。
 
-按鈕狀態持久化在 `workspace/config/discord-buttons.json`（mode `0600`），因此訊息建立後即使 Gateway 重啟，既有按鈕仍能找到對應 action。每組按鈕有到期時間，並支援兩種互動模式：預設 `group` 在第一個 execute／close 後結束整組；`independent` 則讓每顆 execute 各自執行，完成後只停用該顆並保留其他按鈕，全部處理完才把整組標成完成。每組按鈕可指定 `allowed_user_ids`；省略時只允許 `config.discord.owner_id`。未列入者只收到 ephemeral 拒絕訊息。允許非 owner 點擊時，action 會以 `discord-other` request context 執行，因此仍不能繞過 owner-only tool 權限。
+按鈕狀態持久化在 `workspace/config/furet.db` 的 `discord_button_messages` 表，因此訊息建立後即使 Gateway 重啟，既有按鈕仍能找到對應 action。生命週期與 Discord message ID 是可索引欄位；按鈕定義、action args、允許使用者與逐顆結果保留為 JSON 欄位，兼顧查詢／原子狀態轉移與 payload 彈性。Gateway 啟動時會把舊版 `workspace/config/discord-buttons.json` 以單一 transaction 匯入 SQLite，確認成功後才把舊檔移到 `workspace/.trash/`；匯入失敗則停止接受 Discord 流量，不會靜默遺失尚未操作的按鈕。每組按鈕有到期時間，並支援兩種互動模式：預設 `group` 在第一個 execute／close 後結束整組；`independent` 則讓每顆 execute 各自執行，完成後只停用該顆並保留其他按鈕，全部處理完才把整組標成完成。每組按鈕可指定 `allowed_user_ids`；省略時只允許 `config.discord.owner_id`。未列入者只收到 ephemeral 拒絕訊息。允許非 owner 點擊時，action 會以 `discord-other` request context 執行，因此仍不能繞過 owner-only tool 權限。
 
-Button message 會停用 allowed mentions，避免外部文字或草稿意外 ping 使用者。`group` 模式執行 action 前先把整組狀態改為 `processing` 並移除按鈕；`independent` 模式用 process-local execution set 鎖住單顆按鈕，顯示暫時的處理中狀態，成功或失敗後再持久化該顆結果。兩者都透過 serialized queue 保護狀態轉換，防止快速重複點擊造成同一 action 執行兩次，也避免並行寫入互相覆蓋。Modal 目前只修改一個字串欄位。
+Button message 會停用 allowed mentions，避免外部文字或草稿意外 ping 使用者。`group` 模式執行 action 前，會在 SQLite transaction 內確認目前仍為 `pending` 才原子轉成 `processing` 並移除按鈕；`independent` 模式用 process-local execution set 鎖住單顆按鈕，顯示暫時的處理中狀態，成功或失敗後再以 transaction 持久化該顆結果。快速重複點擊不會讓同一組 group action 重複取得執行權，並行更新也不再靠整份 JSON 的 read-modify-rename。Modal 目前只修改一個字串欄位。
 
 ### Slash Commands
 - `/new` — silent memory flush + 歸檔 session + AI 重新打招呼
@@ -697,8 +697,8 @@ furet plugin remove <name>
 - Managed checkout 固定放在 `workspace/plugins/`，安裝來源、package 對應與啟用狀態都記在 mode `0600` 的 `workspace/config/plugins.json`；runtime loader 會把 managed registry 與 `config.yaml` 的手動外掛合併，重複路徑以手動設定為準。這讓容器可維持唯讀掛載 `config.yaml`，Discord 安裝仍只需寫入 workspace。
 - plugin package 必須在 `package.json` 宣告 `furet.plugin`（package 內的相對 entry path）；可選 `furet.name`，否則用去掉 npm scope 的 package name。安裝器拒絕絕對路徑與 `..` 逃逸。
 - Git 來源 shallow clone；本機目錄則複製進 managed area。安裝／更新會執行 `npm install`，並在 package 有 `build` script 時執行；npm workspace monorepo 可用 package name 或相對路徑選定。這些 scripts 等同執行受信任程式碼，不能把 installer 當 sandbox。
-- 同一 monorepo 的多個 plugin 共用 checkout。`update` 對 source 做 `git pull --ff-only` 後重裝 dependencies、重建已註冊 packages；若 package identity 或 entry 改變則拒絕靜默搬移，要求 remove + install。local copy 不做 in-place update。
-- enable／disable／install／remove 只改持久設定，**不自動重啟 gateway**。remove 最後一個引用某 source 的 plugin 時，把 checkout 移到 `workspace/.trash/`，不直接永久刪除。
+- 每次安裝擁有一份獨立 checkout，即使多個 plugin 來自同一個 monorepo 也不共用。這讓 uninstall 可以把該次安裝建立的 package、`node_modules`、lockfile 與原始碼整份移除，不必猜哪些 artifact 仍被別的 plugin 共用。`update` 會建立新的 staged checkout、重裝 dependencies、重建該 plugin，驗證 identity／entry 後原子替換；local copy 不做 in-place update。
+- enable／disable／install／remove 只改持久設定，**不自動重啟 gateway**。remove 會在同一次操作中移除 registry record，並把該 plugin 的專屬 checkout 與 `workspace/config/plugins/<name>.yaml` 一起移到 `workspace/.trash/`；registry 寫入失敗時兩者都回復。若讀到舊版共用 checkout，單顆卸載會完整失敗且不修改任何資料，不會假裝成功卻留下 package、`node_modules` 或 lockfile；應先一起移除該來源的舊 plugins，再按需重新安裝。
 - 仍保留手動 `config.plugins` path，方便開發中的單檔 module；installer 是正式 UX，不是 loader 的必要依賴。
 
 ### 設定
@@ -817,6 +817,7 @@ interface PluginRuntimeContext {
 | `session_fts` | FTS5 session 全文搜尋（存 CJK bigram token，非原文） |
 | `session_summary_vectors` | compact continuation summary 與 session ID |
 | `session_summary_vectors_vec_cos` | compact summary 的 cosine 向量索引 |
+| `discord_button_messages` | Discord 按鈕定義、權限、生命週期與執行結果 |
 
 ### 記憶工具
 

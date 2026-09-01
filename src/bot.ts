@@ -11,7 +11,7 @@ import { loadConfig, REASONING_EFFORTS, setModelConfig, type ReasoningEffort } f
 import { setDiscordClient } from "./tools/builtin/discord.js";
 import { executeTool } from "./tools/registry.js";
 import { runWithContext } from "./tools/context.js";
-import { handleDiscordButtonInteraction } from "./discord-buttons.js";
+import { handleDiscordButtonInteraction, initializeDiscordButtonStore } from "./discord-buttons.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { chunkMessage } from "./utils/chunk-message.js";
 import { extractMessageAttachments, extractMessageText, editPayload, interactionPayload, legacyComponentWebhookEditBody, messagePayload, webhookEditBody } from "./utils/discord-message.js";
@@ -356,6 +356,10 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
           status: (config.discord.status || "online") as PresenceStatusData,
           activities: [{ name: config.discord.activity || "Burrowing around", type: ActivityType.Custom }],
         });
+
+        // Migrate legacy JSON button state before reporting restart completion or
+        // accepting interactions. The old file is archived only after a full import.
+        await initializeDiscordButtonStore();
 
         await completePendingRestart(c.user.username).catch(err =>
           logger.error({ err: (err as Error).message }, "failed to update restart completion message")
