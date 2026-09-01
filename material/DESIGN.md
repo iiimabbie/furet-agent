@@ -590,7 +590,7 @@ exposure 合法、`match` 至少有 keyword/alias/signal。
 | `bash` | 執行 shell 指令 |
 | `read_file` | 讀檔 |
 | `write_file` | 寫檔 |
-| `get_weather` | wttr.in 天氣查詢 |
+| `get_weather` | OpenWeatherMap 天氣查詢；先以 Direct Geocoding 解析地點，再用經緯度取得目前天氣與預報，並為容易誤判的地名提供明確別名 |
 | `memory_save` | 追加到當日記憶檔 + SQLite 向量 |
 | `memory_search` | 語意搜尋 + 關鍵字搜尋 |
 | `memory_list` | 列出所有記憶檔 |

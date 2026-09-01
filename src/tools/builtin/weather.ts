@@ -3,6 +3,13 @@ import type { Tool } from "../../types.js";
 
 const OWM_API_KEY = "d3f9628635d37bcaad44511d9d5f8762";
 const OWM_BASE = "https://api.openweathermap.org/data/2.5";
+const OWM_GEO_BASE = "https://api.openweathermap.org/geo/1.0";
+
+const LOCATION_ALIASES: Record<string, string> = {
+  板橋: "Banqiao,TW",
+  板橋區: "Banqiao,TW",
+  新北市板橋區: "Banqiao,TW",
+};
 
 function owmLang(lang: string): string {
   if (lang.startsWith("zh")) return "zh_tw";
@@ -21,6 +28,15 @@ async function fetchWithRetry(url: string): Promise<Response> {
     if (!res.ok) throw new Error(`HTTP ${res.status} on retry`);
     return res;
   }
+}
+
+interface OWMGeoLocation {
+  name: string;
+  local_names?: Record<string, string>;
+  lat: number;
+  lon: number;
+  country: string;
+  state?: string;
 }
 
 interface OWMCurrent {
@@ -51,6 +67,21 @@ interface OWMForecastResponse {
   list: OWMForecastItem[];
 }
 
+async function resolveLocation(city: string): Promise<OWMGeoLocation> {
+  const normalized = city.replace(/\s+/g, "");
+  const query = LOCATION_ALIASES[normalized] ?? city;
+  const geoUrl = `${OWM_GEO_BASE}/direct?q=${encodeURIComponent(query)}&limit=1&appid=${OWM_API_KEY}`;
+  const geoRes = await fetchWithRetry(geoUrl);
+  const locations = (await geoRes.json()) as OWMGeoLocation[];
+  const location = locations[0];
+
+  if (!location) {
+    throw new Error(`Location not found: ${city}`);
+  }
+
+  return location;
+}
+
 export const weather: Tool = {
   name: "get_weather",
   description:
@@ -70,13 +101,19 @@ export const weather: Tool = {
     logger.info({ city, lang }, "weather query (OpenWeatherMap)");
 
     try {
+      const location = await resolveLocation(city);
+      logger.info(
+        { city, resolvedName: location.name, country: location.country, lat: location.lat, lon: location.lon },
+        "weather location resolved",
+      );
+
       // Current weather
-      const curUrl = `${OWM_BASE}/weather?q=${encodeURIComponent(city)}&appid=${OWM_API_KEY}&units=metric&lang=${ol}`;
+      const curUrl = `${OWM_BASE}/weather?lat=${location.lat}&lon=${location.lon}&appid=${OWM_API_KEY}&units=metric&lang=${ol}`;
       const curRes = await fetchWithRetry(curUrl);
       const cur = (await curRes.json()) as OWMCurrent;
 
       // 5-day / 3-hour forecast (we only use first 3 days = 24 entries)
-      const fcUrl = `${OWM_BASE}/forecast?q=${encodeURIComponent(city)}&appid=${OWM_API_KEY}&units=metric&lang=${ol}&cnt=24`;
+      const fcUrl = `${OWM_BASE}/forecast?lat=${location.lat}&lon=${location.lon}&appid=${OWM_API_KEY}&units=metric&lang=${ol}&cnt=24`;
       const fcRes = await fetchWithRetry(fcUrl);
       const fc = (await fcRes.json()) as OWMForecastResponse;
 
@@ -123,7 +160,7 @@ export const weather: Tool = {
       });
 
       const result = {
-        city: cur.name,
+        city: location.local_names?.[ol] ?? location.local_names?.zh ?? location.name,
         current: {
           temp_C: String(cur.main.temp),
           feels_like_C: String(cur.main.feels_like),
