@@ -42,7 +42,7 @@ import { bash } from "./builtin/bash.js";
 import { readFileTool } from "./builtin/read-file.js";
 import { writeFileTool } from "./builtin/write-file.js";
 import { weather } from "./builtin/weather.js";
-import { memorySave, memorySearch, memoryList, memoryAdd, memoryReplace, memoryRemove } from "./builtin/memory.js";
+import { diaryNote, memorySearch, memoryList, memoryAdd, memoryReplace, memoryRemove } from "./builtin/memory.js";
 import { peopleAdd, peopleUpdate, peopleRemove } from "./builtin/people.js";
 import { cronCreate, cronList, cronDelete, cronToggle, cronUpdate } from "./builtin/cron.js";
 import { reminderCreate, reminderList, reminderDelete } from "./builtin/reminder.js";
@@ -84,7 +84,7 @@ const baseRegistrations: ToolRegistration[] = [
   reg(bash, "native", "filesystem-shell"),
   reg(readFileTool, "native", "filesystem-shell"),
   reg(writeFileTool, "native", "filesystem-shell"),
-  reg(memorySave, "native", "memory-people"),
+  reg(diaryNote, "native", "memory-people"),
   reg(memorySearch, "native", "memory-people"),
   reg(peopleAdd, "native", "memory-people"),
   reg(peopleUpdate, "native", "memory-people"),

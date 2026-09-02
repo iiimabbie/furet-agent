@@ -516,9 +516,9 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 | Plugins | 背景服務接流量前先 `loadPlugins()`；Discord 啟用時待 client ready 後才 `startPlugins()`，再註冊含外掛在內的 slash commands。Discord 停用或登入失敗時仍啟動非 Discord 能力，message transport 會明確拒絕。shutdown 時 `stopPlugins()`（見 Plugin 系統） |
 | PID file | `furet.pid`，啟動時殺掉舊進程確保單實例 |
 
-日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日記憶檔的 memory_save 筆記只當輔助。只讀每日檔會漏掉未被 memory_save 的對話（例如純聊天的社群互動）——flush 那步用的是「長期記憶」的門檻，而日記要的是連續性。兩道門檻因此分開：MEMORY.md 留 30 天長期濾網，每日檔／日記照收社群互動。
+日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日記憶檔的 diary_note 補註只當輔助。transcript 是完整的對話紀錄，diary_note 僅補充 transcript 無法保留的觀察（情緒、反省、跨日脈絡），不重複記錄事件本身。
 
-`memory_save` 的格式刻意維持原子化、可檢索的一事一筆，因此不能直接成為日記骨架。Daily Journal prompt 會先把它視為事實索引與防遺漏清單，再從 transcript 找出整天的主線，把相關的起因、行動、反應與結果融合成有脈絡的第一人稱段落。標題仍用於 Obsidian 導覽，但正文以連續散文為主；只有真正的清單才用 bullet。實作命令、檔名與中間步驟只保留足以理解事件意義的部分，避免成品退化成 changelog、工作報告或分類後的流水帳。這項 prompt 規則必須同時維護 `workspace/JOURNAL.md` 與 `templates/JOURNAL.md`，確保正式環境和新 workspace 初始化結果一致。
+`diary_note` 是補充性的觀察與反省，不是事件記錄，因此不能成為日記骨架。Daily Journal prompt 以 transcript 為唯一事實來源，找出整天的主線，把相關的起因、行動、反應與結果融合成有脈絡的第一人稱段落；diary_note 的情緒觀察和跨日脈絡作為輔助色彩織入。標題仍用於 Obsidian 導覽，但正文以連續散文為主；只有真正的清單才用 bullet。實作命令、檔名與中間步驟只保留足以理解事件意義的部分，避免成品退化成 changelog、工作報告或分類後的流水帳。這項 prompt 規則必須同時維護 `workspace/JOURNAL.md` 與 `templates/JOURNAL.md`，確保正式環境和新 workspace 初始化結果一致。
 
 ### Reminder 用輪詢而不是 setTimeout
 
@@ -591,7 +591,7 @@ exposure 合法、`match` 至少有 keyword/alias/signal。
 | `read_file` | 讀檔 |
 | `write_file` | 寫檔 |
 | `get_weather` | OpenWeatherMap 天氣查詢；先以 Direct Geocoding 解析地點，再用經緯度取得目前天氣與預報，並為容易誤判的地名提供明確別名 |
-| `memory_save` | 追加到當日記憶檔 + SQLite 向量 |
+| `diary_note` | 追加日記補註到當日檔案 + SQLite 向量；僅用於 transcript 無法保留的觀察，不做事件記錄 |
 | `memory_search` | 語意搜尋 + 關鍵字搜尋 |
 | `memory_list` | 列出所有記憶檔 |
 | `memory_add` | 在 MEMORY.md 新增條目（有字數上限） |
@@ -640,7 +640,7 @@ trigger + 各工具確認規則負責。隱藏工具不等於降權，surface �
 四個等級（`tools/metadata.ts` 的 `ExposureLevel`）：
 
 - `native`：每輪都送完整 schema（`tool_catalog` / `bash` / `read_file` / `write_file` /
-  `memory_save` / `memory_search` / `people_add` / `people_update` / `discord_react` /
+  `diary_note` / `memory_search` / `people_add` / `people_update` / `discord_react` /
   `discord_attach_to_reply`）。3 個 server tool 視為 `native-provider`，因為不能被本地
   `tool_catalog.call` 代理，第一版維持直接暴露。
 - `match`：由 `matchTools()` 這個 **deterministic** matcher（不另呼叫 LLM）依當輪 prompt 的
@@ -821,7 +821,7 @@ interface PluginRuntimeContext {
 
 ### 記憶工具
 
-- `memory_save`：追加事件／對話筆記到當日檔案 + 存 SQLite 向量；不是 owner／人物檔案或 MEMORY.md 的替代品
+- `diary_note`：追加日記補註到當日檔案 + 存 SQLite 向量；僅用於 transcript 無法保留的觀察（情緒、反省、跨日脈絡），不做事件記錄
 - `memory_search`：語意搜尋（sqlite-vec KNN）+ 全文搜尋（FTS5）
 - `memory_add/replace/remove`：操作非人物檔案的長期脈絡 MEMORY.md，同時重建 MEMORY.md 的向量
 - `session_search`：混合搜尋歸檔歷史；FTS5 查所有原始訊息的字面內容，語意搜尋查 compact continuation summary
@@ -890,7 +890,7 @@ interface PluginRuntimeContext {
 ### Memory Hook（定期 nudge）
 
 每 5 則 user message 附加一次記憶提示（不是每輪），提醒 agent 檢查是否需要用
-memory_save / memory_replace / memory_remove 保存資訊。內容是 `JOURNAL.md` 的 Memory Hook section。
+diary_note / memory_replace / memory_remove 保存資訊。內容是 `JOURNAL.md` 的 Memory Hook section。
 
 ### Silent Memory Flush
 

@@ -69,7 +69,7 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   web_search: "WebSearch",
   web_fetch: "WebFetch",
   get_weather: "Weather",
-  memory_save: "MemorySave",
+  diary_note: "DiaryNote",
   memory_search: "MemorySearch",
   memory_list: "MemoryList",
   memory_update_index: "MemoryIndex",

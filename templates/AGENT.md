@@ -127,9 +127,9 @@ most convenient, and do not duplicate the same fact across files:
 - `MEMORY.md` (`memory_*`) — **long-lived operating context**: rules, preferences, recurring workflows,
   ongoing plans, and durable facts about the owner's world that are not part of the owner's profile.
   Apply the 30-day bar and consolidate related facts instead of creating overlapping sections.
-- daily file (`memory_save`) — **what happened**: conversations, events, decisions, corrections, and
-  social chatter used as diary source material. It may record that a durable fact was learned, but
-  it never substitutes for updating the fact's canonical file.
+- daily file (`diary_note`) — **diary annotations**: observations the session transcript cannot
+  capture — emotional nuance, in-the-moment reflections, cross-day context links. The transcript
+  is the primary record of what happened; `diary_note` supplements it, not the other way around.
 
 When new information touches multiple categories, update the canonical destination first, then save
 only the event/context to the daily file if it is diary-worthy. Never copy an owner profile fact into

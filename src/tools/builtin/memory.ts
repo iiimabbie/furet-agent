@@ -11,13 +11,13 @@ import { appendInsideTag, stripTag } from "../../utils/tagged-file.js";
 import type { Tool } from "../../types.js";
 
 
-export const memorySave: Tool = {
-  name: "memory_save",
-  description: "Append an event or conversation note to today's daily memory file (workspace/memory/yyyy-MM-dd.md) for diary continuity. This is not the canonical store for owner or people profiles and does not replace updating OWNER.md, PEOPLE.md, or long-term MEMORY.md when appropriate.",
+export const diaryNote: Tool = {
+  name: "diary_note",
+  description: "Append a diary annotation to today's file (workspace/memory/yyyy-MM-dd.md). Use only for observations the transcript cannot capture: emotional nuance, your own in-the-moment reflections, or cross-day context links. Do NOT use for event logging — the session transcript already records what happened.",
   parameters: {
     type: "object",
     properties: {
-      content: { type: "string", description: "The memory content to save" },
+      content: { type: "string", description: "The annotation content (observation, reflection, or cross-day context)" },
     },
     required: ["content"],
   },
@@ -25,7 +25,7 @@ export const memorySave: Tool = {
     const { content } = args as { content: string };
     const date = today();
     const filePath = resolve(MEMORY_DIR, `${date}.md`);
-    logger.info({ date, content: content.slice(0, 100) }, "memory save");
+    logger.info({ date, content: content.slice(0, 100) }, "diary note");
 
     try {
       mkdirSync(MEMORY_DIR, { recursive: true });
@@ -39,9 +39,9 @@ export const memorySave: Tool = {
       // 同時存向量索引（背景執行，不阻塞回應）
       addVector(content, `${date}.md`).catch(() => {});
 
-      return `Memory saved to ${date}.md`;
+      return `Note saved to ${date}.md`;
     } catch (err) {
-      logger.error({ err }, "memory save failed");
+      logger.error({ err }, "diary note failed");
       return `Error: ${(err as Error).message}`;
     }
   },
