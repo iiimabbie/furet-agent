@@ -7,7 +7,7 @@ import { Session } from "../src/session.js";
 import { indexCompactSummary, indexConversationWindow, reconcileSessionIndex } from "../src/session-index.js";
 import { reindexDiary, reindexMemory, reindexOwner, reindexPeople } from "../src/workspace-index.js";
 import { processAttachmentJobs } from "../src/attachment-index.js";
-import { processEmbeddingJobs } from "../src/search-index.js";
+import { processEmbeddingJobs, repairSearchIndexProjections, type SearchIndexIntegrityReport } from "../src/search-index.js";
 
 interface SessionPayload {
   sessionId?: string;
@@ -36,6 +36,9 @@ interface BackfillReport {
   };
   failures: Array<{ source: string; error: string }>;
   database?: Record<string, number>;
+  sourceDistribution?: Record<string, number>;
+  jobStatus?: Record<string, number>;
+  integrity?: SearchIndexIntegrityReport;
 }
 
 function parseArgs(argv: string[]): {
@@ -86,6 +89,12 @@ function databaseCounts(): Record<string, number> {
     const count = (db.prepare(`SELECT count(*) AS count FROM ${table}`).get() as { count: number }).count;
     return [table, count];
   }));
+}
+
+
+function groupedCounts(table: string, column: string): Record<string, number> {
+  const rows = getDb().prepare(`SELECT ${column} AS key, count(*) AS count FROM ${table} GROUP BY ${column} ORDER BY ${column}`).all() as Array<{ key: string; count: number }>;
+  return Object.fromEntries(rows.map(row => [row.key, row.count]));
 }
 
 async function drainJobs(): Promise<void> {
@@ -182,7 +191,10 @@ async function main(): Promise<void> {
     }
     if (options.processAttachments) await drainAttachmentJobs();
     if (options.drainEmbeddings) await drainJobs();
+    report.integrity = repairSearchIndexProjections();
     report.database = databaseCounts();
+    report.sourceDistribution = groupedCounts("search_documents", "source_type");
+    report.jobStatus = groupedCounts("embedding_jobs", "status");
   }
 
   report.completedAt = new Date().toISOString();

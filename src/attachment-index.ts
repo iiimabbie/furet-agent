@@ -196,6 +196,44 @@ export function registerRemoteAttachments(
   });
 }
 
+export function registerInlineImageAttachments(
+  sessionId: string,
+  parentId: string,
+  images: Array<{ mediaType: string; data: string }>,
+): AttachmentReference[] {
+  return images.flatMap((image, ordinal) => {
+    try {
+      const data = Buffer.from(image.data, "base64");
+      if (data.length === 0 || data.length > MAX_DOWNLOAD_BYTES) {
+        throw new Error(`inline image size is outside the supported range: ${data.length}`);
+      }
+      const hash = sha256(data);
+      const extension = extensionFor(image.mediaType, null);
+      const directory = resolve(ATTACHMENTS_DIR, "search-index", "inline", hash.slice(0, 2));
+      mkdirSync(directory, { recursive: true });
+      const path = resolve(directory, `${hash.slice(0, 24)}${extension}`);
+      try { writeFileSync(path, data, { flag: "wx" }); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      const reference: AttachmentReference = {
+        id: attachmentId(sessionId, parentId, hash, ordinal),
+        name: `inline-${hash.slice(0, 12)}${extension}`,
+        contentType: image.mediaType,
+        localPath: path,
+        size: data.length,
+        contentHash: hash,
+        relation: "upload",
+      };
+      upsertAttachment(reference, sessionId, parentId);
+      return [reference];
+    } catch (error) {
+      logger.warn({ sessionId, parentId, err: (error as Error).message }, "inline image attachment registration failed");
+      return [];
+    }
+  });
+}
+
 export function registerLocalAttachments(
   sessionId: string,
   parentId: string,

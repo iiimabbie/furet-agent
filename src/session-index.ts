@@ -6,7 +6,7 @@ import {
   type SearchDocumentInput,
 } from "./search-index.js";
 import { logger } from "./logger.js";
-import { reconcileAttachmentReferences } from "./attachment-index.js";
+import { reconcileAttachmentReferences, registerInlineImageAttachments } from "./attachment-index.js";
 
 const MAX_CHUNK_CHARS = 6_000;
 const CHUNK_OVERLAP_CHARS = 400;
@@ -218,9 +218,16 @@ export function reconcileSessionIndex(
 
     for (let ordinal = 0; ordinal < messages.length; ordinal++) {
       const message = messages[ordinal];
-      if (!message.attachments?.length) continue;
       const parentId = ensureMessageSearchId(sessionId, message, ordinal);
-      reconcileAttachmentReferences(sessionId, parentId, message.attachments);
+      if (message.attachments?.length) {
+        reconcileAttachmentReferences(sessionId, parentId, message.attachments);
+      }
+      if (Array.isArray(message.content)) {
+        const inlineImages = message.content.flatMap(block => block.type === "image"
+          ? [{ mediaType: block.source.media_type, data: block.source.data }]
+          : []);
+        if (inlineImages.length > 0) registerInlineImageAttachments(sessionId, parentId, inlineImages);
+      }
     }
 
     const toolDocs = toolHistory.flatMap((event, ordinal) => toolDocuments(sessionId, event, ordinal));

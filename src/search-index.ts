@@ -54,6 +54,15 @@ export interface EmbeddingWorkerResult {
   remaining: number;
 }
 
+export interface SearchIndexIntegrityReport {
+  documents: number;
+  ftsRowsBefore: number;
+  ftsRowsAfter: number;
+  orphanFtsRemoved: number;
+  orphanVectorsRemoved: number;
+  embeddingsRequeued: number;
+}
+
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -203,6 +212,76 @@ export function removeSearchDocumentsForSource(sourceType: SearchSourceType, sou
     db.prepare("DELETE FROM search_documents WHERE source_type = ? AND source_id = ?")
       .run(sourceType, sourceId);
     return rows.length;
+  })();
+}
+
+/** Rebuild FTS and repair orphaned/incomplete vector projections from durable documents. */
+export function repairSearchIndexProjections(): SearchIndexIntegrityReport {
+  const db = getDb();
+  return db.transaction(() => {
+    const documents = db.prepare(`
+      SELECT rowid, id, text, source_type, source_id, session_id, visibility_scope, content_hash, embedding_status
+      FROM search_documents ORDER BY rowid
+    `).all() as Array<{
+      rowid: number; id: string; text: string; source_type: SearchSourceType; source_id: string;
+      session_id: string | null; visibility_scope: string; content_hash: string; embedding_status: string;
+    }>;
+    const validRowids = new Set(documents.map(document => document.rowid));
+    const ftsRowsBefore = (db.prepare("SELECT count(*) AS c FROM search_documents_fts").get() as { c: number }).c;
+    const orphanFtsRemoved = (db.prepare(`
+      SELECT count(*) AS c FROM search_documents_fts f
+      LEFT JOIN search_documents d ON d.rowid = f.rowid
+      WHERE d.rowid IS NULL
+    `).get() as { c: number }).c;
+
+    db.exec("DELETE FROM search_documents_fts");
+    const insertFts = db.prepare(`
+      INSERT INTO search_documents_fts (rowid, text, source_type, source_id, session_id, visibility_scope)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    for (const document of documents) {
+      insertFts.run(
+        document.rowid, toSearchTokens(document.text), document.source_type, document.source_id,
+        document.session_id ?? "", document.visibility_scope,
+      );
+    }
+
+    const vectorRows = db.prepare(`SELECT rowid FROM ${SEARCH_DOCUMENT_VEC_TABLE}`).all() as Array<{ rowid: number | bigint }>;
+    const vectorRowids = new Set(vectorRows.map(row => Number(row.rowid)));
+    let orphanVectorsRemoved = 0;
+    for (const rowid of vectorRowids) {
+      if (validRowids.has(rowid)) continue;
+      db.prepare(`DELETE FROM ${SEARCH_DOCUMENT_VEC_TABLE} WHERE rowid = ?`).run(BigInt(rowid));
+      orphanVectorsRemoved++;
+    }
+
+    const embeddingRows = db.prepare("SELECT document_id, document_rowid FROM search_document_embeddings").all() as Array<{ document_id: string; document_rowid: number }>;
+    const embeddingByDocument = new Map(embeddingRows.map(row => [row.document_id, row.document_rowid]));
+    const enqueue = db.prepare(`
+      INSERT INTO embedding_jobs (document_id, content_hash, status, attempts, next_retry_at, last_error, updated_at)
+      VALUES (?, ?, 'pending', 0, NULL, NULL, datetime('now'))
+      ON CONFLICT(document_id) DO UPDATE SET
+        content_hash=excluded.content_hash, status='pending', attempts=0, next_retry_at=NULL,
+        last_error=NULL, updated_at=datetime('now')
+    `);
+    let embeddingsRequeued = 0;
+    for (const document of documents) {
+      if (document.embedding_status !== "complete") continue;
+      const metadataRowid = embeddingByDocument.get(document.id);
+      const projectionComplete = metadataRowid === document.rowid && vectorRowids.has(document.rowid);
+      if (projectionComplete) continue;
+      db.prepare(`DELETE FROM ${SEARCH_DOCUMENT_VEC_TABLE} WHERE rowid = ?`).run(BigInt(document.rowid));
+      db.prepare("DELETE FROM search_document_embeddings WHERE document_id = ?").run(document.id);
+      db.prepare("UPDATE search_documents SET embedding_status='pending', updated_at=datetime('now') WHERE id=?").run(document.id);
+      enqueue.run(document.id, document.content_hash);
+      embeddingsRequeued++;
+    }
+
+    const ftsRowsAfter = (db.prepare("SELECT count(*) AS c FROM search_documents_fts").get() as { c: number }).c;
+    return {
+      documents: documents.length, ftsRowsBefore, ftsRowsAfter, orphanFtsRemoved,
+      orphanVectorsRemoved, embeddingsRequeued,
+    };
   })();
 }
 
@@ -598,14 +677,11 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
 
   const ranked = [...byId.values()].sort((a, b) => b.score - a.score);
   const grouped: typeof ranked = [];
-  const seenContent = new Set<string>();
   const perSession = new Map<string, number>();
   for (const candidate of ranked) {
-    if (seenContent.has(candidate.row.content_hash)) continue;
     const sessionKey = candidate.row.session_id ?? "";
     const sessionCount = sessionKey ? (perSession.get(sessionKey) ?? 0) : 0;
     if (sessionKey && sessionCount >= Math.max(2, Math.ceil(limit / 3))) continue;
-    seenContent.add(candidate.row.content_hash);
     if (sessionKey) perSession.set(sessionKey, sessionCount + 1);
     grouped.push(candidate);
     if (grouped.length >= limit) break;
