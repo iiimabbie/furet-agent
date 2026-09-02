@@ -6,7 +6,7 @@ import { runWithContext, drainAttachments, peekAttachments, queueAttachment } fr
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { ATTACHMENTS_DIR } from "./paths.js";
-import { searchVectors } from "./embedding.js";
+import { searchUnified } from "./search-index.js";
 import { stamp } from "./utils/time.js";
 import { filterStaleOnboarding } from "./onboarding.js";
 import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions, ToolHistoryEvent } from "./types.js";
@@ -516,7 +516,17 @@ export function ask(prompt: string | null, options: AgentOptions = {}): Promise<
   // race-prone variable — and without the schema exposure layer and the execution gate
   // disagreeing when a concurrent request overrides the model.
   const effectiveModel = options.model ?? loadConfig().llm.currentModel;
-  return runWithContext(options.trigger ?? "unknown", options.userId, effectiveModel, () => askInContext(prompt, options));
+  const sessionId = options.session?.id;
+  const channelId = sessionId?.startsWith("discord-channel-")
+    ? sessionId.slice("discord-channel-".length)
+    : undefined;
+  return runWithContext(
+    options.trigger ?? "unknown",
+    options.userId,
+    effectiveModel,
+    () => askInContext(prompt, options),
+    { sessionId, channelId },
+  );
 }
 
 async function askInContext(prompt: string | null, options: AgentOptions = {}): Promise<AgentResponse> {
@@ -546,14 +556,32 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
   const recallQuery = prompt ?? lastUserText(session?.getMessages() ?? []);
   if (recallQuery) {
     try {
-      const recalled = await searchVectors(recallQuery, 3, {
-        excludeFiles: ["MEMORY.md", "PEOPLE.md"],
+      const recalled = await searchUnified(recallQuery, {
+        profile: "memory",
+        limit: 5,
+        visibility: {
+          isOwner: options.trigger !== "discord-other",
+          userId: options.userId,
+          channelId: session?.id.startsWith("discord-channel-")
+            ? session.id.slice("discord-channel-".length)
+            : undefined,
+        },
+        excludeSessionIds: session ? [session.id] : [],
+        excludeSourceTypes: ["memory", "people"],
         excludeRecentDays: 2,
+        includeContext: false,
+        debug: true,
       });
-      if (recalled.length > 0) {
-        const recallBlock = recalled.map(r => `- [${r.file}] ${r.text}`).join("\n");
+      if (recalled.results.length > 0) {
+        const recallBlock = recalled.results.map(r =>
+          `- [${r.sourceId}${r.occurredAt ? ` · ${r.occurredAt}` : ""}] ${r.text}`
+        ).join("\n");
         recalledSection = `Automatically recalled based on the current message. Use them naturally if relevant — do not mention this mechanism to the user.\n${recallBlock}`;
-        logger.debug({ count: recalled.length, topScore: recalled[0].score.toFixed(2) }, "auto memory recall");
+        logger.debug({
+          traceId: recalled.traceId,
+          count: recalled.results.length,
+          documents: recalled.results.map(result => ({ id: result.id, sourceType: result.sourceType, score: result.score })),
+        }, "auto unified recall");
       }
     } catch (err) {
       logger.warn({ err: (err as Error).message }, "auto memory recall failed, continuing without");

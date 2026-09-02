@@ -15,6 +15,9 @@ interface RequestContext {
   trigger: TriggerSource;
   /** 這次請求由哪個 Discord 使用者發出（非 Discord 觸發時為 undefined），權限判定用 */
   userId?: string;
+  /** Current durable session/channel identity, used by search visibility filters. */
+  sessionId?: string;
+  channelId?: string;
   /**
    * 這次請求實際使用的模型（`options.model ?? currentModel`）。
    * 工具的 model-capability gate（如 image_gen 的 GPT-only）要判的是「這個請求跑在哪個模型」，
@@ -39,13 +42,21 @@ function ctx(): RequestContext {
 }
 
 /** 在獨立的 context 中執行一次 agent 請求 */
-export function runWithContext<T>(trigger: TriggerSource, userId: string | undefined, model: string | undefined, fn: () => Promise<T>): Promise<T> {
-  return storage.run({ trigger, userId, model, pendingFiles: [] }, fn);
+export function runWithContext<T>(
+  trigger: TriggerSource,
+  userId: string | undefined,
+  model: string | undefined,
+  fn: () => Promise<T>,
+  request?: { sessionId?: string; channelId?: string },
+): Promise<T> {
+  return storage.run({ trigger, userId, model, sessionId: request?.sessionId, channelId: request?.channelId, pendingFiles: [] }, fn);
 }
 
 export function setTrigger(trigger: TriggerSource): void { ctx().trigger = trigger; }
 export function getTrigger(): TriggerSource { return ctx().trigger; }
 export function getUserId(): string | undefined { return ctx().userId; }
+export function getSessionId(): string | undefined { return ctx().sessionId; }
+export function getChannelId(): string | undefined { return ctx().channelId; }
 
 /** 這次請求的有效模型；ALS 範圍外為 undefined，呼叫端自行 fallback 回 currentModel。 */
 export function getRequestModel(): string | undefined { return ctx().model; }
