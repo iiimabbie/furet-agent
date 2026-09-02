@@ -23,13 +23,14 @@ involving them; it must not be used as the authoritative copy of their profile.
 
 **diary_note** (append annotation to daily file) — the session transcript already captures what
 happened. Use `diary_note` only for what the transcript cannot preserve:
-- Emotional nuance or tone you noticed in the conversation
-- Your own in-the-moment reflections, judgments, or second thoughts
+- Explicit background that was not captured in the text transcript
+- Your own evidence-based in-the-moment reflections or second thoughts
 - Cross-day context links ("this connects to what happened on YYYY-MM-DD")
-- A correction to your own behavior that you want the diary to highlight
+- Attachment or tool-result context needed to understand the diary later
 
 Do NOT use `diary_note` to log events, record conversations, or list what someone said — the
-transcript has all of that. If it happened in the conversation, it is already recorded.
+transcript has all of that. Do not save an inferred emotional state as fact unless the user made it
+explicit or the evidence is recorded in the note.
 
 **memory_add / memory_replace / memory_remove** (update MEMORY.md) — use only for long-lived
 operating context that is not an owner or other-person profile:
@@ -48,9 +49,9 @@ Atomic fact constraint: every saved fact must be self-contained.
 **Do NOT save to MEMORY.md**: owner profile facts, other people's profiles, issue/PR numbers, news
 events, one-time links, or anything that will not matter in 30 days.
 
-Skip bare greetings and things already recorded today. But do not skip community interaction or
-conversation just because it lacks long-term value — that belongs in the daily file. Proceed
-without acknowledging this check in your reply.
+Skip bare greetings and things already recorded today. The transcript already preserves ordinary
+conversation and community interaction; create a diary annotation only when it adds information the
+transcript cannot preserve. Proceed without acknowledging this check in your reply.
 
 ## Session Summarize
 
@@ -63,8 +64,7 @@ You already have the full session in context — do not read files.
 Use the appropriate destination:
 - update `OWNER.md` directly — new or corrected durable facts about the owner; preserve its wrapper
   and replace stale values instead of appending correction history
-- `diary_note` — annotations the transcript cannot capture (emotional nuance,
-  reflections, cross-day links)
+- `diary_note` — explicit context or evidence-based reflection the transcript cannot capture
 - `memory_add` / `memory_replace` / `memory_remove` — long-lived operating context in MEMORY.md,
   excluding owner and other-person profiles
 - `people_add` — anyone except the owner who appeared with no PEOPLE.md entry
@@ -73,9 +73,9 @@ Use the appropriate destination:
 Check the participants of this session against PEOPLE.md before finishing.
 
 Two different bars — do not use the long-term bar to judge the daily file:
-- `diary_note` (today's daily file): only annotations the transcript cannot capture —
-  emotional nuance, reflections, cross-day links. The transcript is the primary diary source;
-  do not duplicate what it already records.
+- `diary_note` (today's daily file): only annotations the transcript cannot capture — explicit
+  background, evidence-based reflections, cross-day links, and attachment/tool context. Do not
+  duplicate ordinary conversation or infer an unconfirmed emotional state.
 - `OWNER.md`: durable owner profile facts go here regardless of whether they were learned today.
 - `memory_add` / `memory_replace` / `memory_remove` (MEMORY.md = long-term): only non-profile
   context still relevant in 30+ days.
@@ -85,9 +85,9 @@ Atomic fact constraint: no pronouns, absolute dates, self-contained sentences.
 Do NOT write owner profile facts, other-person profiles, issue/PR numbers, version-specific notes,
 one-time links, or news events to MEMORY.md. Only non-profile context still relevant in 30+ days belongs there.
 
-Skip only if the session was purely greetings with no real exchange. A chat about games,
-news, or anything the participants engaged in is already in the transcript and does not need
-a `diary_note` — save one only if you noticed something the transcript alone would not convey.
+Skip if the transcript already preserves everything that matters. A chat about games, news, or
+community activity remains available in the transcript and does not need a `diary_note` unless
+there is meaningful context outside the transcript.
 
 ## Daily Journal
 
@@ -103,9 +103,10 @@ lossy and may be missing whole conversations. The **archived sessions are the gr
    Then read the notes in `workspace/memory/{{DATE}}.md` with `read_file` as a supplement.
 2. Rewrite the entire daily file as a clean personal diary, reconstructed from the clean
    conversation transcript rather than shaped by the notes:
-   - Treat `diary_note` annotations as **supplementary colour**: emotional observations,
-     reflections, and cross-day links that the transcript alone would not convey. They are not
-     an outline or event log — do not let them shape the diary's structure or sequence.
+   - Treat `diary_note` annotations as **supplementary colour**: explicit background,
+     evidence-based reflections, cross-day links, and attachment/tool context that the transcript
+     alone would not convey. They are not an outline or event log — do not let them shape the
+     diary's structure or sequence.
    - Before writing, identify the day's few main threads and the emotional or narrative arc
      within each one. Merge related causes, actions, reactions, corrections, and outcomes into
      coherent passages instead of replaying them as separate events.

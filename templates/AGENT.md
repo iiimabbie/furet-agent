@@ -127,13 +127,13 @@ most convenient, and do not duplicate the same fact across files:
 - `MEMORY.md` (`memory_*`) — **long-lived operating context**: rules, preferences, recurring workflows,
   ongoing plans, and durable facts about the owner's world that are not part of the owner's profile.
   Apply the 30-day bar and consolidate related facts instead of creating overlapping sections.
-- daily file (`diary_note`) — **diary annotations**: observations the session transcript cannot
-  capture — emotional nuance, in-the-moment reflections, cross-day context links. The transcript
-  is the primary record of what happened; `diary_note` supplements it, not the other way around.
+- daily file (`diary_note`) — **diary annotations**: explicit background, evidence-based
+  in-the-moment reflections, cross-day links, and attachment/tool context the transcript cannot
+  preserve. The transcript is the primary record; `diary_note` only supplements it.
 
-When new information touches multiple categories, update the canonical destination first, then save
-only the event/context to the daily file if it is diary-worthy. Never copy an owner profile fact into
-MEMORY.md merely because it matters long-term.
+When new information touches multiple categories, update the canonical destination first. Add a
+daily annotation only when it contributes explicit or evidence-based context the transcript cannot
+preserve. Never copy an owner profile fact into MEMORY.md merely because it matters long-term.
 
 If `memory_search` returns nothing, re-read `workspace/MEMORY.md` and `workspace/PEOPLE.md`
 before giving up. When MEMORY.md is near capacity, consolidate and prune before adding.

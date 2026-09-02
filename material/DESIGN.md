@@ -526,7 +526,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 
 日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日記憶檔的 diary_note 補註只當輔助。transcript 是完整的對話紀錄，diary_note 僅補充 transcript 無法保留的觀察（情緒、反省、跨日脈絡），不重複記錄事件本身。
 
-`diary_note` 是補充性的觀察與反省，不是事件記錄，因此不能成為日記骨架。Daily Journal prompt 以 transcript 為唯一事實來源，找出整天的主線，把相關的起因、行動、反應與結果融合成有脈絡的第一人稱段落；diary_note 的情緒觀察和跨日脈絡作為輔助色彩織入。標題仍用於 Obsidian 導覽，但正文以連續散文為主；只有真正的清單才用 bullet。實作命令、檔名與中間步驟只保留足以理解事件意義的部分，避免成品退化成 changelog、工作報告或分類後的流水帳。這項 prompt 規則必須同時維護 `workspace/JOURNAL.md` 與 `templates/JOURNAL.md`，確保正式環境和新 workspace 初始化結果一致。
+`diary_note` 是補充性的日記註記，不是事件記錄，因此不能成為日記骨架。它只保存 transcript 無法保留的明確背景、有證據的當下反思、跨日關聯，以及附件或工具結果的必要脈絡；不得把推測的心理狀態寫成事實。Daily Journal prompt 以 transcript 為唯一事實來源，找出整天的主線，把相關的起因、行動、反應與結果融合成有脈絡的第一人稱段落；diary_note 只作為輔助色彩織入。正文以連續散文為主，只有真正的清單才用 bullet；實作命令、檔名與中間步驟只保留足以理解事件意義的部分，避免成品退化成 changelog、工作報告或分類後的流水帳。這項規則必須同時維護 runtime `workspace/JOURNAL.md` 與 `templates/JOURNAL.md`。部署時使用 `scripts/migrate-diary-note.ts` 做精確、可重跑的段落遷移與舊名稱掃描，不得整份 template 覆蓋客製 workspace。
 
 ### Reminder 用輪詢而不是 setTimeout
 

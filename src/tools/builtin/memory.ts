@@ -13,11 +13,11 @@ import type { Tool } from "../../types.js";
 
 export const diaryNote: Tool = {
   name: "diary_note",
-  description: "Append a diary annotation to today's file (workspace/memory/yyyy-MM-dd.md). Use only for observations the transcript cannot capture: emotional nuance, your own in-the-moment reflections, or cross-day context links. Do NOT use for event logging — the session transcript already records what happened.",
+  description: "Append a diary annotation to today's file (workspace/memory/yyyy-MM-dd.md). Use only for explicit background, evidence-based in-the-moment reflection, cross-day context, or attachment/tool context that the transcript cannot preserve. Do NOT log events or save inferred emotional states as facts.",
   parameters: {
     type: "object",
     properties: {
-      content: { type: "string", description: "The annotation content (observation, reflection, or cross-day context)" },
+      content: { type: "string", description: "Supplemental diary context that is explicit or evidence-based and not already preserved by the transcript" },
     },
     required: ["content"],
   },
