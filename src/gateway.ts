@@ -21,6 +21,8 @@ import { resolveEmojiMarkup } from "./emoji.js";
 import { ROOT } from "./paths.js";
 import { stamp, today } from "./utils/time.js";
 import { emitPluginEvent, loadPlugins, startPlugins, stopPlugins } from "./tools/plugin-loader.js";
+import { startSearchIndexWorker, stopSearchIndexWorker } from "./search-index.js";
+import { startAttachmentIndexWorker, stopAttachmentIndexWorker } from "./attachment-index.js";
 
 async function pluginTextChannel(channelId: string) {
   const client = getDiscordClient();
@@ -526,6 +528,15 @@ logger.info("gateway start");
 import { getDb } from "./db.js";
 getDb();
 
+// Startup recovery: active session JSON is the durable source. Reconcile through the
+// same idempotent pipeline used by append/compact/archive so interrupted indexing jobs
+// or pre-unified-search sessions are repaired before Discord starts accepting work.
+for (const sessionId of Session.listActive()) {
+  new Session(sessionId).reconcileSearchIndex();
+}
+startSearchIndexWorker();
+startAttachmentIndexWorker();
+
 // Load plugin manifests before Discord connects so their slash-command definitions are
 // available. Lifecycle hooks and schedules start only after Discord is ready, which makes
 // context.messages safe to use during manifest.start().
@@ -590,6 +601,8 @@ async function shutdown(signal: string): Promise<void> {
     process.exit(0);
   }, 5000);
   forceTimer.unref?.();
+  stopSearchIndexWorker();
+  stopAttachmentIndexWorker();
   try {
     await stopPlugins();
   } catch (err) {

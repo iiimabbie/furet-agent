@@ -12,6 +12,7 @@ let db: Database.Database | null = null;
 /** 向量表名稱（cosine 版）。embedding.ts 一律走這張。 */
 export const VEC_TABLE = "memory_vectors_vec_cos";
 export const SESSION_SUMMARY_VEC_TABLE = "session_summary_vectors_vec_cos";
+export const SEARCH_DOCUMENT_VEC_TABLE = "search_document_vectors_vec_cos";
 
 /**
  * 把 L2 向量表的內容搬到 cosine 表。
@@ -48,6 +49,7 @@ export function getDb(): Database.Database {
 
   db = new Database(DB_PATH);
   db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
   sqliteVec.load(db);
 
   // 向量表：記憶的 embedding
@@ -142,6 +144,124 @@ export function getDb(): Database.Database {
     CREATE VIRTUAL TABLE IF NOT EXISTS session_summary_vectors_vec_cos USING vec0(
       embedding FLOAT[3072] distance_metric=cosine
     )
+  `);
+
+  // Unified search index. Source files/session JSON remain the durable truth; these
+  // tables are rebuildable projections. `rowid` is the sqlite-vec/FTS join key while
+  // `id` is the deterministic identity used for idempotent reconciliation.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS search_documents (
+      rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT NOT NULL UNIQUE,
+      source_type TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      parent_id TEXT,
+      session_id TEXT,
+      channel_id TEXT,
+      visibility_scope TEXT NOT NULL,
+      ordinal INTEGER,
+      role TEXT,
+      text TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      occurred_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      embedding_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (embedding_status IN ('pending', 'processing', 'complete', 'failed', 'skipped'))
+    );
+    CREATE INDEX IF NOT EXISTS search_documents_source
+      ON search_documents(source_type, source_id);
+    CREATE INDEX IF NOT EXISTS search_documents_session_time
+      ON search_documents(session_id, occurred_at);
+    CREATE INDEX IF NOT EXISTS search_documents_content_hash
+      ON search_documents(content_hash);
+    CREATE INDEX IF NOT EXISTS search_documents_embedding_status
+      ON search_documents(embedding_status);
+    CREATE INDEX IF NOT EXISTS search_documents_visibility
+      ON search_documents(visibility_scope);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS search_documents_fts USING fts5(
+      text,
+      source_type UNINDEXED,
+      source_id UNINDEXED,
+      session_id UNINDEXED,
+      visibility_scope UNINDEXED
+    );
+
+    CREATE TABLE IF NOT EXISTS search_document_embeddings (
+      document_id TEXT PRIMARY KEY REFERENCES search_documents(id) ON DELETE CASCADE,
+      document_rowid INTEGER NOT NULL UNIQUE,
+      model TEXT NOT NULL,
+      dimensions INTEGER NOT NULL,
+      content_hash TEXT NOT NULL,
+      embedded_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS embedding_jobs (
+      document_id TEXT PRIMARY KEY REFERENCES search_documents(id) ON DELETE CASCADE,
+      content_hash TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'complete', 'failed')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_retry_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS embedding_jobs_ready
+      ON embedding_jobs(status, next_retry_at, attempts);
+  `);
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS ${SEARCH_DOCUMENT_VEC_TABLE} USING vec0(
+      embedding FLOAT[3072] distance_metric=cosine
+    )
+  `);
+
+  // Durable attachment references and retryable download/OCR/document-analysis jobs.
+  // Session JSON keeps the reference identity; these tables retain processing state
+  // and extracted projections without placing binary payloads inside SQLite.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS attachment_records (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      channel_id TEXT,
+      parent_id TEXT NOT NULL,
+      url TEXT,
+      original_name TEXT,
+      content_type TEXT,
+      local_path TEXT,
+      size_bytes INTEGER,
+      content_hash TEXT,
+      visibility_scope TEXT NOT NULL,
+      relation TEXT NOT NULL DEFAULT 'upload',
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'complete', 'failed')),
+      ocr_text TEXT,
+      visual_description TEXT,
+      extracted_text TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS attachment_records_session_parent
+      ON attachment_records(session_id, parent_id);
+    CREATE INDEX IF NOT EXISTS attachment_records_hash
+      ON attachment_records(content_hash);
+    CREATE INDEX IF NOT EXISTS attachment_records_status
+      ON attachment_records(status);
+
+    CREATE TABLE IF NOT EXISTS attachment_jobs (
+      attachment_id TEXT PRIMARY KEY REFERENCES attachment_records(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'complete', 'failed')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_retry_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS attachment_jobs_ready
+      ON attachment_jobs(status, next_retry_at, attempts);
   `);
 
   rebuildFtsIfNeeded(db);

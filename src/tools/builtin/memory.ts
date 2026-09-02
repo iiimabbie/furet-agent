@@ -4,7 +4,8 @@ import { logger } from "../../logger.js";
 import { loadConfig } from "../../config.js";
 import { getDb } from "../../db.js";
 import { MEMORY_DIR, MEMORY_INDEX } from "../../paths.js";
-import { addVector, searchVectors } from "../../embedding.js";
+import { searchVectors } from "../../embedding.js";
+import { indexDiaryNote, reindexMemory } from "../../workspace-index.js";
 import { toSearchQuery, highlightMatches } from "../../utils/cjk.js";
 import { today, clockTime } from "../../utils/time.js";
 import { appendInsideTag, stripTag } from "../../utils/tagged-file.js";
@@ -36,8 +37,7 @@ export const diaryNote: Tool = {
       const entry = `\n- [${timestamp}] ${content}`;
       writeFileSync(filePath, existing + entry + "\n");
 
-      // 同時存向量索引（背景執行，不阻塞回應）
-      addVector(content, `${date}.md`).catch(() => {});
+      indexDiaryNote(date, timestamp, content);
 
       return `Note saved to ${date}.md`;
     } catch (err) {
@@ -165,6 +165,7 @@ export const memoryAdd: Tool = {
         return `Error: would exceed character limit. ${memoryUsageInfo(current)} — consolidate existing entries first with memory_replace or memory_remove.`;
       }
       writeFileSync(MEMORY_INDEX, updated);
+      reindexMemory(updated);
       return `Added. ${memoryUsageInfo(updated)}`;
     } catch (err) {
       logger.error({ err }, "memory add failed");
@@ -198,6 +199,7 @@ export const memoryReplace: Tool = {
         return `Error: replacement would exceed limit. ${memoryUsageInfo(current)}`;
       }
       writeFileSync(MEMORY_INDEX, updated);
+      reindexMemory(updated);
       return `Replaced. ${memoryUsageInfo(updated)}`;
     } catch (err) {
       logger.error({ err }, "memory replace failed");
@@ -226,6 +228,7 @@ export const memoryRemove: Tool = {
       }
       const updated = current.replace(text, "").replace(/\n{3,}/g, "\n\n");
       writeFileSync(MEMORY_INDEX, updated);
+      reindexMemory(updated);
       return `Removed. ${memoryUsageInfo(updated)}`;
     } catch (err) {
       logger.error({ err }, "memory remove failed");

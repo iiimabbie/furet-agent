@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { logger } from "../../logger.js";
 import { PEOPLE_FILE } from "../../paths.js";
-import { addVector, removeVectorsByFile } from "../../embedding.js";
+import { reindexPeople } from "../../workspace-index.js";
 import { stripTag, wrapTag } from "../../utils/tagged-file.js";
 import type { Tool } from "../../types.js";
 
@@ -28,22 +28,7 @@ function readPeople(): string {
 function writePeople(content: string): void {
   const out = wrapTag(content, PEOPLE_TAG);
   writeFileSync(PEOPLE_FILE, out);
-  reindexVectors(out);
-}
-
-/** 比照 write_file 的作法：整份重建向量，讓語意搜尋跟得上 */
-function reindexVectors(content: string): void {
-  try {
-    removeVectorsByFile("PEOPLE.md");
-    for (const p of content.split(/\n{2,}/)) {
-      const t = p.trim();
-      if (t.length > 20 && !t.startsWith(OPEN_TAG) && !t.startsWith(CLOSE_TAG)) {
-        addVector(t, "PEOPLE.md").catch(() => {});
-      }
-    }
-  } catch (err) {
-    logger.warn({ err: (err as Error).message }, "PEOPLE.md reindex failed");
-  }
+  reindexPeople(out);
 }
 
 /** 去掉包裝標籤後的內容，用來判斷是不是空的 */

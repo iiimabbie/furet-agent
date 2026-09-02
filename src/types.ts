@@ -9,6 +9,18 @@ export interface Tool {
 
 // --- Anthropic API ---
 
+export interface AttachmentReference {
+  id: string;
+  url?: string;
+  name?: string;
+  contentType?: string;
+  localPath?: string;
+  size?: number;
+  contentHash?: string;
+  relation?: "upload" | "embed" | "reply_reference" | "generated" | "tool_output";
+}
+
+
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; thinking: string; signature?: string }
@@ -26,10 +38,14 @@ export type Message = {
   time?: string;       // MM/DD HH:mm
   msgId?: string;      // Discord message ID
   replyTo?: string;    // replied message ID
+  /** Stable local identity for idempotent search indexing. */
+  searchId?: string;
   /** True only for the synthetic summary inserted by Session.compact(). */
   isCompactSummary?: boolean;
   /** True only for the one-time onboarding context injected on first session in a fresh workspace. */
   isOnboarding?: boolean;
+  /** Durable references to uploaded, embedded, generated, or tool-produced files. */
+  attachments?: AttachmentReference[];
 };
 
 // --- Token Usage ---

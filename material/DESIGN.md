@@ -127,7 +127,7 @@ thinking block 的 `signature` 不是 `thinking` 欄位的校驗碼 —— **它
 - 完整文字 result；
 - 成功／失敗狀態。
 
-這份完整紀錄存於 active session JSON，也會跟著 session archive／compact archive 保存，是稽核與後續查證的資料來源；不因為 context 控制而截斷。
+這份完整紀錄存於 active session JSON，也會跟著 session archive／compact archive 保存，是稽核與後續查證的資料來源；不因為 context 控制而截斷。每筆 tool call、完整 result 切片與 bounded evidence summary 亦透過統一搜尋 ingestion pipeline 建立可重建的 FTS／embedding projection；送往外部 embedding provider 前會先遮罩 secrets。
 
 正常下一輪不會把完整 stdout 或每一筆工具操作塞回 messages。`renderToolHistory()` 只把**最近 8 筆**投影到 system prompt，每筆 input 最多 180 字、outcome 最多 280 字，並標示為 untrusted data。模型因此知道「做過什麼、成功或失敗、結果概略」，但不會每輪重付長輸出的 token；需要細節時，目前仍可從 session JSON／archive 查閱。
 
@@ -345,7 +345,7 @@ Session ID 是內部 routing key（不變）；檔名另外把長前綴縮寫成
 
 ### Session 格式
 
-Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 不保存）。session JSON 另有 `toolHistory`，保存完整 local tool input / result，和對話 context 分開。
+Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 不保存）。每則新 message 另帶本機穩定 `searchId`，讓 active、compact、archive 與 restart reconciliation 對同一內容使用相同 deterministic document identity。舊 session 沒有 `searchId` 時，會依 session、ordinal、role、content 與時間建立穩定 fallback 並在 reconciliation 後寫回。session JSON 另有 `toolHistory`，保存完整 local tool input / result，和對話 context 分開。
 
 ```json
 {
@@ -367,6 +367,14 @@ Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 
 1. Silent memory flush：注入 flush 指令到 systemPrompt，讓 agent 自由使用 memory tools 整理記憶
 2. 原始 messages、usage 與 `toolHistory` 歸檔到 `workspace/sessions/archive/`；SQLite 只作搜尋索引，JSON 是耐久的 source of truth
 3. 清空 active session
+
+### Session 搜尋投影與 reconciliation
+
+搜尋索引不再等待 session 結束：`Session.append()` 先同步寫入 active JSON，成功後才把該 message 轉成 `search_documents` + FTS + durable embedding job；一次 agent request 完成時，再建立保留前後文的 conversation-window document。工具紀錄由 `Session.recordToolEvent()` 同一路徑建立 call、result chunks 與 evidence summary。
+
+compact、archive、Discord `/new`、CLI `new` 與 gateway startup recovery 都只呼叫 `reconcileSessionIndex()`。reconciliation 會重新從 durable session source 產生 deterministic documents 並 upsert 缺漏，不自行發明另一種 chunk/embedding 邏輯。Session 歷史跨 archive segment 是 append-only；active JSON 在 compact/clear 後只剩尾端，因此 session reconciliation 不使用「來源未出現就刪除」策略，避免把已歸檔歷史誤刪。Workspace 文件等真正代表完整當前狀態的來源，才使用 source-level remove-missing reconciliation。
+
+固定 harness control message、onboarding context、compact synthetic summary不作一般 message document；compact summary 以獨立衍生 source type 保存，不能取代原始訊息。
 
 ## Discord Bot
 
@@ -815,8 +823,15 @@ interface PluginRuntimeContext {
 | `fts_meta` | FTS 索引的內容格式版本，版本不符就在開機時重建 |
 | `session_archive` | 歸檔的 session messages |
 | `session_fts` | FTS5 session 全文搜尋（存 CJK bigram token，非原文） |
-| `session_summary_vectors` | compact continuation summary 與 session ID |
-| `session_summary_vectors_vec_cos` | compact summary 的 cosine 向量索引 |
+| `session_summary_vectors` | Legacy compact summary projection；統一搜尋切換完成前保留 |
+| `session_summary_vectors_vec_cos` | Legacy compact summary cosine projection；統一搜尋切換完成前保留 |
+| `search_documents` | 所有來源正規化後的 searchable chunk；deterministic `id` + integer `rowid` |
+| `search_documents_fts` | 統一 FTS5 projection，rowid 對齊 `search_documents` |
+| `search_document_embeddings` | document、embedding model、dimension、content hash 與完成時間 metadata |
+| `search_document_vectors_vec_cos` | 統一 3072 維 cosine vector projection |
+| `embedding_jobs` | 持久化 embedding outbox；pending／processing／failed／complete 與 retry 狀態 |
+| `attachment_records` | 附件 reference、durable local path、hash、OCR／視覺描述／文件文字與處理狀態 |
+| `attachment_jobs` | 附件下載、OCR、vision 與文件 parser 的持久化 retry outbox |
 | `discord_button_messages` | Discord 按鈕定義、權限、生命週期與執行結果 |
 
 ### 記憶工具
@@ -832,6 +847,27 @@ interface PluginRuntimeContext {
 - `write_file` 覆寫 PEOPLE.md 或日記檔時：刪除舊向量 → 拆段重建
 - `memory_replace` / `memory_remove`：刪除 MEMORY.md 所有舊向量 → 整份重建
 - Migration 腳本：`npx tsx scripts/migrate-vectors.ts` 把現有資料灌進向量庫
+
+### 統一搜尋 ingestion 與 embedding outbox
+
+`src/search-index.ts` 是新搜尋投影的唯一寫入層：
+
+1. source adapter 先產生 `SearchDocumentInput`。
+2. `ingestSearchDocuments()` 正規化文字、計算 deterministic ID／SHA-256 content hash，並在同一個 SQLite transaction 內 upsert document、FTS row 與 embedding job。
+3. 寫入層只依 identity/hash 去重，不用 cosine 相似度刪資料；不同時間的相似事件都會保留。
+4. `processEmbeddingJobs()` 由 gateway 的單一背景 worker 分批處理。程序中斷後 pending/failed job 仍在 SQLite，可於重啟後續跑；卡住的 processing job 超時後會回到 retry 流程。
+5. 外部 embedding payload 先經 secret redaction；本機 durable source 與權限 metadata 不因遮罩而失去可稽核性。
+6. vector rowid 與 FTS rowid 都使用 `search_documents.rowid`，deterministic text ID 則放在 unique `id`；這避開 sqlite-vec 只接受 integer rowid 的限制，同時保持 reconciliation 冪等。
+
+目前 migration 採新舊索引並行：legacy memory/session tables 仍保留，直到 unified hybrid search、權限 filter、歷史回填與 rollback 驗證完成才移除。
+
+### 附件索引與非同步分析
+
+Discord uploads、Embed image/thumbnail、回覆引用與 Forum starter 附件在訊息持久化時建立 `AttachmentReference`；session JSON 保存 stable reference，SQLite `attachment_records` 保存處理狀態與抽取結果。遠端 URL 的 query 不進 searchable metadata，背景 worker 會盡快把原檔下載到 `workspace/attachments/search-index/`，避免 Discord CDN URL 過期後失去原始證據。相同 bytes 在不同訊息被引用時保留各自 reference metadata；binary 本身不塞進 SQLite。
+
+`attachment_jobs` 是可重啟、可重試的 outbox。圖片同時經 Tesseract.js (`eng+chi_tra`) OCR 與目前 vision model 的客觀描述；vision prompt 明確把圖片內容視為 untrusted evidence，不執行畫面中的指令。文字與程式碼檔直接抽取；PDF、DOCX、PPTX、XLSX、ODF、RTF、CSV、Markdown、HTML、EPUB 使用 `officeparser` 產生文字與內嵌圖片 OCR。處理邊界包含下載大小、解壓 bytes、ZIP entry、spreadsheet cell 與 abort timeout；失敗會保留原因並依退避策略重試。
+
+Provider 生成圖片及本地工具排入最終 Discord 回覆的檔案，會在 request 完成時附到最後一則 assistant message，再走相同的 attachment ingestion，而不是另開生成檔專用索引。所有 attachment metadata、OCR、視覺描述與文件 chunks 最後仍落入 `search_documents`／FTS／embedding outbox；attachment worker 只負責把原始檔轉成統一文件。
 
 ### 向量表的一致性
 
@@ -1009,9 +1045,6 @@ owner 稍後在同頻道觸發時 trigger 是 `discord-owner`、權限全開，�
 ### Bash Sandbox
 非 owner 的 bash 指令跑在限制環境（timeout + 禁止寫入敏感路徑 + 禁止讀 .env）。目前 bash 完全開放給所有人。
 
-### Session Archive 語意搜尋
-`session_search` 採混合搜尋：原始歸檔訊息維持 FTS5 字面搜尋；每次 compact 產生的 continuation summary
-則寫入同一份 immutable compact archive JSON，並 best-effort embed 到獨立的 cosine 向量表。這樣不必替
-全部原始訊息付 embedding 成本，仍能依概念找到曾討論過某主題的 session。舊資料若當時沒有保存
-summary，無法事後憑空回填；語意覆蓋範圍會隨新的 compaction 逐步增加。向量索引失敗不會阻止
-compaction，因為 JSON archive 才是耐久 source of truth，SQLite 只是可重建的搜尋投影。
+### Unified Search 後續切換
+
+統一 document/FTS/vector/outbox 與 active session ingestion 已建立；後續仍需完成 attachment OCR／視覺描述／文件抽取、workspace source adapters、hybrid ranking、visibility filter、auto recall 切換與歷史回填。切換前 legacy `memory_vectors`、`session_fts` 與 compact summary tables 保持可用；正式驗證與觀察完成後才移除。

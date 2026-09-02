@@ -214,28 +214,30 @@ export interface ExtractedMessageAttachment {
   url: string;
   name?: string;
   contentType?: string;
+  size?: number;
 }
 
 /** Read user-visible attachments from standard Discord uploads and embeds. */
 export function extractMessageAttachments(message: {
-  attachments?: { values?: () => Iterable<{ url: string; name?: string | null; contentType?: string | null }> };
+  attachments?: { values?: () => Iterable<{ url: string; name?: string | null; contentType?: string | null; size?: number }> };
   embeds?: readonly { toJSON?: () => unknown }[];
 }): ExtractedMessageAttachment[] {
   const results: ExtractedMessageAttachment[] = [];
   const seen = new Set<string>();
-  const add = (url: unknown, name?: unknown, contentType?: unknown): void => {
+  const add = (url: unknown, name?: unknown, contentType?: unknown, size?: unknown): void => {
     if (typeof url !== "string" || seen.has(url)) return;
     seen.add(url);
     results.push({
       url,
       ...(typeof name === "string" ? { name } : {}),
       ...(typeof contentType === "string" ? { contentType } : {}),
+      ...(typeof size === "number" ? { size } : {}),
     });
   };
 
   const attachmentValues = message.attachments?.values?.();
   if (attachmentValues) {
-    for (const attachment of attachmentValues) add(attachment.url, attachment.name, attachment.contentType);
+    for (const attachment of attachmentValues) add(attachment.url, attachment.name, attachment.contentType, attachment.size);
   }
 
   for (const embedValue of message.embeds ?? []) {

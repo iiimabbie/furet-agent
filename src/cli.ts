@@ -30,8 +30,9 @@ function prompt(): void {
     }
 
     if (trimmed === "new") {
-      session.clear();
-      console.log("new session started");
+      session.archive();
+      session = new Session("cli");
+      console.log("new session started (previous session archived)");
       prompt();
       return;
     }

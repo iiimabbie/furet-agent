@@ -4,7 +4,17 @@ import { logger } from "./logger.js";
 import { getDb } from "./db.js";
 import { SESSIONS_DIR, ARCHIVE_DIR } from "./paths.js";
 import { toSearchTokens } from "./utils/cjk.js";
-import type { Message, TokenUsage, ToolHistoryEvent } from "./types.js";
+import type { AttachmentReference, Message, TokenUsage, ToolHistoryEvent } from "./types.js";
+import {
+  assignNewMessageSearchId,
+  ensureMessageSearchId,
+  indexCompactSummary,
+  indexConversationWindow,
+  indexSessionMessage,
+  indexToolHistoryEvent,
+  reconcileSessionIndex,
+} from "./session-index.js";
+import { reconcileAttachmentReferences, registerLocalAttachments } from "./attachment-index.js";
 
 // 檔名格式：`{stem}.json` 或 `{stem}__{slug}.json`。
 // stem 是把 routing id 的長前綴縮寫的結果（discord-channel- → dc-、discord-dm- → dm-），
@@ -82,7 +92,47 @@ export class Session {
   }
 
   append(message: Message): void {
+    assignNewMessageSearchId(message);
     this.messages.push(message);
+    this.save();
+    try {
+      indexSessionMessage(this.id, message, this.messages.length - 1);
+    } catch (err) {
+      logger.error({ err: (err as Error).message, sessionId: this.id }, "session message indexing failed");
+    }
+  }
+
+  /** Attach locally produced files to the newest assistant message and index them. */
+  attachFilesToLastAssistant(paths: string[], relation: AttachmentReference["relation"] = "tool_output"): void {
+    if (paths.length === 0) return;
+    for (let index = this.messages.length - 1; index >= 0; index--) {
+      const message = this.messages[index];
+      if (message.role !== "assistant") continue;
+      const parentId = ensureMessageSearchId(this.id, message, index);
+      const references = registerLocalAttachments(this.id, parentId, paths, relation);
+      if (references.length === 0) return;
+      const existing = new Set((message.attachments ?? []).map(reference => reference.id));
+      message.attachments = [...(message.attachments ?? []), ...references.filter(reference => !existing.has(reference.id))];
+      this.save();
+      reconcileAttachmentReferences(this.id, parentId, message.attachments);
+      return;
+    }
+  }
+
+  /** Index one completed request as a context-rich conversation window. */
+  indexConversationWindow(startIndex: number): void {
+    try {
+      indexConversationWindow(this.id, this.messages.slice(Math.max(0, startIndex)));
+    } catch (err) {
+      logger.error({ err: (err as Error).message, sessionId: this.id }, "conversation window indexing failed");
+    }
+  }
+
+  /** Idempotently rebuild all active message/tool projections for this session. */
+  reconcileSearchIndex(): void {
+    reconcileSessionIndex(this.id, this.messages, this.toolHistory);
+    // Reconciliation assigns deterministic IDs to legacy messages; persist them so
+    // future compaction/archive/restart paths keep the same document identity.
     this.save();
   }
 
@@ -100,6 +150,11 @@ export class Session {
   recordToolEvent(event: ToolHistoryEvent): void {
     this.toolHistory.push(event);
     this.save();
+    try {
+      indexToolHistoryEvent(this.id, event, this.toolHistory.length - 1);
+    } catch (err) {
+      logger.error({ err: (err as Error).message, sessionId: this.id, tool: event.tool }, "tool history indexing failed");
+    }
   }
 
   /** Return the newest tool events, with their full input and output intact. */
@@ -127,6 +182,7 @@ export class Session {
   }
 
   archive(): string | null {
+    this.reconcileSearchIndex();
     // Compact summaries are context caches, not original conversation. Their source
     // messages were saved at compaction time, so never archive the synthetic summary.
     const messages = this.messages.filter(m => !isCompactSummary(m));
@@ -153,7 +209,13 @@ export class Session {
   archiveForCompaction(messages: Message[], summary: string): boolean {
     const originalMessages = messages.filter(m => !isCompactSummary(m));
     if (originalMessages.length === 0) return true;
-    return this.persistArchive(originalMessages, "compaction", summary) !== null;
+    this.reconcileSearchIndex();
+    const archived = this.persistArchive(originalMessages, "compaction", summary) !== null;
+    if (archived) {
+      try { indexCompactSummary(this.id, summary); }
+      catch (err) { logger.error({ err: (err as Error).message, sessionId: this.id }, "compact summary indexing failed"); }
+    }
+    return archived;
   }
 
   /** 壓縮 session：用摘要替換前半段 messages，保留最近的 keepRecent 則 */

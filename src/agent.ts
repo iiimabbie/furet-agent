@@ -2,11 +2,11 @@ import { logger } from "./logger.js";
 import { loadConfig, type ReasoningEffort } from "./config.js";
 import { buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
 import { executeTool, getToolDefinitions, renderToolIndex } from "./tools/registry.js";
-import { runWithContext, drainAttachments, queueAttachment } from "./tools/context.js";
+import { runWithContext, drainAttachments, peekAttachments, queueAttachment } from "./tools/context.js";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { ATTACHMENTS_DIR } from "./paths.js";
-import { addSessionSummaryVector, searchVectors } from "./embedding.js";
+import { searchVectors } from "./embedding.js";
 import { stamp } from "./utils/time.js";
 import { filterStaleOnboarding } from "./onboarding.js";
 import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions, ToolHistoryEvent } from "./types.js";
@@ -494,10 +494,6 @@ export async function compactSession(session: import("./session.js").Session, mo
       return null;
     }
 
-    // Index the compact summary for semantic session search. This is best-effort and
-    // cannot block compaction: the immutable archive JSON above already contains the
-    // summary as the durable source of truth.
-    await addSessionSummaryVector(summary, session.id);
     session.compact(summary, COMPACT_KEEP_RECENT);
     logger.info({ sessionId: session.id, summarizedMessages: toSummarize.length, summaryLength: summary.length }, "compaction done");
     return summary;
@@ -532,9 +528,15 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
   logger.info({ prompt: prompt?.slice(0, 200) ?? "(session tail)", trigger: options.trigger }, "query start");
 
   const session = options.session;
+  // Discord messages are appended by the transport before ask(null); direct/cron paths
+  // append below. In either case include the freshest user message in the completed window.
+  let requestStartIndex = session
+    ? Math.max(0, session.getMessages().map(m => m.role).lastIndexOf("user"))
+    : 0;
 
   if (prompt !== null) {
     session?.append({ role: "user", content: prompt, time: nowTimestamp() });
+    requestStartIndex = Math.max(0, (session?.length ?? 1) - 1);
   }
 
   // 自動記憶召回：用使用者訊息搜尋相關記憶，跟其他兩塊記憶排在一起送進 system prompt。
@@ -741,6 +743,8 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
 
       const durationMs = Date.now() - startTime;
       session?.addUsage(totalUsage);
+      session?.indexConversationWindow(requestStartIndex);
+      session?.attachFilesToLastAssistant(peekAttachments());
       logger.info({ durationMs, toolsUsed: toolsUsed.map(t => t.tool), textLength: finalText.length, usage: totalUsage }, "query done");
       return { text: finalText, toolsUsed, durationMs, usage: totalUsage, attachments: drainAttachments() };
     }
@@ -799,6 +803,8 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
 
   const durationMs = Date.now() - startTime;
   session?.addUsage(totalUsage);
+  session?.indexConversationWindow(requestStartIndex);
+  session?.attachFilesToLastAssistant(peekAttachments());
   logger.error({ maxTurns }, "max turns reached");
   return { text: "達到最大回合數限制。", toolsUsed, durationMs, usage: totalUsage, attachments: drainAttachments() };
 }

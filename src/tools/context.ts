@@ -54,6 +54,10 @@ export function getRequestModel(): string | undefined { return ctx().model; }
 
 export function queueAttachment(filePath: string): void { ctx().pendingFiles.push(filePath); }
 
+export function peekAttachments(): string[] {
+  return [...new Set(ctx().pendingFiles)].filter(filePath => existsSync(filePath));
+}
+
 export function drainAttachments(): string[] {
   const c = ctx();
   const queued = c.pendingFiles;
