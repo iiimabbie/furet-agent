@@ -98,7 +98,7 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
 
 ### Session 與 API 的訊息流
 
-- Session 存：對話 messages、完整 local `toolHistory`（工具 input / output / 成敗），以及用量；不存 thinking，見下；不把 live `tool_result` 或 provider-owned server-tool protocol blocks 混入對話 messages。
+- Session 存：對話 messages、完整 local `toolHistory`（工具 input / output / 成敗），以及用量；不存 thinking，見下；不把 live `tool_result` 或 provider-owned server-tool protocol blocks 混入對話 messages。使用者訊息無法持久化時不啟動模型，Discord trigger 會明確回報；assistant message 是交付前必須成功的 durable boundary。回答已生成並保存後，usage、conversation-window、attachment reference 與 Discord message ID 等 bookkeeping 改採 best-effort，失敗只記錄待修復狀態，不能吞掉已完成的文字或附件。工具執行後若 audit ledger 寫入失敗也繼續整理回覆，避免重試造成外部副作用重複。
 - 送 API 時：從 session 展開成標準 multi-turn messages，過濾掉沒有配對 `tool_result` 的歷史 local tool_use blocks，也過濾已完成舊回合的 `server_tool_use` 與 web/fetch/code execution result blocks；另外在 system prompt 注入最近 8 筆工具工作的有界摘要。server-side tool 的 ID 可能是 router/upstream 專用格式（例如 `ws_...`），跨模型重播會被 Anthropic 的 `srvtoolu_...` schema 拒絕，因此歷史只保留工具完成後的文字結論。同一個 live request 內若收到 `pause_turn`，則依 Messages API 規則重播仍有效的 server-tool blocks 繼續該回合；不符合 Anthropic ID schema 的 router-specific blocks 會先剝除，避免下一次請求直接 400。
 
 - `trimToTokenBudget()`：從最新往回取，粗估 token（JSON 長度 / 4），確保 tool_use/tool_result 配對不被拆散。

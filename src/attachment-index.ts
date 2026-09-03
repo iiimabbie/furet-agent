@@ -165,7 +165,7 @@ function upsertAttachment(reference: AttachmentReference, sessionId: string, par
       reference.url ?? null, reference.name ?? null, reference.contentType ?? null,
       reference.localPath ?? null, reference.size ?? null, reference.contentHash ?? null,
       visibilityForSession(sessionId), reference.relation ?? "upload",
-      reference.localPath ? "pending" : "pending",
+      "pending",
     );
     db.prepare(`
       INSERT INTO attachment_jobs (attachment_id, status, attempts, next_retry_at, last_error, updated_at)

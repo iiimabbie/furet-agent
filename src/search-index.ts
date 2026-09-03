@@ -507,7 +507,6 @@ export interface UnifiedSearchResponse {
   diagnostics: {
     vectorCandidates: number;
     ftsCandidates: number;
-    filteredCandidates: number;
     groupedCandidates: number;
     embeddingAvailable: boolean;
   };
@@ -694,11 +693,10 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
   }>();
   let vectorCandidates = 0;
   let ftsCandidates = 0;
-  let filteredCandidates = 0;
   let embeddingAvailable = false;
 
   if (!normalizedQuery) {
-    return { traceId, results: [], diagnostics: { vectorCandidates, ftsCandidates, filteredCandidates, groupedCandidates: 0, embeddingAvailable } };
+    return { traceId, results: [], diagnostics: { vectorCandidates, ftsCandidates, groupedCandidates: 0, embeddingAvailable } };
   }
 
   const ftsQuery = toSearchTokens(normalizedQuery)
@@ -817,7 +815,6 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
     diagnostics: {
       vectorCandidates,
       ftsCandidates,
-      filteredCandidates,
       groupedCandidates: results.length,
       embeddingAvailable,
     },

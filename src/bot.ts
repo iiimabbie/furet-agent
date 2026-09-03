@@ -867,8 +867,15 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
       if (!isTrigger) return;
 
       await handleTrigger(message, session, fmt.images);
-    }).catch(err => {
-      logger.error({ err, sessionId, messageId: message.id }, "queued Discord message handling failed");
+    }).catch(async err => {
+      logger.error({ err, sessionId, messageId: message.id }, "queued Discord message handling failed before agent delivery");
+      if (isTrigger) {
+        try {
+          await message.reply(messagePayload("這則訊息無法保存，因此沒有啟動處理。請稍後再試一次。"));
+        } catch {
+          await message.react("🤕").catch(() => {});
+        }
+      }
     });
   });
 
@@ -1086,7 +1093,13 @@ async function handleTrigger(message: Message, session: Session, images?: string
     }
 
     if (sentIds.length > 0) {
-      session.setLastAssistantMsgId(sentIds.join(","));
+      try {
+        session.setLastAssistantMsgId(sentIds.join(","));
+      } catch (err) {
+        // The Discord reply is already visible. Transport metadata persistence is
+        // best-effort and must never delete or suppress the delivered answer.
+        logger.error({ err, sessionId: session.id, sentIds }, "assistant Discord message ID persistence failed after delivery");
+      }
     }
     logger.info({ sessionId: session.id, chunks: chunks.length, sentIds }, "discord reply sent");
   } catch (err) {

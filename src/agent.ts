@@ -499,6 +499,31 @@ export async function compactSession(session: import("./session.js").Session, mo
   return null;
 }
 
+function finalizeSessionBookkeeping(
+  session: import("./session.js").Session | undefined,
+  usage: TokenUsage,
+  requestStartIndex: number,
+): void {
+  if (!session) return;
+
+  // The assistant message is the durable delivery boundary. Usage totals, derived
+  // search windows, and attachment projections are rebuildable bookkeeping; once
+  // the answer has been generated and saved, their failure must not suppress it.
+  try {
+    session.addUsage(usage);
+  } catch (err) {
+    logger.error({ err, sessionId: session.id }, "session usage persistence failed; reply delivery will continue");
+  }
+
+  session.indexConversationWindow(requestStartIndex);
+
+  try {
+    session.attachFilesToLastAssistant(peekAttachments());
+  } catch (err) {
+    logger.error({ err, sessionId: session.id }, "assistant attachment reference persistence failed; reply delivery will continue");
+  }
+}
+
 /**
  * 執行一次 agent 請求。
  *
@@ -768,9 +793,7 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
       }
 
       const durationMs = Date.now() - startTime;
-      session?.addUsage(totalUsage);
-      session?.indexConversationWindow(requestStartIndex);
-      session?.attachFilesToLastAssistant(peekAttachments());
+      finalizeSessionBookkeeping(session, totalUsage, requestStartIndex);
       logger.info({ durationMs, toolsUsed: toolsUsed.map(t => t.tool), textLength: finalText.length, usage: totalUsage }, "query done");
       return { text: finalText, toolsUsed, durationMs, usage: totalUsage, attachments: drainAttachments() };
     }
@@ -813,14 +836,21 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
       }
       options.onProgress?.({ type: "tool_end", toolCallId: toolBlock.id, isError });
       logger.debug({ tool: toolBlock.name, result: result.slice(0, 500) }, "tool result");
-      session?.recordToolEvent({
-        id: toolBlock.id,
-        time: nowTimestamp(),
-        tool: toolBlock.name,
-        input: toolBlock.input,
-        result,
-        isError,
-      });
+      try {
+        session?.recordToolEvent({
+          id: toolBlock.id,
+          time: nowTimestamp(),
+          tool: toolBlock.name,
+          input: toolBlock.input,
+          result,
+          isError,
+        });
+      } catch (err) {
+        // The tool may already have produced an external side effect. Do not abort
+        // and invite a retry that could execute it twice merely because the local
+        // audit ledger could not be persisted.
+        logger.error({ err, sessionId: session?.id, tool: toolBlock.name }, "tool history persistence failed after execution; continuing request");
+      }
       toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id, content: result });
     }
 
@@ -828,9 +858,7 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
   }
 
   const durationMs = Date.now() - startTime;
-  session?.addUsage(totalUsage);
-  session?.indexConversationWindow(requestStartIndex);
-  session?.attachFilesToLastAssistant(peekAttachments());
+  finalizeSessionBookkeeping(session, totalUsage, requestStartIndex);
   logger.error({ maxTurns }, "max turns reached");
   return { text: "達到最大回合數限制。", toolsUsed, durationMs, usage: totalUsage, attachments: drainAttachments() };
 }
