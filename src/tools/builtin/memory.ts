@@ -2,22 +2,25 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { logger } from "../../logger.js";
 import { loadConfig } from "../../config.js";
-import { getDb } from "../../db.js";
 import { MEMORY_DIR, MEMORY_INDEX } from "../../paths.js";
-import { addVector, searchVectors } from "../../embedding.js";
-import { toSearchQuery, highlightMatches } from "../../utils/cjk.js";
+import { searchUnified } from "../../search-index.js";
+import { getChannelId, getSessionId, getTrigger, getUserId } from "../context.js";
+import { hasOwnerSearchVisibility } from "../authz.js";
+import { indexDiaryNote, reindexMemory } from "../../workspace-index.js";
 import { today, clockTime } from "../../utils/time.js";
 import { appendInsideTag, stripTag } from "../../utils/tagged-file.js";
 import type { Tool } from "../../types.js";
+import { updateSearchProjection, withProjectionNotice } from "../../utils/search-projection.js";
+import { renderSearchOutput, truncateSearchText } from "../../utils/search-output.js";
 
 
-export const memorySave: Tool = {
-  name: "memory_save",
-  description: "Append an event or conversation note to today's daily memory file (workspace/memory/yyyy-MM-dd.md) for diary continuity. This is not the canonical store for owner or people profiles and does not replace updating OWNER.md, PEOPLE.md, or long-term MEMORY.md when appropriate.",
+export const diaryNote: Tool = {
+  name: "diary_note",
+  description: "Append a diary annotation to today's file (workspace/memory/yyyy-MM-dd.md). Use only for explicit background, evidence-based in-the-moment reflection, cross-day context, or attachment/tool context that the transcript cannot preserve. Do NOT log events or save inferred emotional states as facts.",
   parameters: {
     type: "object",
     properties: {
-      content: { type: "string", description: "The memory content to save" },
+      content: { type: "string", description: "Supplemental diary context that is explicit or evidence-based and not already preserved by the transcript" },
     },
     required: ["content"],
   },
@@ -25,7 +28,7 @@ export const memorySave: Tool = {
     const { content } = args as { content: string };
     const date = today();
     const filePath = resolve(MEMORY_DIR, `${date}.md`);
-    logger.info({ date, content: content.slice(0, 100) }, "memory save");
+    logger.info({ date, content: content.slice(0, 100) }, "diary note");
 
     try {
       mkdirSync(MEMORY_DIR, { recursive: true });
@@ -36,12 +39,10 @@ export const memorySave: Tool = {
       const entry = `\n- [${timestamp}] ${content}`;
       writeFileSync(filePath, existing + entry + "\n");
 
-      // 同時存向量索引（背景執行，不阻塞回應）
-      addVector(content, `${date}.md`).catch(() => {});
-
-      return `Memory saved to ${date}.md`;
+      const projectionError = updateSearchProjection("diary note", () => indexDiaryNote(date, timestamp, content));
+      return withProjectionNotice(`Note saved to ${date}.md.`, projectionError);
     } catch (err) {
-      logger.error({ err }, "memory save failed");
+      logger.error({ err }, "diary note failed");
       return `Error: ${(err as Error).message}`;
     }
   },
@@ -49,56 +50,44 @@ export const memorySave: Tool = {
 
 export const memorySearch: Tool = {
   name: "memory_search",
-  description: "Semantic search over your own memory notes — what you concluded and wrote down. Use it when the user refers to something from before and you need the substance rather than the wording. To find the actual conversation it came from, use session_search; it searches transcripts, this one does not.",
+  description: "Permission-aware hybrid search across durable memory, people, diaries, prior conversations, tool evidence, and attachments. Use it when you need the substance of something from before; results include their real source and time.",
   parameters: {
     type: "object",
     properties: {
-      query: { type: "string", description: "Search query (supports semantic/meaning-based search)" },
+      query: { type: "string", description: "Natural-language or exact-keyword search query" },
+      limit: { type: "number", description: "Maximum results (default 10, max 50)" },
+      debug: { type: "boolean", description: "Include search trace diagnostics (default false)" },
     },
     required: ["query"],
   },
   execute: async (args) => {
-    const { query } = args as { query: string };
-    logger.info({ query }, "memory search");
-
+    const { query, limit = 10, debug = false } = args as { query: string; limit?: number; debug?: boolean };
+    logger.info({ query, limit, debug }, "memory search");
     try {
-      const results: string[] = [];
-
-      // 語意搜尋（向量，sqlite-vec）
-      const vectorResults = await searchVectors(query);
-      if (vectorResults.length > 0) {
-        results.push("## Semantic matches\n" + vectorResults.map(r =>
-          `- [${r.file}] (score: ${r.score.toFixed(2)}) ${r.text}`
-        ).join("\n"));
-      }
-
-      // 全文搜尋（SQLite FTS5）。
-      // FTS 表存的是 bigram 展開後的 token（中文不斷詞問題），所以查詢也要展開，
-      // 顯示則用 memory_vectors 的原文。
-      const ftsQuery = toSearchQuery(query);
-      if (ftsQuery) {
-        try {
-          const db = getDb();
-          const ftsResults = db.prepare(`
-            SELECT mv.text, mv.file
-            FROM memory_fts f
-            JOIN memory_vectors mv ON mv.id = f.rowid
-            WHERE memory_fts MATCH ?
-            ORDER BY rank
-            LIMIT 20
-          `).all(ftsQuery) as Array<{ text: string; file: string }>;
-
-          if (ftsResults.length > 0) {
-            results.push("## Full-text matches\n" + ftsResults.map(r =>
-              `- [${r.file}] ${highlightMatches(r.text, query)}`
-            ).join("\n"));
-          }
-        } catch (err) {
-          logger.warn({ err: (err as Error).message, query }, "memory FTS query failed");
-        }
-      }
-
-      return results.length > 0 ? results.join("\n\n") : "No matching memories found.";
+      const response = await searchUnified(query, {
+        profile: "memory",
+        limit: Math.min(Math.max(Math.floor(limit), 1), 50),
+        visibility: {
+          isOwner: hasOwnerSearchVisibility(getTrigger()),
+          userId: getUserId(),
+          channelId: getChannelId(),
+        },
+        includeContext: true,
+        debug,
+      });
+      if (response.results.length === 0) return "No matching memories found.";
+      const lines = response.results.map(result => {
+        const where = [result.sourceType, result.sourceId, result.occurredAt].filter(Boolean).join(" · ");
+        const methods = result.matchedBy.join("+");
+        const context = result.context?.length
+          ? `\n  Context: ${truncateSearchText(result.context.map(item => `${item.role ?? "message"}: ${item.text}`).join(" | "), 900)}`
+          : "";
+        return `- [${where}] (${methods}, rank ${(result.score * 100).toFixed(0)}) ${truncateSearchText(result.text, 1800)}${context}`;
+      });
+      const diagnostics = debug
+        ? `\n\nTrace ${response.traceId}: ${JSON.stringify(response.diagnostics)}`
+        : "";
+      return renderSearchOutput(`Search results (${response.results.length}):`, lines, diagnostics);
     } catch (err) {
       logger.error({ err }, "memory search failed");
       return `Error: ${(err as Error).message}`;
@@ -165,7 +154,8 @@ export const memoryAdd: Tool = {
         return `Error: would exceed character limit. ${memoryUsageInfo(current)} — consolidate existing entries first with memory_replace or memory_remove.`;
       }
       writeFileSync(MEMORY_INDEX, updated);
-      return `Added. ${memoryUsageInfo(updated)}`;
+      const projectionError = updateSearchProjection("MEMORY.md", () => reindexMemory(updated));
+      return withProjectionNotice(`Added. ${memoryUsageInfo(updated)}`, projectionError);
     } catch (err) {
       logger.error({ err }, "memory add failed");
       return `Error: ${(err as Error).message}`;
@@ -198,7 +188,8 @@ export const memoryReplace: Tool = {
         return `Error: replacement would exceed limit. ${memoryUsageInfo(current)}`;
       }
       writeFileSync(MEMORY_INDEX, updated);
-      return `Replaced. ${memoryUsageInfo(updated)}`;
+      const projectionError = updateSearchProjection("MEMORY.md", () => reindexMemory(updated));
+      return withProjectionNotice(`Replaced. ${memoryUsageInfo(updated)}`, projectionError);
     } catch (err) {
       logger.error({ err }, "memory replace failed");
       return `Error: ${(err as Error).message}`;
@@ -226,7 +217,8 @@ export const memoryRemove: Tool = {
       }
       const updated = current.replace(text, "").replace(/\n{3,}/g, "\n\n");
       writeFileSync(MEMORY_INDEX, updated);
-      return `Removed. ${memoryUsageInfo(updated)}`;
+      const projectionError = updateSearchProjection("MEMORY.md", () => reindexMemory(updated));
+      return withProjectionNotice(`Removed. ${memoryUsageInfo(updated)}`, projectionError);
     } catch (err) {
       logger.error({ err }, "memory remove failed");
       return `Error: ${(err as Error).message}`;

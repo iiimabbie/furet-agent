@@ -38,7 +38,7 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
     │   ├── tool_catalog # 探索／代理入口，exposure 開啟時走它取用未直接暴露的工具
     │   ├── bash / read_file / write_file / get_weather
     │   ├── image_gen     # GPT-only，Responses API 生圖／參考圖 edit 並附檔
-    │   ├── memory_*      # 記憶管理（save / search / list / add / replace / remove）
+    │   ├── diary_note / memory_* # 日記補註與記憶管理（search / list / add / replace / remove）
     │   ├── cron_*        # 排程管理（create / list / delete / toggle / update）
     │   ├── reminder_*    # 提醒管理（create / list / delete）
     │   ├── discord_*     # Discord 操作（fetch / send / buttons / react / pin / thread / forum / edit / delete）
@@ -85,7 +85,8 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
 
 
 1. 組 system prompt（`prompt.ts` 的 `buildSystemPrompt()`）
-2. 自動記憶召回：用使用者訊息做語意搜尋（`searchVectors`），結果注入 system prompt。
+2. 自動記憶召回：用使用者訊息呼叫 permission-aware `searchUnified()`，以同一套 FTS + vector
+   索引跨對話、日記、人物、工具證據與附件召回，再把結果注入 system prompt。
    `prompt` 為 null 時（Discord 路徑）改取 session 最後一則 user message，並剝掉
    `[msg:id 時間] <@id>(帳號名｜暱稱):` 這類中繼資料前綴，避免稀釋語意訊號
 3. 從 session 載入歷史 messages（標準 multi-turn 格式），用 `trimToTokenBudget()` 控制 context 上限，
@@ -97,7 +98,7 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
 
 ### Session 與 API 的訊息流
 
-- Session 存：對話 messages、完整 local `toolHistory`（工具 input / output / 成敗），以及用量；不存 thinking，見下；不把 live `tool_result` 或 provider-owned server-tool protocol blocks 混入對話 messages。
+- Session 存：對話 messages、完整 local `toolHistory`（工具 input / output / 成敗），以及用量；不存 thinking，見下；不把 live `tool_result` 或 provider-owned server-tool protocol blocks 混入對話 messages。使用者訊息無法持久化時不啟動模型，Discord trigger 會明確回報；assistant message 是交付前必須成功的 durable boundary。回答已生成並保存後，usage、conversation-window、attachment reference 與 Discord message ID 等 bookkeeping 改採 best-effort，失敗只記錄待修復狀態，不能吞掉已完成的文字或附件。工具執行後若 audit ledger 寫入失敗也繼續整理回覆，避免重試造成外部副作用重複。
 - 送 API 時：從 session 展開成標準 multi-turn messages，過濾掉沒有配對 `tool_result` 的歷史 local tool_use blocks，也過濾已完成舊回合的 `server_tool_use` 與 web/fetch/code execution result blocks；另外在 system prompt 注入最近 8 筆工具工作的有界摘要。server-side tool 的 ID 可能是 router/upstream 專用格式（例如 `ws_...`），跨模型重播會被 Anthropic 的 `srvtoolu_...` schema 拒絕，因此歷史只保留工具完成後的文字結論。同一個 live request 內若收到 `pause_turn`，則依 Messages API 規則重播仍有效的 server-tool blocks 繼續該回合；不符合 Anthropic ID schema 的 router-specific blocks 會先剝除，避免下一次請求直接 400。
 
 - `trimToTokenBudget()`：從最新往回取，粗估 token（JSON 長度 / 4），確保 tool_use/tool_result 配對不被拆散。
@@ -127,7 +128,7 @@ thinking block 的 `signature` 不是 `thinking` 欄位的校驗碼 —— **它
 - 完整文字 result；
 - 成功／失敗狀態。
 
-這份完整紀錄存於 active session JSON，也會跟著 session archive／compact archive 保存，是稽核與後續查證的資料來源；不因為 context 控制而截斷。
+這份完整紀錄存於 active session JSON，也會跟著 session archive／compact archive 保存，是稽核與後續查證的資料來源；不因為 context 控制而截斷。每筆 tool call、完整 result 切片與 bounded evidence summary 亦透過統一搜尋 ingestion pipeline 建立可重建的 FTS／embedding projection。搜尋投影本身先遮罩 secrets，因此 FTS、召回輸出與外部 embedding payload 都不含 credential；未遮罩的原始證據只留在既有權限保護的 session source of truth。
 
 正常下一輪不會把完整 stdout 或每一筆工具操作塞回 messages。`renderToolHistory()` 只把**最近 8 筆**投影到 system prompt，每筆 input 最多 180 字、outcome 最多 280 字，並標示為 untrusted data。模型因此知道「做過什麼、成功或失敗、結果概略」，但不會每輪重付長輸出的 token；需要細節時，目前仍可從 session JSON／archive 查閱。
 
@@ -153,8 +154,8 @@ cron / reminder / journal 跟使用者對話是並行跑的，trigger 與待送�
 放在模組級全域變數會互相覆蓋：cron 觸發時把 trigger 蓋成 `"cron"`，正在執行 tool call 的
 非 owner 請求就繞過了 `registry.ts` 的 owner-only 檢查；附件也會串到別人的回覆去。
 
-- `runWithContext(trigger, fn)` — `ask()` 用它包住整個執行流程
-- `getTrigger()` / `setTrigger()` — 權限判定用的 trigger source
+- `runWithContext(trigger, userId, model, fn, { sessionId, channelId })` — `ask()` 用它包住整個執行流程，並把搜尋權限所需的 request identity 綁在同一個 ALS scope
+- `getTrigger()` / `setTrigger()` / `getUserId()` / `getSessionId()` / `getChannelId()` — 工具權限與搜尋 visibility 判定用的 request identity
 - `queueAttachment()` / `drainAttachments()` — 工具排隊的檔案附件
 - ALS 範圍外呼叫時退回 `{ trigger: "unknown", pendingFiles: [] }`
 
@@ -345,7 +346,7 @@ Session ID 是內部 routing key（不變）；檔名另外把長前綴縮寫成
 
 ### Session 格式
 
-Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 不保存）。session JSON 另有 `toolHistory`，保存完整 local tool input / result，和對話 context 分開。
+Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 不保存）。每則新 message 另帶本機穩定 `searchId`，讓 active、compact、archive 與 restart reconciliation 對同一內容使用相同 deterministic document identity。舊 session 沒有 `searchId` 時，會依 session、ordinal、role、content 與時間建立穩定 fallback 並在 reconciliation 後寫回。session JSON 另有 `toolHistory`，保存完整 local tool input / result，和對話 context 分開。
 
 ```json
 {
@@ -367,6 +368,14 @@ Messages 可以是純文字 string 或 ContentBlock[]（含 tool_use；thinking 
 1. Silent memory flush：注入 flush 指令到 systemPrompt，讓 agent 自由使用 memory tools 整理記憶
 2. 原始 messages、usage 與 `toolHistory` 歸檔到 `workspace/sessions/archive/`；SQLite 只作搜尋索引，JSON 是耐久的 source of truth
 3. 清空 active session
+
+### Session 搜尋投影與 reconciliation
+
+搜尋索引不再等待 session 結束：`Session.append()` 先同步寫入 active JSON，成功後才把該 message 轉成 `search_documents` + FTS + durable embedding job；一次 agent request 完成時，再建立保留前後文的 conversation-window document。工具紀錄由 `Session.recordToolEvent()` 同一路徑建立 call、result chunks 與 evidence summary。
+
+compact、archive、Discord `/new`、CLI `new` 與 gateway startup recovery 都只呼叫 `reconcileSessionIndex()`。reconciliation 會重新從 durable session source 產生 deterministic documents 並 upsert 缺漏，不自行發明另一種 chunk/embedding 邏輯。Session 歷史跨 archive segment 是 append-only；active JSON 在 compact/clear 後只剩尾端，因此 session reconciliation 不使用「來源未出現就刪除」策略，避免把已歸檔歷史誤刪。Workspace 文件等真正代表完整當前狀態的來源，才使用 source-level remove-missing reconciliation。
+
+固定 harness control message、onboarding context、compact synthetic summary不作一般 message document；compact summary 以獨立衍生 source type 保存，不能取代原始訊息。
 
 ## Discord Bot
 
@@ -516,9 +525,9 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 | Plugins | 背景服務接流量前先 `loadPlugins()`；Discord 啟用時待 client ready 後才 `startPlugins()`，再註冊含外掛在內的 slash commands。Discord 停用或登入失敗時仍啟動非 Discord 能力，message transport 會明確拒絕。shutdown 時 `stopPlugins()`（見 Plugin 系統） |
 | PID file | `furet.pid`，啟動時殺掉舊進程確保單實例 |
 
-日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日記憶檔的 memory_save 筆記只當輔助。只讀每日檔會漏掉未被 memory_save 的對話（例如純聊天的社群互動）——flush 那步用的是「長期記憶」的門檻，而日記要的是連續性。兩道門檻因此分開：MEMORY.md 留 30 天長期濾網，每日檔／日記照收社群互動。
+日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日檔的 diary_note 補註只當輔助。transcript 是完整的對話紀錄；diary_note 僅補充明確背景、有證據的當下反思、跨日關聯與附件／工具脈絡，不重複記錄事件，也不把未確認的情緒推測寫成事實。
 
-`memory_save` 的格式刻意維持原子化、可檢索的一事一筆，因此不能直接成為日記骨架。Daily Journal prompt 會先把它視為事實索引與防遺漏清單，再從 transcript 找出整天的主線，把相關的起因、行動、反應與結果融合成有脈絡的第一人稱段落。標題仍用於 Obsidian 導覽，但正文以連續散文為主；只有真正的清單才用 bullet。實作命令、檔名與中間步驟只保留足以理解事件意義的部分，避免成品退化成 changelog、工作報告或分類後的流水帳。這項 prompt 規則必須同時維護 `workspace/JOURNAL.md` 與 `templates/JOURNAL.md`，確保正式環境和新 workspace 初始化結果一致。
+`diary_note` 是補充性的日記註記，不是事件記錄，因此不能成為日記骨架。它只保存 transcript 無法保留的明確背景、有證據的當下反思、跨日關聯，以及附件或工具結果的必要脈絡；不得把推測的心理狀態寫成事實。Daily Journal prompt 以 transcript 為唯一事實來源，找出整天的主線，把相關的起因、行動、反應與結果融合成有脈絡的第一人稱段落；diary_note 只作為輔助色彩織入。正文以連續散文為主，只有真正的清單才用 bullet；實作命令、檔名與中間步驟只保留足以理解事件意義的部分，避免成品退化成 changelog、工作報告或分類後的流水帳。這項規則必須同時維護 runtime `workspace/JOURNAL.md` 與 `templates/JOURNAL.md`。部署時使用 `scripts/migrate-diary-note.ts` 做精確、可重跑的段落遷移與舊名稱掃描，不得整份 template 覆蓋客製 workspace。Apply 前必須完成 projected-state preflight 並指定 backup directory；兩個 runtime 檔先寫 temp，再逐一 rename，任何失敗都從備份回滾整組檔案，避免半套切換。
 
 ### Reminder 用輪詢而不是 setTimeout
 
@@ -591,8 +600,8 @@ exposure 合法、`match` 至少有 keyword/alias/signal。
 | `read_file` | 讀檔 |
 | `write_file` | 寫檔 |
 | `get_weather` | OpenWeatherMap 天氣查詢；先以 Direct Geocoding 解析地點，再用經緯度取得目前天氣與預報，並為容易誤判的地名提供明確別名 |
-| `memory_save` | 追加到當日記憶檔 + SQLite 向量 |
-| `memory_search` | 語意搜尋 + 關鍵字搜尋 |
+| `diary_note` | 追加 transcript 無法保留的日記補註，並透過統一搜尋索引建立可重建 projection；不做事件流水帳 |
+| `memory_search` | Permission-aware 統一 hybrid search；偏重人物、長期記憶、日記與重要對話證據 |
 | `memory_list` | 列出所有記憶檔 |
 | `memory_add` | 在 MEMORY.md 新增條目（有字數上限） |
 | `memory_replace` | 用 substring match 更新 MEMORY.md |
@@ -617,7 +626,7 @@ exposure 合法、`match` 至少有 keyword/alias/signal。
 | `google_drive_*` | Drive 搜尋/讀取/上傳 |
 | `google_tasks_*` | Tasks 列表/建立/完成/刪除 |
 | `soul_guardian_*` | 核心檔案保護（status/check/approve/restore/history） |
-| `session_search` | FTS5 全文搜尋歸檔的歷史對話 |
+| `session_search` | 與 memory_search 共用 `searchUnified()`，但限定／偏重對話、工具、compact summary 與附件來源 |
 | `sessions_by_date` | 依日期（YYYY-MM-DD）撈當天所有歸檔 session 的原始內容，供除錯／稽核 |
 | `journal_transcript_by_date` | 依日期產生移除工具與 harness 雜訊的對話投影，供日記重建 |
 | `skill_install/uninstall/list` | 技能管理 |
@@ -640,7 +649,7 @@ trigger + 各工具確認規則負責。隱藏工具不等於降權，surface �
 四個等級（`tools/metadata.ts` 的 `ExposureLevel`）：
 
 - `native`：每輪都送完整 schema（`tool_catalog` / `bash` / `read_file` / `write_file` /
-  `memory_save` / `memory_search` / `people_add` / `people_update` / `discord_react` /
+  `diary_note` / `memory_search` / `people_add` / `people_update` / `discord_react` /
   `discord_attach_to_reply`）。3 個 server tool 視為 `native-provider`，因為不能被本地
   `tool_catalog.call` 代理，第一版維持直接暴露。
 - `match`：由 `matchTools()` 這個 **deterministic** matcher（不另呼叫 LLM）依當輪 prompt 的
@@ -799,7 +808,7 @@ interface PluginRuntimeContext {
 |----|------|------|
 | Owner 檔 | `workspace/OWNER.md` | owner 個人資料的唯一權威：稱呼、身分、帳號、住處、工作、關係、權限；變更時原地更新 |
 | 長期記憶 | `workspace/MEMORY.md` | 非人物檔案的規則、偏好、流程、持續計畫與世界事實；有字數上限（config `memoryCharLimit`），滿了需整合 |
-| 每日記憶 | `workspace/memory/yyyy-MM-dd.md` | 當日事件、對話與修正紀錄；是日記來源，不代替其他權威檔 |
+| 每日檔 | `workspace/memory/yyyy-MM-dd.md` | 日記成品與少量 transcript 外補註；完整事件／對話以 session transcript 為原始來源，不代替其他權威檔 |
 | 人物檔 | `workspace/PEOPLE.md` | owner 以外人物的權威資料（名字、Discord ID、關係、稱呼與權限） |
 
 ### 儲存層
@@ -815,23 +824,55 @@ interface PluginRuntimeContext {
 | `fts_meta` | FTS 索引的內容格式版本，版本不符就在開機時重建 |
 | `session_archive` | 歸檔的 session messages |
 | `session_fts` | FTS5 session 全文搜尋（存 CJK bigram token，非原文） |
-| `session_summary_vectors` | compact continuation summary 與 session ID |
-| `session_summary_vectors_vec_cos` | compact summary 的 cosine 向量索引 |
+| `session_summary_vectors` | Legacy compact summary projection；統一搜尋切換完成前保留 |
+| `session_summary_vectors_vec_cos` | Legacy compact summary cosine projection；統一搜尋切換完成前保留 |
+| `search_documents` | 所有來源正規化後的 searchable chunk；deterministic `id` + integer `rowid` |
+| `search_documents_fts` | 統一 FTS5 projection，rowid 對齊 `search_documents` |
+| `search_document_embeddings` | document、embedding model、dimension、content hash 與完成時間 metadata |
+| `search_document_vectors_vec_cos` | 統一 3072 維 cosine vector projection |
+| `embedding_jobs` | 持久化 embedding outbox；pending／processing／failed／complete 與 retry 狀態 |
+| `attachment_records` | 附件 reference、durable local path、hash、OCR／視覺描述／文件文字與處理狀態 |
+| `attachment_jobs` | 附件下載、OCR、vision 與文件 parser 的持久化 retry outbox |
 | `discord_button_messages` | Discord 按鈕定義、權限、生命週期與執行結果 |
 
 ### 記憶工具
 
-- `memory_save`：追加事件／對話筆記到當日檔案 + 存 SQLite 向量；不是 owner／人物檔案或 MEMORY.md 的替代品
-- `memory_search`：語意搜尋（sqlite-vec KNN）+ 全文搜尋（FTS5）
-- `memory_add/replace/remove`：操作非人物檔案的長期脈絡 MEMORY.md，同時重建 MEMORY.md 的向量
-- `session_search`：混合搜尋歸檔歷史；FTS5 查所有原始訊息的字面內容，語意搜尋查 compact continuation summary
-- 自動召回：每次對話時用 user message 做語意搜尋，結果注入 system prompt
+- `diary_note`：追加 transcript 無法保存的明確背景、有證據反思、跨日關聯或附件／工具脈絡；寫入每日檔後立即接入統一索引，不做事件記錄
+- `memory_search`：呼叫 permission-aware `searchUnified()`，偏重 durable memory、people、diary 與重要 conversation evidence
+- `memory_add/replace/remove`：操作非人物檔案的長期脈絡 MEMORY.md，並透過 workspace adapter 重建統一搜尋 documents
+- `session_search`：與 memory_search 共用同一個 hybrid search，只調整來源 filter、ranking profile 與輸出格式
+- 自動召回：每次對話以 request identity 先做 visibility filter，再從統一索引召回；trace 會記錄命中文件、來源與分數
 
-### 向量維護
+### 搜尋投影維護
 
-- `write_file` 覆寫 PEOPLE.md 或日記檔時：刪除舊向量 → 拆段重建
-- `memory_replace` / `memory_remove`：刪除 MEMORY.md 所有舊向量 → 整份重建
-- Migration 腳本：`npx tsx scripts/migrate-vectors.ts` 把現有資料灌進向量庫
+- Session message、conversation window、tool evidence 與附件 reference 在 durable persistence 後立即建立／更新統一 documents。
+- compact、archive、`/new`、startup restore 只呼叫同一個冪等 reconciliation，補齊缺漏而不另做一套 embedding。
+- PEOPLE.md、MEMORY.md、OWNER.md 與正式日記由 workspace source adapter 以 remove-missing policy 重建；刪除來源內容會同步移除失效 projection。
+- `scripts/backfill-search-index.ts` 可 dry-run、冪等回填歷史來源、修復 orphan FTS/vector rows，並輸出來源與 job 狀態報告。 `--dry-run` 不初始化 SQLite、不建立 schema、也不修復 projection，只掃描 durable sources 並輸出預演報告。
+- `scripts/migrate-diary-note.ts` 只在部署時精確遷移 runtime AGENT.md/JOURNAL.md；不整份覆蓋客製 workspace。
+
+### 統一搜尋 ingestion 與 embedding outbox
+
+`src/search-index.ts` 是新搜尋投影的唯一寫入層：
+
+1. source adapter 先產生 `SearchDocumentInput`。
+2. `ingestSearchDocuments()` 正規化文字並先遮罩 secrets，再計算 deterministic ID／SHA-256 content hash，並在同一個 SQLite transaction 內 upsert document、FTS row 與 embedding job。未遮罩原文仍只存在 durable source。
+3. 寫入層只依 identity/hash 去重，不用 cosine 相似度刪資料；不同時間的相似事件都會保留。
+4. `processEmbeddingJobs()` 由 gateway 的單一背景 worker 分批處理。程序中斷後仍可重試的 pending/failed job 留在 SQLite，卡住的 processing job 超時後回到 retry 流程；達最大嘗試次數的 failed job 另列為 `exhausted`，不再混入 `remaining` 或讓 drain 永遠無法完成。
+5. FTS／recall 使用的 searchable projection 與外部 embedding payload 都使用遮罩後文字；本機 durable source 與權限 metadata 不因遮罩而失去可稽核性。查詢本身在送 embedding provider 前也會遮罩可能的 credential。
+6. vector rowid 與 FTS rowid 都使用 `search_documents.rowid`，deterministic text ID 則放在 unique `id`；這避開 sqlite-vec 只接受 integer rowid 的限制，同時保持 reconciliation 冪等。
+7. 同一 document 的文字 hash 未變時仍比較 metadata；visibility/channel/ordinal 等欄位變更會立即更新文件與 FTS metadata，但不重新排 embedding。Hybrid search 使用最低 cosine 門檻，auto recall 只採高可信 vector 命中；visibility、source/profile 與 exclusion 條件盡量下推 SQL，FTS 直接只排名合格列，sqlite-vec 則因 KNN 先取 `k` 的限制漸進擴大 `k`，再由 joined SQL filter 排除不合格列。相鄰 context 重新套用同一份完整 filter，不能讓被排除的 document/session/source 或近期日記從 context 回流。搜尋工具另有單筆與總輸出 budget，rank 分數不偽裝成絕對相關度百分比。
+8. Canonical workspace/session write 與可重建 projection 分離：canonical write 成功後即回報成功，projection 失敗則記錄為 reindex pending；session JSON 採 temp + rename，持久化失敗時回滾記憶體狀態且不得建立幽靈索引。所有 Discord 遠端附件及 provider／本機工具輸出的附件都先只建立純 `AttachmentReference`、寫入 session JSON，成功後才 upsert `attachment_records`、job 與搜尋文件。
+
+部署觀察期採新舊資料表並行：讀取入口已統一到 hybrid search，但 legacy memory/session tables 暫不刪除，作為資料比對與程式 rollback 的安全網。回滾時還原上一版程式與 runtime AGENT.md/JOURNAL.md 備份；新表是可重建 projection，不影響 session JSON、archive、workspace 文件或附件原檔。
+
+### 附件索引與非同步分析
+
+Discord uploads、Embed image/thumbnail、回覆引用與 Forum starter 附件會先建立不落 DB 的 `AttachmentReference`，隨訊息成功持久化到 session JSON 後，才建立 SQLite `attachment_records`、job 與搜尋投影；session JSON 保存 stable reference，SQLite 保存處理狀態與抽取結果。遠端 URL 的 query 不進 searchable metadata，背景 worker 會盡快把原檔下載到 `workspace/attachments/search-index/`，避免 Discord CDN URL 過期後失去原始證據。所有遠端圖片／附件下載都經 pinned-DNS safe fetch：逐跳驗證 redirect、拒絕 loopback／private／link-local 位址、限制 timeout，並以 streaming byte counter 在超限時立即中止；本機檔也在讀取前先檢查大小。相同 bytes 在不同訊息被引用時保留各自 reference metadata；binary 本身不塞進 SQLite。
+
+`attachment_jobs` 是可重啟、可重試的 outbox。圖片同時經 Tesseract.js (`eng+chi_tra`) OCR 與目前 vision model 的客觀描述；vision prompt 明確把圖片內容視為 untrusted evidence，不執行畫面中的指令。Tesseract.js 的 npm postinstall 不下載語言資料；`eng`／`chi_tra` traineddata 會在首次建立 OCR worker 時依 runtime 設定取得並寫入 cache，因此完全 air-gapped 的部署必須在啟動 worker 前預先提供語言資料，並設定受控的 `langPath`／cache path。OCR、vision 與文件抽取各自保存 stage status：已成功的結果立即寫入並建立部分搜尋投影，後續只重試失敗階段，不因另一階段暫時失敗而丟掉可用證據。文字與程式碼檔直接抽取；PDF、DOCX、PPTX、XLSX、ODF、RTF、CSV、Markdown、HTML、EPUB 使用 `officeparser` 產生文字與內嵌圖片 OCR。`pdfjs-dist` 與 `qs` 透過 lockfile override 固定至已修補版本；升級 override 後必須在乾淨安裝上跑 PDF extraction fixture，且 production audit 必須為零漏洞。處理邊界包含下載大小、解壓 bytes、ZIP entry、spreadsheet cell 與 abort timeout；失敗會保留原因並依退避策略重試。
+
+Provider 生成圖片及本地工具排入最終 Discord 回覆的檔案，會在 request 完成時附到最後一則 assistant message，再走相同的 attachment ingestion，而不是另開生成檔專用索引。這條路徑先 stat/hash 並建立不落 DB 的 reference，session JSON temp+rename 成功後才建立附件 record/job/search projection；若 session 寫入失敗則回滾記憶體 reference，不留下 ghost attachment。所有 attachment metadata、OCR、視覺描述與文件 chunks 最後仍落入 `search_documents`／FTS／embedding outbox；attachment worker 只負責把原始檔轉成統一文件。達最大嘗試次數的附件 job 另列 `exhausted`，不計入可繼續處理的 `remaining`。
 
 ### 向量表的一致性
 
@@ -890,7 +931,7 @@ interface PluginRuntimeContext {
 ### Memory Hook（定期 nudge）
 
 每 5 則 user message 附加一次記憶提示（不是每輪），提醒 agent 檢查是否需要用
-memory_save / memory_replace / memory_remove 保存資訊。內容是 `JOURNAL.md` 的 Memory Hook section。
+diary_note / memory_replace / memory_remove 保存資訊。內容是 `JOURNAL.md` 的 Memory Hook section。
 
 ### Silent Memory Flush
 
@@ -996,9 +1037,7 @@ daily memory，skill 也只給路徑不給內容（`prompt.ts` 的 `loadSkills`�
 比對前先 `resolve()` 正規化 `..`，再 `realpathSync()` 解 symlink——只比字面
 路徑的話，一條指向外部的 symlink 就能繞過整道邊界。
 
-已知不足：這擋得住直接讀檔，擋不住 `memory_search` 之類的語意搜尋撈出日記
-內容。目前刻意不擋（記錄的都是公開頻道對話）。真正的隱私邊界要另外決定
-`memory_search` / `session_search` 對非 owner 的行為。
+`memory_search`／`session_search` 另有獨立的 visibility boundary：搜尋候選在 ranking 前依 request context 的 owner、user 與 channel identity 過濾；`owner_private` 不會對非 owner 回傳，`channel:<id>`／`user:<id>` 只對相符 caller 開放。Session、tool、附件與 workspace 私人來源目前預設採保守的 `owner_private`。這個預設也代表目前尚未啟用 Discord 頻道成員式 recall；未來只有在 durable source 能保存並驗證 guild channel membership、thread membership 與 DM participants 後，才能把對應 session／attachment projection 升級為 `channel:<id>` 或 `user:<id>`，且必須同步更新既有文件的 visibility metadata，不能只改新寫入資料。
 
 另一個結構性缺口：非 owner 的訊息會進 session（`bot.ts` 的 messageCreate），
 owner 稍後在同頻道觸發時 trigger 是 `discord-owner`、權限全開，而那段內容
@@ -1009,9 +1048,15 @@ owner 稍後在同頻道觸發時 trigger 是 `discord-owner`、權限全開，�
 ### Bash Sandbox
 非 owner 的 bash 指令跑在限制環境（timeout + 禁止寫入敏感路徑 + 禁止讀 .env）。目前 bash 完全開放給所有人。
 
-### Session Archive 語意搜尋
-`session_search` 採混合搜尋：原始歸檔訊息維持 FTS5 字面搜尋；每次 compact 產生的 continuation summary
-則寫入同一份 immutable compact archive JSON，並 best-effort embed 到獨立的 cosine 向量表。這樣不必替
-全部原始訊息付 embedding 成本，仍能依概念找到曾討論過某主題的 session。舊資料若當時沒有保存
-summary，無法事後憑空回填；語意覆蓋範圍會隨新的 compaction 逐步增加。向量索引失敗不會阻止
-compaction，因為 JSON archive 才是耐久 source of truth，SQLite 只是可重建的搜尋投影。
+### Unified Search 部署與後續清理
+
+統一 document/FTS/vector/outbox、active session、tool history、附件 OCR／視覺描述／文件抽取、workspace adapters、hybrid ranking、visibility filter、auto recall 與歷史回填均已實作。正式部署必須先 build，再對 runtime workspace 執行 diary-note migration dry-run／apply、跑 backfill 與權限／recovery smoke test，全部通過後才重啟。部署後 transcript 成為事件主紀錄，`diary_note` 只補 transcript 無法保存的背景、反思與跨日脈絡；每日補註檔因此可能比舊版稀疏，這是預期行為，不代表當天沒有事件，Daily Journal 必須以 `journal_transcript_by_date` 為骨架。完全 air-gapped 的環境還要在首次 OCR 前預先佈署 Tesseract traineddata。觀察期內保留 legacy `memory_vectors`、`session_fts` 與 compact summary tables；現有 legacy 內容都可由 workspace 文件、session JSON／archives 與 compact source 重建，外掛正式 API 也不提供只寫 legacy table 的入口。若私人外掛曾繞過 API 直接寫入 legacy table，必須先另行匯出，不能假設 backfill 會保留。確認資料量、搜尋品質、job failure 與權限邊界穩定後，另開清理變更移除舊表與舊函式。
+
+### Unified search hardening (PR #17)
+
+- Trigger authorization is fail-closed through a central positive allowlist; `unknown` and future trigger kinds receive neither owner-only tools nor owner-private recall.
+- Auto-recalled user/tool/OCR/vision/attachment evidence is emitted inside a structured untrusted-data boundary and cannot grant permissions or redefine the active task.
+- Session JSON commits use a cross-process lock, revisioned three-way merge, unique temporary files, file `fsync`, atomic rename, and directory `fsync`; destructive concurrent rewrites fail instead of erasing newer events.
+- Unified FTS has its own persisted content-version key and rebuilds from `search_documents.text` when tokenization changes. Hybrid vector search has a bounded scan budget and reports final `k`, iterations, scanned rows, and truncation.
+- Attachment analysis has an independent provider/transport/model configuration, concurrency cap, daily successful-description budget, absolute HTTP deadlines, signed Discord CDN URL refresh provenance, and separate permanent versus refreshable retry accounting.
+- `npm run attachment-gc` reports unreferenced attachment-index files older than the retention window; deletion requires `--apply`, and files referenced by active sessions, archives, or attachment records are preserved.

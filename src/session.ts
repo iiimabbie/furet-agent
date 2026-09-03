@@ -1,10 +1,26 @@
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, renameSync } from "node:fs";
+import { mkdirSync, readdirSync, existsSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
 import { logger } from "./logger.js";
 import { getDb } from "./db.js";
 import { SESSIONS_DIR, ARCHIVE_DIR } from "./paths.js";
 import { toSearchTokens } from "./utils/cjk.js";
-import type { Message, TokenUsage, ToolHistoryEvent } from "./types.js";
+import {
+  atomicWriteFileSync,
+  commitSession,
+  readSnapshot,
+  type SessionData,
+} from "./session-store.js";
+import type { AttachmentReference, Message, TokenUsage, ToolHistoryEvent } from "./types.js";
+import {
+  assignNewMessageSearchId,
+  ensureMessageSearchId,
+  indexCompactSummary,
+  indexConversationWindow,
+  indexSessionMessage,
+  indexToolHistoryEvent,
+  reconcileSessionIndex,
+} from "./session-index.js";
+import { prepareLocalAttachmentReferences, reconcileAttachmentReferences } from "./attachment-index.js";
 
 // 檔名格式：`{stem}.json` 或 `{stem}__{slug}.json`。
 // stem 是把 routing id 的長前綴縮寫的結果（discord-channel- → dc-、discord-dm- → dm-），
@@ -55,11 +71,31 @@ export class Session {
   private usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
   private toolHistory: ToolHistoryEvent[] = [];
 
+  /**
+   * Revision + base snapshot this instance last observed on disk. `save()` performs a
+   * lock + CAS commit against `baseRevision`; if a concurrent writer (another instance
+   * in this process, or a separate process) advanced the file, session-store merges
+   * this instance's appended state onto the newer on-disk state and returns the merged
+   * result, which we adopt so no update is lost. `baseData` is a deep copy taken at load
+   * (and refreshed after every commit) so the merge can compute this instance's delta.
+   */
+  private baseRevision = 0;
+  private baseData: SessionData = { messages: [], usage: { inputTokens: 0, outputTokens: 0 }, toolHistory: [] };
+
   constructor(id: string) {
     this.id = id;
     const existing = findSessionFile(id);
     this.filePath = existing ? resolve(SESSIONS_DIR, existing) : resolve(SESSIONS_DIR, `${idToStem(id)}.json`);
     this.load();
+  }
+
+  /** Snapshot current in-memory state as the merge base after a successful commit. */
+  private snapshotBase(): SessionData {
+    return {
+      messages: [...this.messages],
+      usage: { ...this.usage },
+      toolHistory: [...this.toolHistory],
+    };
   }
 
   /** 設定頻道名：把檔名同步成 `{id}__{slug}.json`，頻道改名時自動 rename 舊檔。 */
@@ -72,6 +108,11 @@ export class Session {
       mkdirSync(SESSIONS_DIR, { recursive: true });
       if (existsSync(this.filePath)) renameSync(this.filePath, target);
       this.filePath = target;
+      // The lock and revision are path-derived. renameSync moves this instance's own
+      // file (content and embedded revision intact) to the new path, so baseRevision is
+      // still valid there; re-read to adopt whatever revision now lives at the new path
+      // (covers the case where the source file did not yet exist and no rename occurred).
+      this.baseRevision = readSnapshot(this.filePath).revision;
     } catch (err) {
       logger.error({ err: (err as Error).message, sessionId: this.id }, "session rename failed");
     }
@@ -82,14 +123,73 @@ export class Session {
   }
 
   append(message: Message): void {
+    assignNewMessageSearchId(message);
     this.messages.push(message);
+    try { this.save(); }
+    catch (error) { this.messages.pop(); throw error; }
+    try {
+      indexSessionMessage(this.id, message, this.messages.length - 1);
+    } catch (err) {
+      logger.error({ err: (err as Error).message, sessionId: this.id }, "session message indexing failed");
+    }
+    if (message.attachments?.length) {
+      const parentId = ensureMessageSearchId(this.id, message, this.messages.length - 1);
+      try {
+        reconcileAttachmentReferences(this.id, parentId, message.attachments);
+      } catch (err) {
+        logger.error({ err: (err as Error).message, sessionId: this.id, parentId }, "attachment projection pending after session save");
+      }
+    }
+  }
+
+  /** Attach locally produced files to the newest assistant message and index them. */
+  attachFilesToLastAssistant(paths: string[], relation: AttachmentReference["relation"] = "tool_output"): void {
+    if (paths.length === 0) return;
+    for (let index = this.messages.length - 1; index >= 0; index--) {
+      const message = this.messages[index];
+      if (message.role !== "assistant") continue;
+      const parentId = ensureMessageSearchId(this.id, message, index);
+      const references = prepareLocalAttachmentReferences(this.id, parentId, paths, relation);
+      if (references.length === 0) return;
+      const previous = message.attachments;
+      const existing = new Set((previous ?? []).map(reference => reference.id));
+      message.attachments = [...(previous ?? []), ...references.filter(reference => !existing.has(reference.id))];
+      try { this.save(); }
+      catch (error) { message.attachments = previous; throw error; }
+      try {
+        reconcileAttachmentReferences(this.id, parentId, message.attachments);
+      } catch (err) {
+        logger.error({ err: (err as Error).message, sessionId: this.id, parentId }, "attachment projection pending after session save");
+      }
+      return;
+    }
+  }
+
+  /** Index one completed request as a context-rich conversation window. */
+  indexConversationWindow(startIndex: number): void {
+    try {
+      indexConversationWindow(this.id, this.messages.slice(Math.max(0, startIndex)));
+    } catch (err) {
+      logger.error({ err: (err as Error).message, sessionId: this.id }, "conversation window indexing failed");
+    }
+  }
+
+  /** Idempotently rebuild all active message/tool projections for this session. */
+  reconcileSearchIndex(): void {
+    // Assign deterministic IDs to legacy messages and persist them before creating
+    // rebuildable projections. If durable persistence fails, no ghost search rows
+    // are allowed to represent data that the source session does not contain.
+    this.messages.forEach((message, ordinal) => ensureMessageSearchId(this.id, message, ordinal));
     this.save();
+    reconcileSessionIndex(this.id, this.messages, this.toolHistory);
   }
 
   addUsage(usage: TokenUsage): void {
+    const previous = { ...this.usage };
     this.usage.inputTokens += usage.inputTokens;
     this.usage.outputTokens += usage.outputTokens;
-    this.save();
+    try { this.save(); }
+    catch (error) { this.usage = previous; throw error; }
   }
 
   getUsage(): TokenUsage {
@@ -99,7 +199,13 @@ export class Session {
   /** Append an immutable local-tool execution record without adding it to chat history. */
   recordToolEvent(event: ToolHistoryEvent): void {
     this.toolHistory.push(event);
-    this.save();
+    try { this.save(); }
+    catch (error) { this.toolHistory.pop(); throw error; }
+    try {
+      indexToolHistoryEvent(this.id, event, this.toolHistory.length - 1);
+    } catch (err) {
+      logger.error({ err: (err as Error).message, sessionId: this.id, tool: event.tool }, "tool history indexing failed");
+    }
   }
 
   /** Return the newest tool events, with their full input and output intact. */
@@ -111,22 +217,32 @@ export class Session {
   setLastAssistantMsgId(msgId: string): void {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       if (this.messages[i].role === "assistant") {
+        const previous = this.messages[i].msgId;
         this.messages[i].msgId = msgId;
-        this.save();
+        try { this.save(); }
+        catch (error) { this.messages[i].msgId = previous; throw error; }
         return;
       }
     }
   }
 
   clear(): void {
+    const previous = { messages: this.messages, usage: this.usage, toolHistory: this.toolHistory };
     this.messages = [];
     this.usage = { inputTokens: 0, outputTokens: 0 };
     this.toolHistory = [];
-    this.save();
+    try { this.save(); }
+    catch (error) {
+      this.messages = previous.messages;
+      this.usage = previous.usage;
+      this.toolHistory = previous.toolHistory;
+      throw error;
+    }
     logger.info({ sessionId: this.id }, "session cleared");
   }
 
   archive(): string | null {
+    this.reconcileSearchIndex();
     // Compact summaries are context caches, not original conversation. Their source
     // messages were saved at compaction time, so never archive the synthetic summary.
     const messages = this.messages.filter(m => !isCompactSummary(m));
@@ -153,13 +269,20 @@ export class Session {
   archiveForCompaction(messages: Message[], summary: string): boolean {
     const originalMessages = messages.filter(m => !isCompactSummary(m));
     if (originalMessages.length === 0) return true;
-    return this.persistArchive(originalMessages, "compaction", summary) !== null;
+    this.reconcileSearchIndex();
+    const archived = this.persistArchive(originalMessages, "compaction", summary) !== null;
+    if (archived) {
+      try { indexCompactSummary(this.id, summary); }
+      catch (err) { logger.error({ err: (err as Error).message, sessionId: this.id }, "compact summary indexing failed"); }
+    }
+    return archived;
   }
 
   /** 壓縮 session：用摘要替換前半段 messages，保留最近的 keepRecent 則 */
   compact(summary: string, keepRecent: number): void {
     if (this.messages.length <= keepRecent) return;
     const kept = this.messages.slice(-keepRecent);
+    const previous = this.messages;
     this.messages = [
       {
         role: "user",
@@ -169,7 +292,8 @@ ${summary}`,
       },
       ...kept,
     ];
-    this.save();
+    try { this.save(); }
+    catch (error) { this.messages = previous; throw error; }
     logger.info({ sessionId: this.id, kept: kept.length, totalAfter: this.messages.length }, "session compacted");
   }
 
@@ -186,7 +310,10 @@ ${summary}`,
 
     try {
       mkdirSync(ARCHIVE_DIR, { recursive: true });
-      writeFileSync(archivePath, JSON.stringify({
+      // Archives are uniquely-named, write-once files, so they need no lock/CAS — only
+      // crash durability. atomicWriteFileSync gives unique-temp + fsync + atomic rename +
+      // dir fsync so a half-written archive can never be mistaken for a complete one.
+      atomicWriteFileSync(archivePath, JSON.stringify({
         sessionId: this.id,
         archivedAt,
         kind,
@@ -226,16 +353,16 @@ ${summary}`,
   }
 
   private load(): void {
-    try {
-      const data = JSON.parse(readFileSync(this.filePath, "utf-8"));
-      this.messages = data.messages ?? [];
-      this.usage = data.usage ?? { inputTokens: 0, outputTokens: 0 };
-      this.toolHistory = data.toolHistory ?? [];
-      logger.info({ sessionId: this.id, count: this.messages.length }, "session loaded");
-    } catch {
-      this.messages = [];
-      this.toolHistory = [];
-    }
+    // readSnapshot is crash-safe and canonical-first: a missing or corrupt file yields
+    // an empty snapshot at revision 0 rather than throwing, so a partially-written or
+    // absent file never aborts session startup.
+    const snapshot = readSnapshot(this.filePath);
+    this.messages = snapshot.messages;
+    this.usage = snapshot.usage;
+    this.toolHistory = snapshot.toolHistory;
+    this.baseRevision = snapshot.revision;
+    this.baseData = this.snapshotBase();
+    logger.info({ sessionId: this.id, count: this.messages.length, revision: this.baseRevision }, "session loaded");
   }
 
 
@@ -255,11 +382,29 @@ ${summary}`,
   }
 
   private save(): void {
+    // Durable, concurrency-safe commit: cross-process lock + revision CAS + append-only
+    // merge + unique-temp write + fsync(file) + atomic rename + fsync(dir). commitSession
+    // returns the state actually written — which may include a concurrent writer's
+    // appended messages merged onto ours — so we adopt it and refresh our merge base.
     try {
-      mkdirSync(SESSIONS_DIR, { recursive: true });
-      writeFileSync(this.filePath, JSON.stringify({ messages: this.messages, usage: this.usage, toolHistory: this.toolHistory }, null, 2));
+      const result = commitSession(
+        this.filePath,
+        this.baseData,
+        this.baseRevision,
+        { messages: this.messages, usage: this.usage, toolHistory: this.toolHistory },
+      );
+      if (result.merged) {
+        // Another writer advanced the file; adopt the merged result so this instance's
+        // in-memory view matches disk and no appended history is silently dropped.
+        this.messages = result.data.messages;
+        this.usage = result.data.usage;
+        this.toolHistory = result.data.toolHistory;
+      }
+      this.baseRevision = result.revision;
+      this.baseData = this.snapshotBase();
     } catch (err) {
       logger.error({ err, sessionId: this.id }, "session save failed");
+      throw err;
     }
   }
 }

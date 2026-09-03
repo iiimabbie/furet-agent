@@ -44,7 +44,8 @@ import { loadCrons } from "./tools/builtin/cron.js";
 import { getAuthClient, getAuthUrl, exchangeCode } from "./google/auth.js";
 import { google } from "googleapis";
 import { loadReminders } from "./tools/builtin/reminder.js";
-import type { TokenUsage, ProgressEvent } from "./types.js";
+import type { AttachmentReference, TokenUsage, ProgressEvent } from "./types.js";
+import { prepareRemoteAttachmentReferences, type RemoteAttachmentInput } from "./attachment-index.js";
 
 function buildChannelContext(channelId: string, sessionId: string, extra?: string): string {
   const lines = [
@@ -823,11 +824,22 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
             const ts = stamp(new Date(starter.createdTimestamp));
             const authorName = formatName(starter.author.username, starter.member?.displayName);
             const threadName = message.channel.name;
+            let starterAttachments: AttachmentReference[] = [];
+            try {
+              starterAttachments = prepareRemoteAttachmentReferences(
+                sessionId,
+                starter.id,
+                extractMessageAttachments(starter).map(item => ({ ...item, relation: "upload" as const })),
+              );
+            } catch (error) {
+              logger.error({ err: error, sessionId, messageId: starter.id }, "forum starter attachment reference preparation failed");
+            }
             session.append({
               role: "user",
               content: `[System] This is the initial message of forum post "${threadName}" (by ${authorName}) [thread_id: ${message.channelId}]:\n${extractMessageText(starter)}`,
               time: ts,
               msgId: starter.id,
+              ...(starterAttachments.length > 0 ? { attachments: starterAttachments } : {}),
             });
           }
         } catch { /* starter message not available */ }
@@ -844,15 +856,26 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
         logger.info({ sessionId, userId: message.author.id }, "onboarding context injected");
       }
 
-      const fmt = await formatIncomingMessage(message);
+      const fmt = await formatIncomingMessage(message, sessionId);
       const content = isTrigger ? fmt.content : `[context] ${fmt.content}`;
-      session.append({ role: "user", content, time: fmt.time, msgId: fmt.msgId, ...(fmt.replyTo ? { replyTo: fmt.replyTo } : {}) });
+      session.append({
+        role: "user", content, time: fmt.time, msgId: fmt.msgId,
+        ...(fmt.replyTo ? { replyTo: fmt.replyTo } : {}),
+        ...(fmt.attachments?.length ? { attachments: fmt.attachments } : {}),
+      });
 
       if (!isTrigger) return;
 
       await handleTrigger(message, session, fmt.images);
-    }).catch(err => {
-      logger.error({ err, sessionId, messageId: message.id }, "queued Discord message handling failed");
+    }).catch(async err => {
+      logger.error({ err, sessionId, messageId: message.id }, "queued Discord message handling failed before agent delivery");
+      if (isTrigger) {
+        try {
+          await message.reply(messagePayload("這則訊息無法保存，因此沒有啟動處理。請稍後再試一次。"));
+        } catch {
+          await message.react("🤕").catch(() => {});
+        }
+      }
     });
   });
 
@@ -866,9 +889,10 @@ interface FormattedMessage {
   msgId: string;
   replyTo?: string;
   images?: string[];
+  attachments?: AttachmentReference[];
 }
 
-async function formatIncomingMessage(message: Message): Promise<FormattedMessage> {
+async function formatIncomingMessage(message: Message, sessionId: string): Promise<FormattedMessage> {
   const authorName = formatName(message.author.username, message.member?.displayName);
   const authorId = message.author.id;
 
@@ -885,14 +909,24 @@ async function formatIncomingMessage(message: Message): Promise<FormattedMessage
     || imageExts.some(extension => (attachment.name || new URL(attachment.url).pathname).toLowerCase().endsWith(extension));
 
   const images = attachments.filter(isImage).map(attachment => attachment.url);
+  const indexInputs: RemoteAttachmentInput[] = attachments.map(item => ({ ...item, relation: "upload" }));
 
-  // reply 的訊息如果有圖片，也加進來
+  // reply 的訊息如果有圖片，也加進來；另保留 reference metadata，
+  // 即使原訊息不在目前 session，日後仍能追溯這次對話看過哪張圖。
   if (message.reference?.messageId) {
     try {
       const replied = await message.channel.messages.fetch(message.reference.messageId);
-      const replyImages = extractMessageAttachments(replied).filter(isImage).map(attachment => attachment.url);
-      images.push(...replyImages);
+      const replyAttachments = extractMessageAttachments(replied);
+      images.push(...replyAttachments.filter(isImage).map(attachment => attachment.url));
+      indexInputs.push(...replyAttachments.map(item => ({ ...item, relation: "reply_reference" as const })));
     } catch { /* replied message not available */ }
+  }
+
+  let attachmentReferences: AttachmentReference[] = [];
+  try {
+    attachmentReferences = prepareRemoteAttachmentReferences(sessionId, message.id, indexInputs);
+  } catch (error) {
+    logger.error({ err: error, sessionId, messageId: message.id }, "Discord attachment reference preparation failed");
   }
 
   return {
@@ -900,7 +934,8 @@ async function formatIncomingMessage(message: Message): Promise<FormattedMessage
     time: ts,
     msgId: message.id,
     ...(message.reference?.messageId ? { replyTo: message.reference.messageId } : {}),
-    ...(images.length > 0 ? { images } : {}),
+    ...(images.length > 0 ? { images: [...new Set(images)] } : {}),
+    ...(attachmentReferences.length > 0 ? { attachments: attachmentReferences } : {}),
   };
 }
 
@@ -1058,7 +1093,13 @@ async function handleTrigger(message: Message, session: Session, images?: string
     }
 
     if (sentIds.length > 0) {
-      session.setLastAssistantMsgId(sentIds.join(","));
+      try {
+        session.setLastAssistantMsgId(sentIds.join(","));
+      } catch (err) {
+        // The Discord reply is already visible. Transport metadata persistence is
+        // best-effort and must never delete or suppress the delivered answer.
+        logger.error({ err, sessionId: session.id, sentIds }, "assistant Discord message ID persistence failed after delivery");
+      }
     }
     logger.info({ sessionId: session.id, chunks: chunks.length, sentIds }, "discord reply sent");
   } catch (err) {

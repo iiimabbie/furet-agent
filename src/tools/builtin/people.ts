@@ -1,9 +1,10 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { logger } from "../../logger.js";
 import { PEOPLE_FILE } from "../../paths.js";
-import { addVector, removeVectorsByFile } from "../../embedding.js";
+import { reindexPeople } from "../../workspace-index.js";
 import { stripTag, wrapTag } from "../../utils/tagged-file.js";
 import type { Tool } from "../../types.js";
+import { updateSearchProjection, withProjectionNotice } from "../../utils/search-projection.js";
 
 /**
  * PEOPLE.md 的編輯工具，與 memory_* 同構。
@@ -25,25 +26,10 @@ function readPeople(): string {
  * 寫回時確保 `<people>` 包裝還在——這是 system prompt 的區塊邊界，
  * 掉了會讓人物資料跟前後文糊在一起。
  */
-function writePeople(content: string): void {
+function writePeople(content: string): string | null {
   const out = wrapTag(content, PEOPLE_TAG);
   writeFileSync(PEOPLE_FILE, out);
-  reindexVectors(out);
-}
-
-/** 比照 write_file 的作法：整份重建向量，讓語意搜尋跟得上 */
-function reindexVectors(content: string): void {
-  try {
-    removeVectorsByFile("PEOPLE.md");
-    for (const p of content.split(/\n{2,}/)) {
-      const t = p.trim();
-      if (t.length > 20 && !t.startsWith(OPEN_TAG) && !t.startsWith(CLOSE_TAG)) {
-        addVector(t, "PEOPLE.md").catch(() => {});
-      }
-    }
-  } catch (err) {
-    logger.warn({ err: (err as Error).message }, "PEOPLE.md reindex failed");
-  }
+  return updateSearchProjection("PEOPLE.md", () => reindexPeople(out));
 }
 
 /** 去掉包裝標籤後的內容，用來判斷是不是空的 */
@@ -106,8 +92,8 @@ export const peopleUpdate: Tool = {
       if (!current.includes(old_text)) {
         return `Error: old_text not found in PEOPLE.md. Use people_add for someone not listed yet.`;
       }
-      writePeople(current.replace(old_text, new_text));
-      return `Updated PEOPLE.md. [${bodyOf(readPeople()).length} chars]`;
+      const projectionError = writePeople(current.replace(old_text, new_text));
+      return withProjectionNotice(`Updated PEOPLE.md. [${bodyOf(readPeople()).length} chars]`, projectionError);
     } catch (err) {
       logger.error({ err }, "people update failed");
       return `Error: ${(err as Error).message}`;
@@ -131,8 +117,8 @@ export const peopleRemove: Tool = {
     try {
       const current = readPeople();
       if (!current.includes(text)) return `Error: text not found in PEOPLE.md.`;
-      writePeople(current.replace(text, "").replace(/\n{3,}/g, "\n\n"));
-      return `Removed from PEOPLE.md. [${bodyOf(readPeople()).length} chars]`;
+      const projectionError = writePeople(current.replace(text, "").replace(/\n{3,}/g, "\n\n"));
+      return withProjectionNotice(`Removed from PEOPLE.md. [${bodyOf(readPeople()).length} chars]`, projectionError);
     } catch (err) {
       logger.error({ err }, "people remove failed");
       return `Error: ${(err as Error).message}`;

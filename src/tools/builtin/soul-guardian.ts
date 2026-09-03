@@ -9,6 +9,7 @@ import { loadConfig } from "../../config.js";
 import { logger } from "../../logger.js";
 import { WORKSPACE_DIR } from "../../paths.js";
 import { getTrigger } from "../context.js";
+import { isOwnerIdentity } from "../authz.js";
 import type { Tool } from "../../types.js";
 
 // ── Paths ──
@@ -478,7 +479,7 @@ export const soulGuardianApprove: Tool = {
   execute: async (args) => {
     const { file, files, all, note } = args as { file?: string; files?: string[]; all?: boolean; note: string };
     const trigger = getTrigger();
-    if (trigger !== "cli" && trigger !== "discord-owner") {
+    if (!isOwnerIdentity(trigger)) {
       logger.warn({ trigger, file, files, all }, "soul_guardian approve blocked: owner-only");
       return "Error: soul_guardian_approve is owner-only. Only the owner can approve baseline changes.";
     }
@@ -580,7 +581,7 @@ export const soulGuardianRestore: Tool = {
   execute: async (args) => {
     const { file, all, version, note } = args as { file?: string; all?: boolean; version?: string; note: string };
     const trigger = getTrigger();
-    if (trigger !== "cli" && trigger !== "discord-owner") {
+    if (!isOwnerIdentity(trigger)) {
       logger.warn({ trigger, file, all }, "soul_guardian restore blocked: owner-only");
       return "Error: soul_guardian_restore is owner-only. Only the owner can trigger manual restores.";
     }

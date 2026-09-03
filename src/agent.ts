@@ -2,14 +2,18 @@ import { logger } from "./logger.js";
 import { loadConfig, type ReasoningEffort } from "./config.js";
 import { buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
 import { executeTool, getToolDefinitions, renderToolIndex } from "./tools/registry.js";
-import { runWithContext, drainAttachments, queueAttachment } from "./tools/context.js";
+import { runWithContext, drainAttachments, peekAttachments, queueAttachment } from "./tools/context.js";
+import { hasOwnerSearchVisibility } from "./tools/authz.js";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { ATTACHMENTS_DIR } from "./paths.js";
-import { addSessionSummaryVector, searchVectors } from "./embedding.js";
+import { searchUnified } from "./search-index.js";
 import { stamp } from "./utils/time.js";
 import { filterStaleOnboarding } from "./onboarding.js";
 import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions, ToolHistoryEvent } from "./types.js";
+import { safeFetchBuffer } from "./utils/safe-http.js";
+import { truncateSearchText } from "./utils/search-output.js";
+import { buildUntrustedRecallSection } from "./utils/untrusted-recall.js";
 
 /** 清除 API 回傳 content blocks 中的多餘欄位（如 caller），只保留我們定義的欄位 */
 function sanitizeContent(blocks: ContentBlock[]): ContentBlock[] {
@@ -258,25 +262,19 @@ function extractAndSaveImages(blocks: ContentBlock[]): number {
 /** Fetch a single image URL and return a base64 image block for the Anthropic API */
 async function fetchImageAsBase64(url: string): Promise<ContentBlock | null> {
   try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      logger.warn({ url, status: res.status }, "image fetch failed (non-OK status)");
+    const response = await safeFetchBuffer(url, { maxBytes: 20 * 1024 * 1024, timeoutMs: 30_000, maxRedirects: 4 });
+    if (!response.ok) {
+      logger.warn({ url, status: response.status }, "image fetch failed (non-OK status)");
       return null;
     }
-    const contentType = res.headers.get("content-type") ?? "image/png";
-    // Normalise media type — Anthropic accepts image/jpeg, image/png, image/gif, image/webp
+    const contentType = response.headers["content-type"] ?? "image/png";
     const media_type = contentType.split(";")[0].trim();
     const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
     if (!ALLOWED_TYPES.has(media_type)) {
       logger.warn({ url, media_type }, "image fetch returned unsupported content-type");
       return null;
     }
-    const buf = Buffer.from(await res.arrayBuffer());
-    const data = buf.toString("base64");
-    return {
-      type: "image",
-      source: { type: "base64", media_type, data },
-    } as unknown as ContentBlock;
+    return { type: "image", source: { type: "base64", media_type, data: response.body.toString("base64") } } as unknown as ContentBlock;
   } catch (err) {
     logger.warn({ url, err: (err as Error).message }, "image fetch failed (exception)");
     return null;
@@ -494,10 +492,6 @@ export async function compactSession(session: import("./session.js").Session, mo
       return null;
     }
 
-    // Index the compact summary for semantic session search. This is best-effort and
-    // cannot block compaction: the immutable archive JSON above already contains the
-    // summary as the durable source of truth.
-    await addSessionSummaryVector(summary, session.id);
     session.compact(summary, COMPACT_KEEP_RECENT);
     logger.info({ sessionId: session.id, summarizedMessages: toSummarize.length, summaryLength: summary.length }, "compaction done");
     return summary;
@@ -505,6 +499,31 @@ export async function compactSession(session: import("./session.js").Session, mo
     logger.error({ err: (err as Error).message, sessionId: session.id }, "compaction failed");
   }
   return null;
+}
+
+function finalizeSessionBookkeeping(
+  session: import("./session.js").Session | undefined,
+  usage: TokenUsage,
+  requestStartIndex: number,
+): void {
+  if (!session) return;
+
+  // The assistant message is the durable delivery boundary. Usage totals, derived
+  // search windows, and attachment projections are rebuildable bookkeeping; once
+  // the answer has been generated and saved, their failure must not suppress it.
+  try {
+    session.addUsage(usage);
+  } catch (err) {
+    logger.error({ err, sessionId: session.id }, "session usage persistence failed; reply delivery will continue");
+  }
+
+  session.indexConversationWindow(requestStartIndex);
+
+  try {
+    session.attachFilesToLastAssistant(peekAttachments());
+  } catch (err) {
+    logger.error({ err, sessionId: session.id }, "assistant attachment reference persistence failed; reply delivery will continue");
+  }
 }
 
 /**
@@ -520,7 +539,17 @@ export function ask(prompt: string | null, options: AgentOptions = {}): Promise<
   // race-prone variable — and without the schema exposure layer and the execution gate
   // disagreeing when a concurrent request overrides the model.
   const effectiveModel = options.model ?? loadConfig().llm.currentModel;
-  return runWithContext(options.trigger ?? "unknown", options.userId, effectiveModel, () => askInContext(prompt, options));
+  const sessionId = options.session?.id;
+  const channelId = sessionId?.startsWith("discord-channel-")
+    ? sessionId.slice("discord-channel-".length)
+    : undefined;
+  return runWithContext(
+    options.trigger ?? "unknown",
+    options.userId,
+    effectiveModel,
+    () => askInContext(prompt, options),
+    { sessionId, channelId },
+  );
 }
 
 async function askInContext(prompt: string | null, options: AgentOptions = {}): Promise<AgentResponse> {
@@ -532,9 +561,15 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
   logger.info({ prompt: prompt?.slice(0, 200) ?? "(session tail)", trigger: options.trigger }, "query start");
 
   const session = options.session;
+  // Discord messages are appended by the transport before ask(null); direct/cron paths
+  // append below. In either case include the freshest user message in the completed window.
+  let requestStartIndex = session
+    ? Math.max(0, session.getMessages().map(m => m.role).lastIndexOf("user"))
+    : 0;
 
   if (prompt !== null) {
     session?.append({ role: "user", content: prompt, time: nowTimestamp() });
+    requestStartIndex = Math.max(0, (session?.length ?? 1) - 1);
   }
 
   // 自動記憶召回：用使用者訊息搜尋相關記憶，跟其他兩塊記憶排在一起送進 system prompt。
@@ -544,14 +579,44 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
   const recallQuery = prompt ?? lastUserText(session?.getMessages() ?? []);
   if (recallQuery) {
     try {
-      const recalled = await searchVectors(recallQuery, 3, {
-        excludeFiles: ["MEMORY.md", "PEOPLE.md"],
+      // Auto recall runs on the C1 profile: session-message vector hits only survive at a
+      // deliberately high confidence floor. 0.68 cosine is the tuned C1 threshold — high
+      // enough that a stray semantic neighbour does not silently steer the turn, and it is
+      // enforced twice on purpose: minVectorScore prunes candidates inside searchUnified,
+      // and the post-filter below drops anything that ranked in via FTS-only without a
+      // strong vector score. FTS-only matches are intentionally NOT recalled automatically;
+      // they remain available for manual memory_search / session_search.
+      const RECALL_VECTOR_FLOOR = 0.68;
+      const recalled = await searchUnified(recallQuery, {
+        profile: "memory",
+        limit: 5,
+        visibility: {
+          isOwner: hasOwnerSearchVisibility(options.trigger ?? "unknown"),
+          userId: options.userId,
+          channelId: session?.id.startsWith("discord-channel-")
+            ? session.id.slice("discord-channel-".length)
+            : undefined,
+        },
+        excludeSessionIds: session ? [session.id] : [],
+        excludeSourceTypes: ["memory", "people"],
         excludeRecentDays: 2,
+        includeContext: false,
+        minVectorScore: RECALL_VECTOR_FLOOR,
+        // Debug/trace is OFF by default for auto recall: it must not log the user's query,
+        // matched document text, sources, or scores. searchUnified only logs query info when
+        // debug is true, so leaving it unset keeps auto recall from writing query info to logs.
       });
-      if (recalled.length > 0) {
-        const recallBlock = recalled.map(r => `- [${r.file}] ${r.text}`).join("\n");
-        recalledSection = `Automatically recalled based on the current message. Use them naturally if relevant — do not mention this mechanism to the user.\n${recallBlock}`;
-        logger.debug({ count: recalled.length, topScore: recalled[0].score.toFixed(2) }, "auto memory recall");
+      const reliableResults = recalled.results.filter(result => (result.vectorScore ?? -1) >= RECALL_VECTOR_FLOOR);
+      if (reliableResults.length > 0) {
+        // Wrap recalled evidence as structured, injection-resistant untrusted data: each
+        // item is fenced, boundary markers inside item text are neutralized so a single
+        // item cannot forge the closing tag, and the block header forbids treating any of
+        // it as instructions / permission / task changes. Covers user, tool, OCR, vision
+        // and attachment sources uniformly (all flow through the same unified index).
+        recalledSection = buildUntrustedRecallSection(reliableResults.map(result => ({
+          source: [result.sourceType, result.sourceId, result.occurredAt].filter(Boolean).join(" · "),
+          text: result.text,
+        })));
       }
     } catch (err) {
       logger.warn({ err: (err as Error).message }, "auto memory recall failed, continuing without");
@@ -740,7 +805,7 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
       }
 
       const durationMs = Date.now() - startTime;
-      session?.addUsage(totalUsage);
+      finalizeSessionBookkeeping(session, totalUsage, requestStartIndex);
       logger.info({ durationMs, toolsUsed: toolsUsed.map(t => t.tool), textLength: finalText.length, usage: totalUsage }, "query done");
       return { text: finalText, toolsUsed, durationMs, usage: totalUsage, attachments: drainAttachments() };
     }
@@ -783,14 +848,21 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
       }
       options.onProgress?.({ type: "tool_end", toolCallId: toolBlock.id, isError });
       logger.debug({ tool: toolBlock.name, result: result.slice(0, 500) }, "tool result");
-      session?.recordToolEvent({
-        id: toolBlock.id,
-        time: nowTimestamp(),
-        tool: toolBlock.name,
-        input: toolBlock.input,
-        result,
-        isError,
-      });
+      try {
+        session?.recordToolEvent({
+          id: toolBlock.id,
+          time: nowTimestamp(),
+          tool: toolBlock.name,
+          input: toolBlock.input,
+          result,
+          isError,
+        });
+      } catch (err) {
+        // The tool may already have produced an external side effect. Do not abort
+        // and invite a retry that could execute it twice merely because the local
+        // audit ledger could not be persisted.
+        logger.error({ err, sessionId: session?.id, tool: toolBlock.name }, "tool history persistence failed after execution; continuing request");
+      }
       toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id, content: result });
     }
 
@@ -798,7 +870,7 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
   }
 
   const durationMs = Date.now() - startTime;
-  session?.addUsage(totalUsage);
+  finalizeSessionBookkeeping(session, totalUsage, requestStartIndex);
   logger.error({ maxTurns }, "max turns reached");
   return { text: "達到最大回合數限制。", toolsUsed, durationMs, usage: totalUsage, attachments: drainAttachments() };
 }

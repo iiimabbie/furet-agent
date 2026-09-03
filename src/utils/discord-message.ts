@@ -214,28 +214,54 @@ export interface ExtractedMessageAttachment {
   url: string;
   name?: string;
   contentType?: string;
+  size?: number;
+  /**
+   * Discord provenance for real uploads (not embeds). `discordAttachmentId` is the stable
+   * per-attachment ID; combined with the source message/channel IDs it lets the background
+   * worker re-resolve a fresh signed CDN URL after the stored one expires. Embed image/
+   * thumbnail URLs carry no attachment ID and therefore no provenance.
+   */
+  discordAttachmentId?: string;
+  discordMessageId?: string;
+  discordChannelId?: string;
 }
 
 /** Read user-visible attachments from standard Discord uploads and embeds. */
 export function extractMessageAttachments(message: {
-  attachments?: { values?: () => Iterable<{ url: string; name?: string | null; contentType?: string | null }> };
+  id?: string;
+  channelId?: string;
+  attachments?: { values?: () => Iterable<{ id?: string; url: string; name?: string | null; contentType?: string | null; size?: number }> };
   embeds?: readonly { toJSON?: () => unknown }[];
 }): ExtractedMessageAttachment[] {
   const results: ExtractedMessageAttachment[] = [];
   const seen = new Set<string>();
-  const add = (url: unknown, name?: unknown, contentType?: unknown): void => {
+  const messageId = typeof message.id === "string" ? message.id : undefined;
+  const channelId = typeof message.channelId === "string" ? message.channelId : undefined;
+  const add = (
+    url: unknown,
+    name?: unknown,
+    contentType?: unknown,
+    size?: unknown,
+    attachmentId?: unknown,
+  ): void => {
     if (typeof url !== "string" || seen.has(url)) return;
     seen.add(url);
+    // Only real uploads (with a stable attachment ID and a known source message)
+    // carry provenance usable for CDN refresh. Embeds get none.
+    const hasProvenance = typeof attachmentId === "string" && messageId !== undefined;
     results.push({
       url,
       ...(typeof name === "string" ? { name } : {}),
       ...(typeof contentType === "string" ? { contentType } : {}),
+      ...(typeof size === "number" ? { size } : {}),
+      ...(hasProvenance ? { discordAttachmentId: attachmentId as string, discordMessageId: messageId } : {}),
+      ...(hasProvenance && channelId !== undefined ? { discordChannelId: channelId } : {}),
     });
   };
 
   const attachmentValues = message.attachments?.values?.();
   if (attachmentValues) {
-    for (const attachment of attachmentValues) add(attachment.url, attachment.name, attachment.contentType);
+    for (const attachment of attachmentValues) add(attachment.url, attachment.name, attachment.contentType, attachment.size, attachment.id);
   }
 
   for (const embedValue of message.embeds ?? []) {
