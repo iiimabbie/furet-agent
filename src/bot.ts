@@ -45,7 +45,7 @@ import { getAuthClient, getAuthUrl, exchangeCode } from "./google/auth.js";
 import { google } from "googleapis";
 import { loadReminders } from "./tools/builtin/reminder.js";
 import type { AttachmentReference, TokenUsage, ProgressEvent } from "./types.js";
-import { registerRemoteAttachments, type RemoteAttachmentInput } from "./attachment-index.js";
+import { prepareRemoteAttachmentReferences, type RemoteAttachmentInput } from "./attachment-index.js";
 
 function buildChannelContext(channelId: string, sessionId: string, extra?: string): string {
   const lines = [
@@ -826,13 +826,13 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
             const threadName = message.channel.name;
             let starterAttachments: AttachmentReference[] = [];
             try {
-              starterAttachments = registerRemoteAttachments(
+              starterAttachments = prepareRemoteAttachmentReferences(
                 sessionId,
                 starter.id,
                 extractMessageAttachments(starter).map(item => ({ ...item, relation: "upload" as const })),
               );
             } catch (error) {
-              logger.error({ err: error, sessionId, messageId: starter.id }, "forum starter attachment registration failed");
+              logger.error({ err: error, sessionId, messageId: starter.id }, "forum starter attachment reference preparation failed");
             }
             session.append({
               role: "user",
@@ -917,9 +917,9 @@ async function formatIncomingMessage(message: Message, sessionId: string): Promi
 
   let attachmentReferences: AttachmentReference[] = [];
   try {
-    attachmentReferences = registerRemoteAttachments(sessionId, message.id, indexInputs);
+    attachmentReferences = prepareRemoteAttachmentReferences(sessionId, message.id, indexInputs);
   } catch (error) {
-    logger.error({ err: error, sessionId, messageId: message.id }, "Discord attachment registration failed");
+    logger.error({ err: error, sessionId, messageId: message.id }, "Discord attachment reference preparation failed");
   }
 
   return {

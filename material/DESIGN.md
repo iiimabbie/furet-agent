@@ -858,21 +858,21 @@ interface PluginRuntimeContext {
 1. source adapter 先產生 `SearchDocumentInput`。
 2. `ingestSearchDocuments()` 正規化文字並先遮罩 secrets，再計算 deterministic ID／SHA-256 content hash，並在同一個 SQLite transaction 內 upsert document、FTS row 與 embedding job。未遮罩原文仍只存在 durable source。
 3. 寫入層只依 identity/hash 去重，不用 cosine 相似度刪資料；不同時間的相似事件都會保留。
-4. `processEmbeddingJobs()` 由 gateway 的單一背景 worker 分批處理。程序中斷後 pending/failed job 仍在 SQLite，可於重啟後續跑；卡住的 processing job 超時後會回到 retry 流程。
+4. `processEmbeddingJobs()` 由 gateway 的單一背景 worker 分批處理。程序中斷後仍可重試的 pending/failed job 留在 SQLite，卡住的 processing job 超時後回到 retry 流程；達最大嘗試次數的 failed job 另列為 `exhausted`，不再混入 `remaining` 或讓 drain 永遠無法完成。
 5. FTS／recall 使用的 searchable projection 與外部 embedding payload 都使用遮罩後文字；本機 durable source 與權限 metadata 不因遮罩而失去可稽核性。查詢本身在送 embedding provider 前也會遮罩可能的 credential。
 6. vector rowid 與 FTS rowid 都使用 `search_documents.rowid`，deterministic text ID 則放在 unique `id`；這避開 sqlite-vec 只接受 integer rowid 的限制，同時保持 reconciliation 冪等。
-7. 同一 document 的文字 hash 未變時仍比較 metadata；visibility/channel/ordinal 等欄位變更會立即更新文件與 FTS metadata，但不重新排 embedding。Hybrid search 使用最低 cosine 門檻，auto recall 只採高可信 vector 命中；權限過濾造成候選不足時會擴大 KNN／FTS 候選池。搜尋工具另有單筆與總輸出 budget，rank 分數不偽裝成絕對相關度百分比。
-8. Canonical workspace/session write 與可重建 projection 分離：canonical write 成功後即回報成功，projection 失敗則記錄為 reindex pending；session JSON 採 temp + rename，持久化失敗時回滾記憶體狀態且不得建立幽靈索引。
+7. 同一 document 的文字 hash 未變時仍比較 metadata；visibility/channel/ordinal 等欄位變更會立即更新文件與 FTS metadata，但不重新排 embedding。Hybrid search 使用最低 cosine 門檻，auto recall 只採高可信 vector 命中；visibility、source/profile 與 exclusion 條件盡量下推 SQL，FTS 直接只排名合格列，sqlite-vec 則因 KNN 先取 `k` 的限制漸進擴大 `k`，再由 joined SQL filter 排除不合格列。相鄰 context 重新套用同一份完整 filter，不能讓被排除的 document/session/source 或近期日記從 context 回流。搜尋工具另有單筆與總輸出 budget，rank 分數不偽裝成絕對相關度百分比。
+8. Canonical workspace/session write 與可重建 projection 分離：canonical write 成功後即回報成功，projection 失敗則記錄為 reindex pending；session JSON 採 temp + rename，持久化失敗時回滾記憶體狀態且不得建立幽靈索引。所有 Discord 遠端附件及 provider／本機工具輸出的附件都先只建立純 `AttachmentReference`、寫入 session JSON，成功後才 upsert `attachment_records`、job 與搜尋文件。
 
 部署觀察期採新舊資料表並行：讀取入口已統一到 hybrid search，但 legacy memory/session tables 暫不刪除，作為資料比對與程式 rollback 的安全網。回滾時還原上一版程式與 runtime AGENT.md/JOURNAL.md 備份；新表是可重建 projection，不影響 session JSON、archive、workspace 文件或附件原檔。
 
 ### 附件索引與非同步分析
 
-Discord uploads、Embed image/thumbnail、回覆引用與 Forum starter 附件在訊息持久化時建立 `AttachmentReference`；session JSON 保存 stable reference，SQLite `attachment_records` 保存處理狀態與抽取結果。遠端 URL 的 query 不進 searchable metadata，背景 worker 會盡快把原檔下載到 `workspace/attachments/search-index/`，避免 Discord CDN URL 過期後失去原始證據。所有遠端圖片／附件下載都經 pinned-DNS safe fetch：逐跳驗證 redirect、拒絕 loopback／private／link-local 位址、限制 timeout，並以 streaming byte counter 在超限時立即中止；本機檔也在讀取前先檢查大小。相同 bytes 在不同訊息被引用時保留各自 reference metadata；binary 本身不塞進 SQLite。
+Discord uploads、Embed image/thumbnail、回覆引用與 Forum starter 附件會先建立不落 DB 的 `AttachmentReference`，隨訊息成功持久化到 session JSON 後，才建立 SQLite `attachment_records`、job 與搜尋投影；session JSON 保存 stable reference，SQLite 保存處理狀態與抽取結果。遠端 URL 的 query 不進 searchable metadata，背景 worker 會盡快把原檔下載到 `workspace/attachments/search-index/`，避免 Discord CDN URL 過期後失去原始證據。所有遠端圖片／附件下載都經 pinned-DNS safe fetch：逐跳驗證 redirect、拒絕 loopback／private／link-local 位址、限制 timeout，並以 streaming byte counter 在超限時立即中止；本機檔也在讀取前先檢查大小。相同 bytes 在不同訊息被引用時保留各自 reference metadata；binary 本身不塞進 SQLite。
 
 `attachment_jobs` 是可重啟、可重試的 outbox。圖片同時經 Tesseract.js (`eng+chi_tra`) OCR 與目前 vision model 的客觀描述；vision prompt 明確把圖片內容視為 untrusted evidence，不執行畫面中的指令。OCR、vision 與文件抽取各自保存 stage status：已成功的結果立即寫入並建立部分搜尋投影，後續只重試失敗階段，不因另一階段暫時失敗而丟掉可用證據。文字與程式碼檔直接抽取；PDF、DOCX、PPTX、XLSX、ODF、RTF、CSV、Markdown、HTML、EPUB 使用 `officeparser` 產生文字與內嵌圖片 OCR。`pdfjs-dist` 與 `qs` 透過 lockfile override 固定至已修補版本，production audit 必須為零漏洞。處理邊界包含下載大小、解壓 bytes、ZIP entry、spreadsheet cell 與 abort timeout；失敗會保留原因並依退避策略重試。
 
-Provider 生成圖片及本地工具排入最終 Discord 回覆的檔案，會在 request 完成時附到最後一則 assistant message，再走相同的 attachment ingestion，而不是另開生成檔專用索引。所有 attachment metadata、OCR、視覺描述與文件 chunks 最後仍落入 `search_documents`／FTS／embedding outbox；attachment worker 只負責把原始檔轉成統一文件。
+Provider 生成圖片及本地工具排入最終 Discord 回覆的檔案，會在 request 完成時附到最後一則 assistant message，再走相同的 attachment ingestion，而不是另開生成檔專用索引。這條路徑先 stat/hash 並建立不落 DB 的 reference，session JSON temp+rename 成功後才建立附件 record/job/search projection；若 session 寫入失敗則回滾記憶體 reference，不留下 ghost attachment。所有 attachment metadata、OCR、視覺描述與文件 chunks 最後仍落入 `search_documents`／FTS／embedding outbox；attachment worker 只負責把原始檔轉成統一文件。達最大嘗試次數的附件 job 另列 `exhausted`，不計入可繼續處理的 `remaining`。
 
 ### 向量表的一致性
 

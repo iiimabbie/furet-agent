@@ -180,24 +180,20 @@ function upsertAttachment(reference: AttachmentReference, sessionId: string, par
   indexAttachmentRow(row);
 }
 
-export function registerRemoteAttachments(
+/** Build remote references for the durable session without creating projections yet. */
+export function prepareRemoteAttachmentReferences(
   sessionId: string,
   parentId: string,
   inputs: RemoteAttachmentInput[],
 ): AttachmentReference[] {
-  return inputs.map((input, ordinal) => {
-    const id = attachmentId(sessionId, parentId, input.url, ordinal);
-    const reference: AttachmentReference = {
-      id,
-      url: input.url,
-      ...(input.name ? { name: input.name } : {}),
-      ...(input.contentType ? { contentType: input.contentType } : {}),
-      ...(typeof input.size === "number" ? { size: input.size } : {}),
-      relation: input.relation ?? "upload",
-    };
-    upsertAttachment(reference, sessionId, parentId);
-    return reference;
-  });
+  return inputs.map((input, ordinal) => ({
+    id: attachmentId(sessionId, parentId, input.url, ordinal),
+    url: input.url,
+    ...(input.name ? { name: input.name } : {}),
+    ...(input.contentType ? { contentType: input.contentType } : {}),
+    ...(typeof input.size === "number" ? { size: input.size } : {}),
+    relation: input.relation ?? "upload",
+  }));
 }
 
 export function registerInlineImageAttachments(
@@ -238,7 +234,8 @@ export function registerInlineImageAttachments(
   });
 }
 
-export function registerLocalAttachments(
+/** Build durable session references without touching the projection database. */
+export function prepareLocalAttachmentReferences(
   sessionId: string,
   parentId: string,
   paths: string[],
@@ -249,19 +246,17 @@ export function registerLocalAttachments(
       const info = statSync(path);
       if (!info.isFile() || info.size > MAX_DOWNLOAD_BYTES) throw new Error(`local attachment exceeds ${MAX_DOWNLOAD_BYTES} byte limit`);
       const data = readFileSync(path);
-      const id = attachmentId(sessionId, parentId, sha256(data), ordinal);
-      const reference: AttachmentReference = {
-        id,
+      const hash = sha256(data);
+      return [{
+        id: attachmentId(sessionId, parentId, hash, ordinal),
         name: basename(path),
         localPath: path,
         size: info.size,
-        contentHash: sha256(data),
+        contentHash: hash,
         relation,
-      };
-      upsertAttachment(reference, sessionId, parentId);
-      return [reference];
+      } satisfies AttachmentReference];
     } catch (error) {
-      logger.warn({ path, err: (error as Error).message }, "local attachment registration failed");
+      logger.warn({ path, err: (error as Error).message }, "local attachment reference preparation failed");
       return [];
     }
   });
@@ -418,7 +413,7 @@ function retryAt(attempts: number): string {
   return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
-export async function processAttachmentJobs(limit = 2): Promise<{ completed: number; failed: number; remaining: number }> {
+export async function processAttachmentJobs(limit = 2): Promise<{ completed: number; failed: number; remaining: number; exhausted: number }> {
   const db = getDb();
   db.prepare(`
     UPDATE attachment_jobs SET status = 'failed', next_retry_at = datetime('now'),
@@ -504,8 +499,14 @@ export async function processAttachmentJobs(limit = 2): Promise<{ completed: num
       failed++;
     }
   }
-  const remaining = (db.prepare("SELECT count(*) AS c FROM attachment_jobs WHERE status IN ('pending','processing','failed')").get() as { c: number }).c;
-  return { completed, failed, remaining };
+  const remaining = (db.prepare(`
+    SELECT count(*) AS c FROM attachment_jobs
+    WHERE status IN ('pending', 'processing') OR (status = 'failed' AND attempts < ?)
+  `).get(MAX_ATTACHMENT_ATTEMPTS) as { c: number }).c;
+  const exhausted = (db.prepare(`
+    SELECT count(*) AS c FROM attachment_jobs WHERE status = 'failed' AND attempts >= ?
+  `).get(MAX_ATTACHMENT_ATTEMPTS) as { c: number }).c;
+  return { completed, failed, remaining, exhausted };
 }
 
 let workerTimer: NodeJS.Timeout | undefined;

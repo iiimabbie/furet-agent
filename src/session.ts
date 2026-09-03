@@ -14,7 +14,7 @@ import {
   indexToolHistoryEvent,
   reconcileSessionIndex,
 } from "./session-index.js";
-import { reconcileAttachmentReferences, registerLocalAttachments } from "./attachment-index.js";
+import { prepareLocalAttachmentReferences, reconcileAttachmentReferences } from "./attachment-index.js";
 
 // 檔名格式：`{stem}.json` 或 `{stem}__{slug}.json`。
 // stem 是把 routing id 的長前綴縮寫的結果（discord-channel- → dc-、discord-dm- → dm-），
@@ -101,6 +101,14 @@ export class Session {
     } catch (err) {
       logger.error({ err: (err as Error).message, sessionId: this.id }, "session message indexing failed");
     }
+    if (message.attachments?.length) {
+      const parentId = ensureMessageSearchId(this.id, message, this.messages.length - 1);
+      try {
+        reconcileAttachmentReferences(this.id, parentId, message.attachments);
+      } catch (err) {
+        logger.error({ err: (err as Error).message, sessionId: this.id, parentId }, "attachment projection pending after session save");
+      }
+    }
   }
 
   /** Attach locally produced files to the newest assistant message and index them. */
@@ -110,12 +118,18 @@ export class Session {
       const message = this.messages[index];
       if (message.role !== "assistant") continue;
       const parentId = ensureMessageSearchId(this.id, message, index);
-      const references = registerLocalAttachments(this.id, parentId, paths, relation);
+      const references = prepareLocalAttachmentReferences(this.id, parentId, paths, relation);
       if (references.length === 0) return;
-      const existing = new Set((message.attachments ?? []).map(reference => reference.id));
-      message.attachments = [...(message.attachments ?? []), ...references.filter(reference => !existing.has(reference.id))];
-      this.save();
-      reconcileAttachmentReferences(this.id, parentId, message.attachments);
+      const previous = message.attachments;
+      const existing = new Set((previous ?? []).map(reference => reference.id));
+      message.attachments = [...(previous ?? []), ...references.filter(reference => !existing.has(reference.id))];
+      try { this.save(); }
+      catch (error) { message.attachments = previous; throw error; }
+      try {
+        reconcileAttachmentReferences(this.id, parentId, message.attachments);
+      } catch (err) {
+        logger.error({ err: (err as Error).message, sessionId: this.id, parentId }, "attachment projection pending after session save");
+      }
       return;
     }
   }

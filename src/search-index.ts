@@ -52,6 +52,7 @@ export interface EmbeddingWorkerResult {
   completed: number;
   failed: number;
   remaining: number;
+  exhausted: number;
 }
 
 export interface SearchIndexIntegrityReport {
@@ -340,8 +341,14 @@ export async function processEmbeddingJobs(limit = 10): Promise<EmbeddingWorkerR
   `).run();
 
   if (!apiKey) {
-    const remaining = (db.prepare("SELECT count(*) AS c FROM embedding_jobs WHERE status IN ('pending', 'processing', 'failed')").get() as { c: number }).c;
-    return { completed: 0, failed: 0, remaining };
+    const remaining = (db.prepare(`
+      SELECT count(*) AS c FROM embedding_jobs
+      WHERE status IN ('pending', 'processing') OR (status = 'failed' AND attempts < ?)
+    `).get(MAX_EMBED_ATTEMPTS) as { c: number }).c;
+    const exhausted = (db.prepare(`
+      SELECT count(*) AS c FROM embedding_jobs WHERE status = 'failed' AND attempts >= ?
+    `).get(MAX_EMBED_ATTEMPTS) as { c: number }).c;
+    return { completed: 0, failed: 0, remaining, exhausted };
   }
 
   let completed = 0;
@@ -413,9 +420,12 @@ export async function processEmbeddingJobs(limit = 10): Promise<EmbeddingWorkerR
 
   const remaining = (db.prepare(`
     SELECT count(*) AS c FROM embedding_jobs
-    WHERE status IN ('pending', 'processing', 'failed')
-  `).get() as { c: number }).c;
-  return { completed, failed, remaining };
+    WHERE status IN ('pending', 'processing') OR (status = 'failed' AND attempts < ?)
+  `).get(MAX_EMBED_ATTEMPTS) as { c: number }).c;
+  const exhausted = (db.prepare(`
+    SELECT count(*) AS c FROM embedding_jobs WHERE status = 'failed' AND attempts >= ?
+  `).get(MAX_EMBED_ATTEMPTS) as { c: number }).c;
+  return { completed, failed, remaining, exhausted };
 }
 
 let workerTimer: NodeJS.Timeout | undefined;
@@ -580,6 +590,56 @@ function passesSearchFilters(row: SearchRow, options: UnifiedSearchOptions): boo
   return true;
 }
 
+function searchSqlFilters(options: UnifiedSearchOptions, alias = "d"): { sql: string; params: unknown[] } {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  const column = (name: string) => `${alias}.${name}`;
+  const placeholders = (values: unknown[]) => values.map(() => "?").join(", ");
+
+  if (!options.visibility.isOwner) {
+    const scopes = ["public"];
+    if (options.visibility.channelId) scopes.push(`channel:${options.visibility.channelId}`);
+    if (options.visibility.userId) scopes.push(`user:${options.visibility.userId}`);
+    clauses.push(`${column("visibility_scope")} IN (${placeholders(scopes)})`);
+    params.push(...scopes);
+  }
+
+  let allowedSourceTypes = options.sourceTypes ? [...options.sourceTypes] : undefined;
+  if (options.profile === "session") {
+    allowedSourceTypes = (allowedSourceTypes ?? [...SESSION_SOURCE_TYPES])
+      .filter(sourceType => SESSION_SOURCE_TYPES.has(sourceType));
+  }
+  if (allowedSourceTypes) {
+    if (allowedSourceTypes.length === 0) clauses.push("0 = 1");
+    else {
+      clauses.push(`${column("source_type")} IN (${placeholders(allowedSourceTypes)})`);
+      params.push(...allowedSourceTypes);
+    }
+  }
+  if (options.excludeSourceTypes?.length) {
+    clauses.push(`${column("source_type")} NOT IN (${placeholders(options.excludeSourceTypes)})`);
+    params.push(...options.excludeSourceTypes);
+  }
+  if (options.excludeSourceIds?.length) {
+    clauses.push(`${column("source_id")} NOT IN (${placeholders(options.excludeSourceIds)})`);
+    params.push(...options.excludeSourceIds);
+  }
+  if (options.excludeSessionIds?.length) {
+    clauses.push(`(${column("session_id")} IS NULL OR ${column("session_id")} NOT IN (${placeholders(options.excludeSessionIds)}))`);
+    params.push(...options.excludeSessionIds);
+  }
+  if (options.excludeDocumentIds?.length) {
+    clauses.push(`${column("id")} NOT IN (${placeholders(options.excludeDocumentIds)})`);
+    params.push(...options.excludeDocumentIds);
+  }
+  const cutoff = dateFileCutoff(options.excludeRecentDays);
+  if (cutoff) {
+    clauses.push(`NOT (${column("source_id")} GLOB '????-??-??.md' AND substr(${column("source_id")}, 1, 10) >= ?)`);
+    params.push(cutoff);
+  }
+  return { sql: clauses.length > 0 ? ` AND ${clauses.join(" AND ")}` : "", params };
+}
+
 function rowToResult(row: SearchRow): Omit<UnifiedSearchResult, "score" | "matchedBy"> {
   return {
     id: row.id,
@@ -596,7 +656,7 @@ function rowToResult(row: SearchRow): Omit<UnifiedSearchResult, "score" | "match
   };
 }
 
-function addContext(result: UnifiedSearchResult, visibility: SearchVisibilityContext): void {
+function addContext(result: UnifiedSearchResult, options: UnifiedSearchOptions): void {
   if (result.sourceType !== "session_message" || !result.sessionId || result.ordinal === undefined) return;
   const rows = getDb().prepare(`
     SELECT rowid, id, source_type, source_id, parent_id, session_id, channel_id,
@@ -605,7 +665,7 @@ function addContext(result: UnifiedSearchResult, visibility: SearchVisibilityCon
     WHERE source_type = 'session_message' AND session_id = ? AND ordinal BETWEEN ? AND ?
     ORDER BY ordinal
   `).all(result.sessionId, Math.max(0, result.ordinal - 1), result.ordinal + 1) as SearchRow[];
-  const visible = rows.filter(row => row.id !== result.id && canViewScope(row.visibility_scope, visibility));
+  const visible = rows.filter(row => row.id !== result.id && passesSearchFilters(row, options));
   if (visible.length > 0) {
     result.context = visible.map(row => ({
       id: row.id,
@@ -648,28 +708,27 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
     .join(" OR ");
   if (ftsQuery) {
     try {
-      const totalFts = (db.prepare(`SELECT count(*) AS c FROM search_documents_fts WHERE search_documents_fts MATCH ?`).get(ftsQuery) as { c: number }).c;
-      let fetchLimit = Math.min(candidateLimit, totalFts);
-      let rows: Array<SearchRow & { lexical_score: number }> = [];
-      for (;;) {
-        rows = db.prepare(`
-          SELECT d.rowid, d.id, d.source_type, d.source_id, d.parent_id, d.session_id,
-            d.channel_id, d.visibility_scope, d.ordinal, d.role, d.text, d.content_hash,
-            d.occurred_at, bm25(search_documents_fts) AS lexical_score
-          FROM search_documents_fts f
-          JOIN search_documents d ON d.rowid = f.rowid
-          WHERE search_documents_fts MATCH ?
-          ORDER BY lexical_score
-          LIMIT ?
-        `).all(ftsQuery, fetchLimit) as Array<SearchRow & { lexical_score: number }>;
-        const eligible = rows.filter(row => passesSearchFilters(row, options)).length;
-        if (eligible >= limit || fetchLimit >= totalFts) break;
-        fetchLimit = Math.min(totalFts, Math.max(fetchLimit + 1, fetchLimit * 2));
-      }
+      const sqlFilters = searchSqlFilters(options);
+      const totalFts = (db.prepare(`
+        SELECT count(*) AS c
+        FROM search_documents_fts f
+        JOIN search_documents d ON d.rowid = f.rowid
+        WHERE search_documents_fts MATCH ?${sqlFilters.sql}
+      `).get(ftsQuery, ...sqlFilters.params) as { c: number }).c;
+      const fetchLimit = Math.min(candidateLimit, totalFts);
+      const rows = db.prepare(`
+        SELECT d.rowid, d.id, d.source_type, d.source_id, d.parent_id, d.session_id,
+          d.channel_id, d.visibility_scope, d.ordinal, d.role, d.text, d.content_hash,
+          d.occurred_at, bm25(search_documents_fts) AS lexical_score
+        FROM search_documents_fts f
+        JOIN search_documents d ON d.rowid = f.rowid
+        WHERE search_documents_fts MATCH ?${sqlFilters.sql}
+        ORDER BY lexical_score
+        LIMIT ?
+      `).all(ftsQuery, ...sqlFilters.params, fetchLimit) as Array<SearchRow & { lexical_score: number }>;
       ftsCandidates = rows.length;
       let rank = 0;
       for (const row of rows) {
-        if (!passesSearchFilters(row, options)) { filteredCandidates++; continue; }
         rank++;
         const weighted = (1 / (60 + rank)) * 1.15 * sourceWeight(row.source_type, profile);
         const current = byId.get(row.id) ?? { row, score: 0, matchedBy: new Set<"vector" | "fts">() };
@@ -693,6 +752,7 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
         // sqlite-vec applies k before joined-table visibility filters. Increase k until
         // enough eligible rows survive (or the table is exhausted), preventing private
         // nearest neighbours from starving later visible results.
+        const sqlFilters = searchSqlFilters(options);
         let k = Math.min(candidateLimit, count);
         let rows: Array<SearchRow & { distance: number }> = [];
         for (;;) {
@@ -702,16 +762,15 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
               d.occurred_at, v.distance
             FROM ${SEARCH_DOCUMENT_VEC_TABLE} v
             JOIN search_documents d ON d.rowid = v.rowid
-            WHERE v.embedding MATCH ? AND k = ?
-          `).all(blob, k) as Array<SearchRow & { distance: number }>;
-          const eligible = rows.filter(row => passesSearchFilters(row, options) && (1 - row.distance) >= minVectorScore).length;
+            WHERE v.embedding MATCH ? AND k = ?${sqlFilters.sql}
+          `).all(blob, k, ...sqlFilters.params) as Array<SearchRow & { distance: number }>;
+          const eligible = rows.filter(row => (1 - row.distance) >= minVectorScore).length;
           if (eligible >= limit || k >= count) break;
           k = Math.min(count, Math.max(k + 1, k * 2));
         }
         vectorCandidates = rows.length;
         let rank = 0;
         for (const row of rows) {
-          if (!passesSearchFilters(row, options)) { filteredCandidates++; continue; }
           rank++;
           const vectorScore = 1 - row.distance;
           if (vectorScore < minVectorScore) continue;
@@ -749,7 +808,7 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
     matchedBy: [...candidate.matchedBy],
   } satisfies UnifiedSearchResult));
   if (options.includeContext !== false) {
-    for (const result of results) addContext(result, options.visibility);
+    for (const result of results) addContext(result, options);
   }
 
   const response: UnifiedSearchResponse = {
