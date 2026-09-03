@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, extname, relative, resolve } from "node:path";
 
 interface Options {
@@ -196,24 +196,11 @@ function migrateJournal(content: string): { content: string; replacements: numbe
   return { content: migrated, replacements };
 }
 
-function backup(path: string, workspace: string, backupDir: string): void {
+function backup(path: string, workspace: string, backupDir: string): string {
   const destination = resolve(backupDir, relative(workspace, path));
   mkdirSync(resolve(destination, ".."), { recursive: true });
   copyFileSync(path, destination);
-}
-
-function migrateFile(path: string, kind: "agent" | "journal", options: Options): FileChange {
-  if (!existsSync(path)) throw new Error(`Required file not found: ${path}`);
-  const original = readFileSync(path, "utf8");
-  const result = kind === "agent" ? migrateAgent(original) : migrateJournal(original);
-  const changed = result.content !== original;
-  if (changed && options.apply) {
-    if (options.backupDir) backup(path, options.workspace, options.backupDir);
-    const temporary = `${path}.diary-note-migration.tmp`;
-    writeFileSync(temporary, result.content);
-    renameSync(temporary, path);
-  }
-  return { path, changed, replacements: result.replacements };
+  return destination;
 }
 
 function walk(path: string, output: string[]): void {
@@ -244,27 +231,63 @@ function main(): void {
   const options = parseArgs(process.argv.slice(2));
   const agentPath = resolve(options.workspace, "AGENT.md");
   const journalPath = resolve(options.workspace, "JOURNAL.md");
-  const agentPreview = migrateAgent(readFileSync(agentPath, "utf8"));
-  const journalPreview = migrateJournal(readFileSync(journalPath, "utf8"));
-  const changes = [
-    migrateFile(agentPath, "agent", options),
-    migrateFile(journalPath, "journal", options),
-  ];
+  if (!existsSync(agentPath) || !existsSync(journalPath)) throw new Error("Required AGENT.md or JOURNAL.md is missing");
+
+  const originals = new Map<string, string>([
+    [agentPath, readFileSync(agentPath, "utf8")],
+    [journalPath, readFileSync(journalPath, "utf8")],
+  ]);
+  const agentPreview = migrateAgent(originals.get(agentPath)!);
+  const journalPreview = migrateJournal(originals.get(journalPath)!);
   const projected = new Map<string, string>([
     [agentPath, agentPreview.content],
     [journalPath, journalPreview.content],
   ]);
-  const references = scanLegacyReferences(options.scanRoots, options.apply ? new Map() : projected);
-  const report = {
+  const changes: FileChange[] = [
+    { path: agentPath, changed: agentPreview.content !== originals.get(agentPath), replacements: agentPreview.replacements },
+    { path: journalPath, changed: journalPreview.content !== originals.get(journalPath), replacements: journalPreview.replacements },
+  ];
+
+  // Preflight the complete projected state before touching either canonical file.
+  const references = scanLegacyReferences(options.scanRoots, projected);
+  if (references.length > 0) {
+    console.log(JSON.stringify({ mode: options.apply ? "apply" : "dry-run", workspace: options.workspace, changes, backupDir: options.backupDir, legacyReferences: references, ok: false }, null, 2));
+    if (options.apply) process.exitCode = 2;
+    return;
+  }
+
+  if (options.apply) {
+    if (!options.backupDir) throw new Error("--backup-dir is required with --apply");
+    const changedPaths = changes.filter(change => change.changed).map(change => change.path);
+    const backups = new Map<string, string>();
+    const temporaries = new Map<string, string>();
+    try {
+      for (const path of changedPaths) backups.set(path, backup(path, options.workspace, options.backupDir));
+      for (const path of changedPaths) {
+        const temporary = `${path}.diary-note-migration.${process.pid}.tmp`;
+        writeFileSync(temporary, projected.get(path)!, { mode: statSync(path).mode });
+        temporaries.set(path, temporary);
+      }
+      for (const path of changedPaths) renameSync(temporaries.get(path)!, path);
+      const after = scanLegacyReferences(options.scanRoots);
+      if (after.length > 0) throw new Error(`post-migration verification found ${after.length} legacy reference(s)`);
+    } catch (error) {
+      for (const [path, backupPath] of backups) copyFileSync(backupPath, path);
+      for (const temporary of temporaries.values()) {
+        try { if (existsSync(temporary)) unlinkSync(temporary); } catch { /* best effort cleanup */ }
+      }
+      throw new Error(`migration rolled back: ${(error as Error).message}`);
+    }
+  }
+
+  console.log(JSON.stringify({
     mode: options.apply ? "apply" : "dry-run",
     workspace: options.workspace,
     changes,
     backupDir: options.backupDir,
-    legacyReferences: references,
-    ok: references.length === 0,
-  };
-  console.log(JSON.stringify(report, null, 2));
-  if (options.apply && references.length > 0) process.exitCode = 2;
+    legacyReferences: [],
+    ok: true,
+  }, null, 2));
 }
 
 main();

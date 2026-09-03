@@ -3,6 +3,7 @@ import { getDb } from "../../db.js";
 import { searchUnified } from "../../search-index.js";
 import { getChannelId, getTrigger, getUserId } from "../context.js";
 import type { ContentBlock, Tool } from "../../types.js";
+import { renderSearchOutput, truncateSearchText } from "../../utils/search-output.js";
 
 interface ArchivedSessionRow {
   session_id: string;
@@ -117,14 +118,14 @@ export const sessionSearch: Tool = {
       const lines = response.results.map(result => {
         const when = result.occurredAt ? ` · ${result.occurredAt}` : "";
         const context = result.context?.length
-          ? `\n  Context: ${result.context.map(item => `${item.role ?? "message"}: ${item.text}`).join(" | ")}`
+          ? `\n  Context: ${truncateSearchText(result.context.map(item => `${item.role ?? "message"}: ${item.text}`).join(" | "), 900)}`
           : "";
-        return `- [${result.sessionId ?? result.sourceId} · ${result.sourceType}${when}] (${result.matchedBy.join("+")}, relevance ${(result.score * 100).toFixed(0)}%) ${result.role ? `${result.role}: ` : ""}${result.text}${context}`;
+        return `- [${result.sessionId ?? result.sourceId} · ${result.sourceType}${when}] (${result.matchedBy.join("+")}, rank ${(result.score * 100).toFixed(0)}) ${result.role ? `${result.role}: ` : ""}${truncateSearchText(result.text, 1800)}${context}`;
       });
       const diagnostics = debug
         ? `\n\nTrace ${response.traceId}: ${JSON.stringify(response.diagnostics)}`
         : "";
-      return `Session evidence (${response.results.length}):\n${lines.join("\n")}${diagnostics}`;
+      return renderSearchOutput(`Session evidence (${response.results.length}):`, lines, diagnostics);
     } catch (err) {
       logger.error({ err: (err as Error).message }, "session search failed");
       return `Error: ${(err as Error).message}`;

@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { logger } from "../../logger.js";
 import { reindexWorkspacePath } from "../../workspace-index.js";
 import type { Tool } from "../../types.js";
+import { updateSearchProjection, withProjectionNotice } from "../../utils/search-projection.js";
 
 
 export const writeFileTool: Tool = {
@@ -22,8 +23,8 @@ export const writeFileTool: Tool = {
     try {
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, content, "utf-8");
-      reindexWorkspacePath(path, content);
-      return `File written: ${path}`;
+      const projectionError = updateSearchProjection(path, () => { reindexWorkspacePath(path, content); });
+      return withProjectionNotice(`File written: ${path}.`, projectionError);
     } catch (err) {
       return `Error writing file: ${(err as Error).message}`;
     }

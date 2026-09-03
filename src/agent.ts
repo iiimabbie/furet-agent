@@ -10,6 +10,8 @@ import { searchUnified } from "./search-index.js";
 import { stamp } from "./utils/time.js";
 import { filterStaleOnboarding } from "./onboarding.js";
 import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions, ToolHistoryEvent } from "./types.js";
+import { safeFetchBuffer } from "./utils/safe-http.js";
+import { truncateSearchText } from "./utils/search-output.js";
 
 /** 清除 API 回傳 content blocks 中的多餘欄位（如 caller），只保留我們定義的欄位 */
 function sanitizeContent(blocks: ContentBlock[]): ContentBlock[] {
@@ -258,25 +260,19 @@ function extractAndSaveImages(blocks: ContentBlock[]): number {
 /** Fetch a single image URL and return a base64 image block for the Anthropic API */
 async function fetchImageAsBase64(url: string): Promise<ContentBlock | null> {
   try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      logger.warn({ url, status: res.status }, "image fetch failed (non-OK status)");
+    const response = await safeFetchBuffer(url, { maxBytes: 20 * 1024 * 1024, timeoutMs: 30_000, maxRedirects: 4 });
+    if (!response.ok) {
+      logger.warn({ url, status: response.status }, "image fetch failed (non-OK status)");
       return null;
     }
-    const contentType = res.headers.get("content-type") ?? "image/png";
-    // Normalise media type — Anthropic accepts image/jpeg, image/png, image/gif, image/webp
+    const contentType = response.headers["content-type"] ?? "image/png";
     const media_type = contentType.split(";")[0].trim();
     const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
     if (!ALLOWED_TYPES.has(media_type)) {
       logger.warn({ url, media_type }, "image fetch returned unsupported content-type");
       return null;
     }
-    const buf = Buffer.from(await res.arrayBuffer());
-    const data = buf.toString("base64");
-    return {
-      type: "image",
-      source: { type: "base64", media_type, data },
-    } as unknown as ContentBlock;
+    return { type: "image", source: { type: "base64", media_type, data: response.body.toString("base64") } } as unknown as ContentBlock;
   } catch (err) {
     logger.warn({ url, err: (err as Error).message }, "image fetch failed (exception)");
     return null;
@@ -570,17 +566,19 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
         excludeSourceTypes: ["memory", "people"],
         excludeRecentDays: 2,
         includeContext: false,
+        minVectorScore: 0.68,
         debug: true,
       });
-      if (recalled.results.length > 0) {
-        const recallBlock = recalled.results.map(r =>
-          `- [${r.sourceId}${r.occurredAt ? ` · ${r.occurredAt}` : ""}] ${r.text}`
+      const reliableResults = recalled.results.filter(result => (result.vectorScore ?? -1) >= 0.68);
+      if (reliableResults.length > 0) {
+        const recallBlock = reliableResults.map(r =>
+          `- [${r.sourceId}${r.occurredAt ? ` · ${r.occurredAt}` : ""}] ${truncateSearchText(r.text, 1800)}`
         ).join("\n");
         recalledSection = `Automatically recalled based on the current message. Use them naturally if relevant — do not mention this mechanism to the user.\n${recallBlock}`;
         logger.debug({
           traceId: recalled.traceId,
-          count: recalled.results.length,
-          documents: recalled.results.map(result => ({ id: result.id, sourceType: result.sourceType, score: result.score })),
+          count: reliableResults.length,
+          documents: reliableResults.map(result => ({ id: result.id, sourceType: result.sourceType, score: result.score, vectorScore: result.vectorScore })),
         }, "auto unified recall");
       }
     } catch (err) {

@@ -9,6 +9,8 @@ import { indexDiaryNote, reindexMemory } from "../../workspace-index.js";
 import { today, clockTime } from "../../utils/time.js";
 import { appendInsideTag, stripTag } from "../../utils/tagged-file.js";
 import type { Tool } from "../../types.js";
+import { updateSearchProjection, withProjectionNotice } from "../../utils/search-projection.js";
+import { renderSearchOutput, truncateSearchText } from "../../utils/search-output.js";
 
 
 export const diaryNote: Tool = {
@@ -36,9 +38,8 @@ export const diaryNote: Tool = {
       const entry = `\n- [${timestamp}] ${content}`;
       writeFileSync(filePath, existing + entry + "\n");
 
-      indexDiaryNote(date, timestamp, content);
-
-      return `Note saved to ${date}.md`;
+      const projectionError = updateSearchProjection("diary note", () => indexDiaryNote(date, timestamp, content));
+      return withProjectionNotice(`Note saved to ${date}.md.`, projectionError);
     } catch (err) {
       logger.error({ err }, "diary note failed");
       return `Error: ${(err as Error).message}`;
@@ -78,14 +79,14 @@ export const memorySearch: Tool = {
         const where = [result.sourceType, result.sourceId, result.occurredAt].filter(Boolean).join(" · ");
         const methods = result.matchedBy.join("+");
         const context = result.context?.length
-          ? `\n  Context: ${result.context.map(item => `${item.role ?? "message"}: ${item.text}`).join(" | ")}`
+          ? `\n  Context: ${truncateSearchText(result.context.map(item => `${item.role ?? "message"}: ${item.text}`).join(" | "), 900)}`
           : "";
-        return `- [${where}] (${methods}, relevance ${(result.score * 100).toFixed(0)}%) ${result.text}${context}`;
+        return `- [${where}] (${methods}, rank ${(result.score * 100).toFixed(0)}) ${truncateSearchText(result.text, 1800)}${context}`;
       });
       const diagnostics = debug
         ? `\n\nTrace ${response.traceId}: ${JSON.stringify(response.diagnostics)}`
         : "";
-      return `Search results (${response.results.length}):\n${lines.join("\n")}${diagnostics}`;
+      return renderSearchOutput(`Search results (${response.results.length}):`, lines, diagnostics);
     } catch (err) {
       logger.error({ err }, "memory search failed");
       return `Error: ${(err as Error).message}`;
@@ -152,8 +153,8 @@ export const memoryAdd: Tool = {
         return `Error: would exceed character limit. ${memoryUsageInfo(current)} — consolidate existing entries first with memory_replace or memory_remove.`;
       }
       writeFileSync(MEMORY_INDEX, updated);
-      reindexMemory(updated);
-      return `Added. ${memoryUsageInfo(updated)}`;
+      const projectionError = updateSearchProjection("MEMORY.md", () => reindexMemory(updated));
+      return withProjectionNotice(`Added. ${memoryUsageInfo(updated)}`, projectionError);
     } catch (err) {
       logger.error({ err }, "memory add failed");
       return `Error: ${(err as Error).message}`;
@@ -186,8 +187,8 @@ export const memoryReplace: Tool = {
         return `Error: replacement would exceed limit. ${memoryUsageInfo(current)}`;
       }
       writeFileSync(MEMORY_INDEX, updated);
-      reindexMemory(updated);
-      return `Replaced. ${memoryUsageInfo(updated)}`;
+      const projectionError = updateSearchProjection("MEMORY.md", () => reindexMemory(updated));
+      return withProjectionNotice(`Replaced. ${memoryUsageInfo(updated)}`, projectionError);
     } catch (err) {
       logger.error({ err }, "memory replace failed");
       return `Error: ${(err as Error).message}`;
@@ -215,8 +216,8 @@ export const memoryRemove: Tool = {
       }
       const updated = current.replace(text, "").replace(/\n{3,}/g, "\n\n");
       writeFileSync(MEMORY_INDEX, updated);
-      reindexMemory(updated);
-      return `Removed. ${memoryUsageInfo(updated)}`;
+      const projectionError = updateSearchProjection("MEMORY.md", () => reindexMemory(updated));
+      return withProjectionNotice(`Removed. ${memoryUsageInfo(updated)}`, projectionError);
     } catch (err) {
       logger.error({ err }, "memory remove failed");
       return `Error: ${(err as Error).message}`;

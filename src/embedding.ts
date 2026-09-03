@@ -32,6 +32,7 @@ export function removeVectorsByFile(file: string): void {
 export async function embed(text: string): Promise<number[]> {
   const res = await fetch(getEmbedUrl(), {
     method: "POST",
+    signal: AbortSignal.timeout(30_000),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: `models/${EMBED_MODEL}`,

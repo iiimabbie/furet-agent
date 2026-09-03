@@ -9,6 +9,7 @@ import { logger } from "./logger.js";
 import type { AttachmentReference } from "./types.js";
 import { OfficeParser } from "officeparser";
 import { createWorker, type Worker } from "tesseract.js";
+import { safeFetchBuffer } from "./utils/safe-http.js";
 
 const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 const MAX_TEXT_BYTES = 4 * 1024 * 1024;
@@ -42,6 +43,9 @@ interface AttachmentRow {
   ocr_text: string | null;
   visual_description: string | null;
   extracted_text: string | null;
+  ocr_status: string;
+  vision_status: string;
+  extract_status: string;
 }
 
 function sha256(value: string | Buffer): string {
@@ -242,8 +246,9 @@ export function registerLocalAttachments(
 ): AttachmentReference[] {
   return [...new Set(paths)].flatMap((path, ordinal) => {
     try {
-      const data = readFileSync(path);
       const info = statSync(path);
+      if (!info.isFile() || info.size > MAX_DOWNLOAD_BYTES) throw new Error(`local attachment exceeds ${MAX_DOWNLOAD_BYTES} byte limit`);
+      const data = readFileSync(path);
       const id = attachmentId(sessionId, parentId, sha256(data), ordinal);
       const reference: AttachmentReference = {
         id,
@@ -279,19 +284,16 @@ function extensionFor(contentType: string | null, name: string | null): string {
 
 async function downloadAttachment(row: AttachmentRow): Promise<{ path: string; contentType: string | null; size: number; hash: string }> {
   if (row.local_path) {
+    const info = statSync(row.local_path);
+    if (!info.isFile() || info.size > MAX_DOWNLOAD_BYTES) throw new Error(`local attachment exceeds ${MAX_DOWNLOAD_BYTES} byte limit`);
     const data = readFileSync(row.local_path);
     return { path: row.local_path, contentType: row.content_type, size: data.length, hash: sha256(data) };
   }
   if (!row.url) throw new Error("attachment has neither local path nor source URL");
-  const parsed = new URL(row.url);
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("unsupported attachment URL protocol");
-  const response = await fetch(row.url);
+  const response = await safeFetchBuffer(row.url, { maxBytes: MAX_DOWNLOAD_BYTES, timeoutMs: 30_000, maxRedirects: 4 });
   if (!response.ok) throw new Error(`attachment download failed: HTTP ${response.status}`);
-  const declared = Number(response.headers.get("content-length") || row.size_bytes || 0);
-  if (declared > MAX_DOWNLOAD_BYTES) throw new Error(`attachment exceeds ${MAX_DOWNLOAD_BYTES} byte limit`);
-  const data = Buffer.from(await response.arrayBuffer());
-  if (data.length > MAX_DOWNLOAD_BYTES) throw new Error(`attachment exceeds ${MAX_DOWNLOAD_BYTES} byte limit`);
-  const contentType = response.headers.get("content-type")?.split(";")[0].trim() || row.content_type;
+  const data = response.body;
+  const contentType = response.headers["content-type"]?.split(";")[0].trim() || row.content_type;
   const hash = sha256(data);
   const directory = resolve(ATTACHMENTS_DIR, "search-index", hash.slice(0, 2));
   mkdirSync(directory, { recursive: true });
@@ -337,6 +339,7 @@ async function describeImage(path: string, contentType: string | null): Promise<
     ? contentType : extensionMime[extname(path).toLowerCase()] || "image/png";
   const response = await fetch(endpoint, {
     method: "POST",
+    signal: AbortSignal.timeout(60_000),
     headers: {
       "Content-Type": "application/json",
       "x-api-key": config.llm.api_key,
@@ -444,34 +447,50 @@ export async function processAttachmentJobs(limit = 2): Promise<{ completed: num
 
     try {
       const downloaded = await downloadAttachment(job);
-      let ocr = "";
-      let description = "";
-      let extracted = "";
+      db.prepare(`UPDATE attachment_records SET local_path=?, content_type=?, size_bytes=?, content_hash=?, updated_at=datetime('now') WHERE id=?`)
+        .run(downloaded.path, downloaded.contentType, downloaded.size, downloaded.hash, job.id);
+      const failures: string[] = [];
       if (isImage(downloaded.contentType, job.original_name)) {
-        const results = await Promise.allSettled([
-          imageOcr(downloaded.path),
-          describeImage(downloaded.path, downloaded.contentType),
-        ]);
-        if (results[0].status === "fulfilled") ocr = results[0].value;
-        if (results[1].status === "fulfilled") description = results[1].value;
-        const failures = results.map(result => result.status === "rejected" ? String(result.reason) : "").filter(Boolean);
-        if (failures.length > 0 || !description) {
-          throw new Error(`image analysis incomplete: ${failures.join("; ") || "visual description was empty"}`);
+        const tasks: Array<Promise<void>> = [];
+        if (job.ocr_status !== "complete") {
+          tasks.push(imageOcr(downloaded.path).then(value => {
+            db.prepare("UPDATE attachment_records SET ocr_text=?, ocr_status='complete', updated_at=datetime('now') WHERE id=?").run(value || null, job.id);
+          }).catch(error => {
+            const message = `OCR: ${String(error)}`;
+            db.prepare("UPDATE attachment_records SET ocr_status='failed', last_error=?, updated_at=datetime('now') WHERE id=?").run(message.slice(0, 2000), job.id);
+            failures.push(message);
+          }));
         }
-      } else {
-        const document = await extractDocument(downloaded.path, downloaded.contentType, job.original_name);
-        extracted = document.text;
-        ocr = document.ocr;
+        if (job.vision_status !== "complete") {
+          tasks.push(describeImage(downloaded.path, downloaded.contentType).then(value => {
+            if (!value) throw new Error("visual description was empty");
+            db.prepare("UPDATE attachment_records SET visual_description=?, vision_status='complete', updated_at=datetime('now') WHERE id=?").run(value, job.id);
+          }).catch(error => {
+            const message = `vision: ${String(error)}`;
+            db.prepare("UPDATE attachment_records SET vision_status='failed', last_error=?, updated_at=datetime('now') WHERE id=?").run(message.slice(0, 2000), job.id);
+            failures.push(message);
+          }));
+        }
+        await Promise.all(tasks);
+        db.prepare("UPDATE attachment_records SET extract_status='complete' WHERE id=?").run(job.id);
+      } else if (job.extract_status !== "complete") {
+        try {
+          const document = await extractDocument(downloaded.path, downloaded.contentType, job.original_name);
+          db.prepare(`UPDATE attachment_records SET extracted_text=?, ocr_text=?, extract_status='complete', ocr_status='complete', vision_status='complete', updated_at=datetime('now') WHERE id=?`)
+            .run(document.text || null, document.ocr || null, job.id);
+        } catch (error) {
+          const message = `document extraction: ${String(error)}`;
+          db.prepare("UPDATE attachment_records SET extract_status='failed', last_error=?, updated_at=datetime('now') WHERE id=?").run(message.slice(0, 2000), job.id);
+          failures.push(message);
+        }
       }
+      const partial = db.prepare("SELECT * FROM attachment_records WHERE id=?").get(job.id) as AttachmentRow;
+      indexAttachmentRow(partial);
+      if (failures.length > 0) throw new Error(`attachment analysis incomplete: ${failures.join("; ")}`);
       db.transaction(() => {
-        db.prepare(`
-          UPDATE attachment_records SET local_path=?, content_type=?, size_bytes=?, content_hash=?,
-            ocr_text=?, visual_description=?, extracted_text=?, status='complete', last_error=NULL,
-            updated_at=datetime('now') WHERE id=?
-        `).run(downloaded.path, downloaded.contentType, downloaded.size, downloaded.hash, ocr || null, description || null, extracted || null, job.id);
+        db.prepare("UPDATE attachment_records SET status='complete', last_error=NULL, updated_at=datetime('now') WHERE id=?").run(job.id);
         db.prepare("UPDATE attachment_jobs SET status='complete', next_retry_at=NULL, last_error=NULL, updated_at=datetime('now') WHERE attachment_id=?").run(job.id);
       })();
-      indexAttachmentRow(db.prepare("SELECT * FROM attachment_records WHERE id=?").get(job.id) as AttachmentRow);
       completed++;
     } catch (error) {
       const message = (error as Error).message.slice(0, 2000);

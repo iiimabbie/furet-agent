@@ -527,7 +527,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 
 日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日檔的 diary_note 補註只當輔助。transcript 是完整的對話紀錄；diary_note 僅補充明確背景、有證據的當下反思、跨日關聯與附件／工具脈絡，不重複記錄事件，也不把未確認的情緒推測寫成事實。
 
-`diary_note` 是補充性的日記註記，不是事件記錄，因此不能成為日記骨架。它只保存 transcript 無法保留的明確背景、有證據的當下反思、跨日關聯，以及附件或工具結果的必要脈絡；不得把推測的心理狀態寫成事實。Daily Journal prompt 以 transcript 為唯一事實來源，找出整天的主線，把相關的起因、行動、反應與結果融合成有脈絡的第一人稱段落；diary_note 只作為輔助色彩織入。正文以連續散文為主，只有真正的清單才用 bullet；實作命令、檔名與中間步驟只保留足以理解事件意義的部分，避免成品退化成 changelog、工作報告或分類後的流水帳。這項規則必須同時維護 runtime `workspace/JOURNAL.md` 與 `templates/JOURNAL.md`。部署時使用 `scripts/migrate-diary-note.ts` 做精確、可重跑的段落遷移與舊名稱掃描，不得整份 template 覆蓋客製 workspace。
+`diary_note` 是補充性的日記註記，不是事件記錄，因此不能成為日記骨架。它只保存 transcript 無法保留的明確背景、有證據的當下反思、跨日關聯，以及附件或工具結果的必要脈絡；不得把推測的心理狀態寫成事實。Daily Journal prompt 以 transcript 為唯一事實來源，找出整天的主線，把相關的起因、行動、反應與結果融合成有脈絡的第一人稱段落；diary_note 只作為輔助色彩織入。正文以連續散文為主，只有真正的清單才用 bullet；實作命令、檔名與中間步驟只保留足以理解事件意義的部分，避免成品退化成 changelog、工作報告或分類後的流水帳。這項規則必須同時維護 runtime `workspace/JOURNAL.md` 與 `templates/JOURNAL.md`。部署時使用 `scripts/migrate-diary-note.ts` 做精確、可重跑的段落遷移與舊名稱掃描，不得整份 template 覆蓋客製 workspace。Apply 前必須完成 projected-state preflight 並指定 backup directory；兩個 runtime 檔先寫 temp，再逐一 rename，任何失敗都從備份回滾整組檔案，避免半套切換。
 
 ### Reminder 用輪詢而不是 setTimeout
 
@@ -848,7 +848,7 @@ interface PluginRuntimeContext {
 - Session message、conversation window、tool evidence 與附件 reference 在 durable persistence 後立即建立／更新統一 documents。
 - compact、archive、`/new`、startup restore 只呼叫同一個冪等 reconciliation，補齊缺漏而不另做一套 embedding。
 - PEOPLE.md、MEMORY.md、OWNER.md 與正式日記由 workspace source adapter 以 remove-missing policy 重建；刪除來源內容會同步移除失效 projection。
-- `scripts/backfill-search-index.ts` 可 dry-run、冪等回填歷史來源、修復 orphan FTS/vector rows，並輸出來源與 job 狀態報告。
+- `scripts/backfill-search-index.ts` 可 dry-run、冪等回填歷史來源、修復 orphan FTS/vector rows，並輸出來源與 job 狀態報告。 `--dry-run` 不初始化 SQLite、不建立 schema、也不修復 projection，只掃描 durable sources 並輸出預演報告。
 - `scripts/migrate-diary-note.ts` 只在部署時精確遷移 runtime AGENT.md/JOURNAL.md；不整份覆蓋客製 workspace。
 
 ### 統一搜尋 ingestion 與 embedding outbox
@@ -861,14 +861,16 @@ interface PluginRuntimeContext {
 4. `processEmbeddingJobs()` 由 gateway 的單一背景 worker 分批處理。程序中斷後 pending/failed job 仍在 SQLite，可於重啟後續跑；卡住的 processing job 超時後會回到 retry 流程。
 5. FTS／recall 使用的 searchable projection 與外部 embedding payload 都使用遮罩後文字；本機 durable source 與權限 metadata 不因遮罩而失去可稽核性。查詢本身在送 embedding provider 前也會遮罩可能的 credential。
 6. vector rowid 與 FTS rowid 都使用 `search_documents.rowid`，deterministic text ID 則放在 unique `id`；這避開 sqlite-vec 只接受 integer rowid 的限制，同時保持 reconciliation 冪等。
+7. 同一 document 的文字 hash 未變時仍比較 metadata；visibility/channel/ordinal 等欄位變更會立即更新文件與 FTS metadata，但不重新排 embedding。Hybrid search 使用最低 cosine 門檻，auto recall 只採高可信 vector 命中；權限過濾造成候選不足時會擴大 KNN／FTS 候選池。搜尋工具另有單筆與總輸出 budget，rank 分數不偽裝成絕對相關度百分比。
+8. Canonical workspace/session write 與可重建 projection 分離：canonical write 成功後即回報成功，projection 失敗則記錄為 reindex pending；session JSON 採 temp + rename，持久化失敗時回滾記憶體狀態且不得建立幽靈索引。
 
 部署觀察期採新舊資料表並行：讀取入口已統一到 hybrid search，但 legacy memory/session tables 暫不刪除，作為資料比對與程式 rollback 的安全網。回滾時還原上一版程式與 runtime AGENT.md/JOURNAL.md 備份；新表是可重建 projection，不影響 session JSON、archive、workspace 文件或附件原檔。
 
 ### 附件索引與非同步分析
 
-Discord uploads、Embed image/thumbnail、回覆引用與 Forum starter 附件在訊息持久化時建立 `AttachmentReference`；session JSON 保存 stable reference，SQLite `attachment_records` 保存處理狀態與抽取結果。遠端 URL 的 query 不進 searchable metadata，背景 worker 會盡快把原檔下載到 `workspace/attachments/search-index/`，避免 Discord CDN URL 過期後失去原始證據。相同 bytes 在不同訊息被引用時保留各自 reference metadata；binary 本身不塞進 SQLite。
+Discord uploads、Embed image/thumbnail、回覆引用與 Forum starter 附件在訊息持久化時建立 `AttachmentReference`；session JSON 保存 stable reference，SQLite `attachment_records` 保存處理狀態與抽取結果。遠端 URL 的 query 不進 searchable metadata，背景 worker 會盡快把原檔下載到 `workspace/attachments/search-index/`，避免 Discord CDN URL 過期後失去原始證據。所有遠端圖片／附件下載都經 pinned-DNS safe fetch：逐跳驗證 redirect、拒絕 loopback／private／link-local 位址、限制 timeout，並以 streaming byte counter 在超限時立即中止；本機檔也在讀取前先檢查大小。相同 bytes 在不同訊息被引用時保留各自 reference metadata；binary 本身不塞進 SQLite。
 
-`attachment_jobs` 是可重啟、可重試的 outbox。圖片同時經 Tesseract.js (`eng+chi_tra`) OCR 與目前 vision model 的客觀描述；vision prompt 明確把圖片內容視為 untrusted evidence，不執行畫面中的指令。文字與程式碼檔直接抽取；PDF、DOCX、PPTX、XLSX、ODF、RTF、CSV、Markdown、HTML、EPUB 使用 `officeparser` 產生文字與內嵌圖片 OCR。處理邊界包含下載大小、解壓 bytes、ZIP entry、spreadsheet cell 與 abort timeout；失敗會保留原因並依退避策略重試。
+`attachment_jobs` 是可重啟、可重試的 outbox。圖片同時經 Tesseract.js (`eng+chi_tra`) OCR 與目前 vision model 的客觀描述；vision prompt 明確把圖片內容視為 untrusted evidence，不執行畫面中的指令。OCR、vision 與文件抽取各自保存 stage status：已成功的結果立即寫入並建立部分搜尋投影，後續只重試失敗階段，不因另一階段暫時失敗而丟掉可用證據。文字與程式碼檔直接抽取；PDF、DOCX、PPTX、XLSX、ODF、RTF、CSV、Markdown、HTML、EPUB 使用 `officeparser` 產生文字與內嵌圖片 OCR。`pdfjs-dist` 與 `qs` 透過 lockfile override 固定至已修補版本，production audit 必須為零漏洞。處理邊界包含下載大小、解壓 bytes、ZIP entry、spreadsheet cell 與 abort timeout；失敗會保留原因並依退避策略重試。
 
 Provider 生成圖片及本地工具排入最終 Discord 回覆的檔案，會在 request 完成時附到最後一則 assistant message，再走相同的 attachment ingestion，而不是另開生成檔專用索引。所有 attachment metadata、OCR、視覺描述與文件 chunks 最後仍落入 `search_documents`／FTS／embedding outbox；attachment worker 只負責把原始檔轉成統一文件。
 

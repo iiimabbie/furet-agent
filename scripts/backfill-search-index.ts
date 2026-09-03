@@ -27,7 +27,7 @@ interface BackfillReport {
     toolEvents: number;
     compactSummaries: number;
     diaries: number;
-    attachmentRecords: number;
+    attachmentRecords?: number;
   };
   indexed: {
     activeSessions: number;
@@ -126,7 +126,7 @@ async function main(): Promise<void> {
       toolEvents: 0,
       compactSummaries: 0,
       diaries: diaries.length,
-      attachmentRecords: (getDb().prepare("SELECT count(*) AS count FROM attachment_records").get() as { count: number }).count,
+      ...(!options.dryRun ? { attachmentRecords: (getDb().prepare("SELECT count(*) AS count FROM attachment_records").get() as { count: number }).count } : {}),
     },
     indexed: { activeSessions: 0, archiveFiles: 0, workspaceSources: 0 },
     failures: [],

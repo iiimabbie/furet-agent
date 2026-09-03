@@ -44,6 +44,12 @@ function migrateVecTable(database: Database.Database): void {
   }
 }
 
+function ensureColumn(database: Database.Database, table: string, column: string, definition: string): void {
+  const columns = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (columns.some(item => item.name === column)) return;
+  database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
 export function getDb(): Database.Database {
   if (db) return db;
 
@@ -262,6 +268,16 @@ export function getDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS attachment_jobs_ready
       ON attachment_jobs(status, next_retry_at, attempts);
+  `);
+
+  ensureColumn(db, "attachment_records", "ocr_status", "TEXT NOT NULL DEFAULT 'pending'");
+  ensureColumn(db, "attachment_records", "vision_status", "TEXT NOT NULL DEFAULT 'pending'");
+  ensureColumn(db, "attachment_records", "extract_status", "TEXT NOT NULL DEFAULT 'pending'");
+  db.exec(`
+    UPDATE attachment_records SET
+      ocr_status = CASE WHEN status = 'complete' THEN 'complete' ELSE ocr_status END,
+      vision_status = CASE WHEN status = 'complete' THEN 'complete' ELSE vision_status END,
+      extract_status = CASE WHEN status = 'complete' THEN 'complete' ELSE extract_status END
   `);
 
   rebuildFtsIfNeeded(db);

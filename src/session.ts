@@ -94,7 +94,8 @@ export class Session {
   append(message: Message): void {
     assignNewMessageSearchId(message);
     this.messages.push(message);
-    this.save();
+    try { this.save(); }
+    catch (error) { this.messages.pop(); throw error; }
     try {
       indexSessionMessage(this.id, message, this.messages.length - 1);
     } catch (err) {
@@ -130,16 +131,20 @@ export class Session {
 
   /** Idempotently rebuild all active message/tool projections for this session. */
   reconcileSearchIndex(): void {
-    reconcileSessionIndex(this.id, this.messages, this.toolHistory);
-    // Reconciliation assigns deterministic IDs to legacy messages; persist them so
-    // future compaction/archive/restart paths keep the same document identity.
+    // Assign deterministic IDs to legacy messages and persist them before creating
+    // rebuildable projections. If durable persistence fails, no ghost search rows
+    // are allowed to represent data that the source session does not contain.
+    this.messages.forEach((message, ordinal) => ensureMessageSearchId(this.id, message, ordinal));
     this.save();
+    reconcileSessionIndex(this.id, this.messages, this.toolHistory);
   }
 
   addUsage(usage: TokenUsage): void {
+    const previous = { ...this.usage };
     this.usage.inputTokens += usage.inputTokens;
     this.usage.outputTokens += usage.outputTokens;
-    this.save();
+    try { this.save(); }
+    catch (error) { this.usage = previous; throw error; }
   }
 
   getUsage(): TokenUsage {
@@ -149,7 +154,8 @@ export class Session {
   /** Append an immutable local-tool execution record without adding it to chat history. */
   recordToolEvent(event: ToolHistoryEvent): void {
     this.toolHistory.push(event);
-    this.save();
+    try { this.save(); }
+    catch (error) { this.toolHistory.pop(); throw error; }
     try {
       indexToolHistoryEvent(this.id, event, this.toolHistory.length - 1);
     } catch (err) {
@@ -166,18 +172,27 @@ export class Session {
   setLastAssistantMsgId(msgId: string): void {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       if (this.messages[i].role === "assistant") {
+        const previous = this.messages[i].msgId;
         this.messages[i].msgId = msgId;
-        this.save();
+        try { this.save(); }
+        catch (error) { this.messages[i].msgId = previous; throw error; }
         return;
       }
     }
   }
 
   clear(): void {
+    const previous = { messages: this.messages, usage: this.usage, toolHistory: this.toolHistory };
     this.messages = [];
     this.usage = { inputTokens: 0, outputTokens: 0 };
     this.toolHistory = [];
-    this.save();
+    try { this.save(); }
+    catch (error) {
+      this.messages = previous.messages;
+      this.usage = previous.usage;
+      this.toolHistory = previous.toolHistory;
+      throw error;
+    }
     logger.info({ sessionId: this.id }, "session cleared");
   }
 
@@ -222,6 +237,7 @@ export class Session {
   compact(summary: string, keepRecent: number): void {
     if (this.messages.length <= keepRecent) return;
     const kept = this.messages.slice(-keepRecent);
+    const previous = this.messages;
     this.messages = [
       {
         role: "user",
@@ -231,7 +247,8 @@ ${summary}`,
       },
       ...kept,
     ];
-    this.save();
+    try { this.save(); }
+    catch (error) { this.messages = previous; throw error; }
     logger.info({ sessionId: this.id, kept: kept.length, totalAfter: this.messages.length }, "session compacted");
   }
 
@@ -317,11 +334,14 @@ ${summary}`,
   }
 
   private save(): void {
+    mkdirSync(SESSIONS_DIR, { recursive: true });
+    const temporary = `${this.filePath}.${process.pid}.tmp`;
     try {
-      mkdirSync(SESSIONS_DIR, { recursive: true });
-      writeFileSync(this.filePath, JSON.stringify({ messages: this.messages, usage: this.usage, toolHistory: this.toolHistory }, null, 2));
+      writeFileSync(temporary, JSON.stringify({ messages: this.messages, usage: this.usage, toolHistory: this.toolHistory }, null, 2));
+      renameSync(temporary, this.filePath);
     } catch (err) {
       logger.error({ err, sessionId: this.id }, "session save failed");
+      throw err;
     }
   }
 }

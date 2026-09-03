@@ -120,7 +120,8 @@ export function ingestSearchDocuments(
     throw new Error("removeMissingForSource requires at least one input to identify the source");
   }
 
-  const find = db.prepare("SELECT rowid, content_hash FROM search_documents WHERE id = ?");
+  const find = db.prepare(`SELECT rowid, source_type, source_id, parent_id, session_id, channel_id,
+    visibility_scope, ordinal, role, text, content_hash, occurred_at FROM search_documents WHERE id = ?`);
   const insert = db.prepare(`
     INSERT INTO search_documents (
       id, source_type, source_id, parent_id, session_id, channel_id,
@@ -148,10 +149,17 @@ export function ingestSearchDocuments(
       updated_at = datetime('now')
   `);
   const removeEmbeddingMeta = db.prepare("DELETE FROM search_document_embeddings WHERE document_id = ?");
+  const updateMetadata = db.prepare(`
+    UPDATE search_documents SET source_type=?, source_id=?, parent_id=?, session_id=?, channel_id=?,
+      visibility_scope=?, ordinal=?, role=?, occurred_at=?, updated_at=datetime('now') WHERE id=?
+  `);
 
   db.transaction(() => {
     for (const doc of normalized) {
-      const existing = find.get(doc.id) as { rowid: number; content_hash: string } | undefined;
+      const existing = find.get(doc.id) as ({ rowid: number; source_type: string; source_id: string;
+        parent_id: string | null; session_id: string | null; channel_id: string | null;
+        visibility_scope: string; ordinal: number | null; role: string | null; text: string;
+        content_hash: string; occurred_at: string | null } | undefined);
       if (!existing) {
         const rowid = Number(insert.run(
           doc.id, doc.sourceType, doc.sourceId, doc.parentId ?? null,
@@ -166,7 +174,27 @@ export function ingestSearchDocuments(
       }
 
       if (existing.content_hash === doc.contentHash) {
-        result.unchanged++;
+        const metadataChanged = existing.source_type !== doc.sourceType
+          || existing.source_id !== doc.sourceId
+          || existing.parent_id !== (doc.parentId ?? null)
+          || existing.session_id !== (doc.sessionId ?? null)
+          || existing.channel_id !== (doc.channelId ?? null)
+          || existing.visibility_scope !== doc.visibilityScope
+          || existing.ordinal !== (doc.ordinal ?? null)
+          || existing.role !== (doc.role ?? null)
+          || existing.occurred_at !== (doc.occurredAt ?? null);
+        if (!metadataChanged) {
+          result.unchanged++;
+          continue;
+        }
+        updateMetadata.run(
+          doc.sourceType, doc.sourceId, doc.parentId ?? null, doc.sessionId ?? null,
+          doc.channelId ?? null, doc.visibilityScope, doc.ordinal ?? null,
+          doc.role ?? null, doc.occurredAt ?? null, doc.id,
+        );
+        db.prepare("DELETE FROM search_documents_fts WHERE rowid = ?").run(existing.rowid);
+        insertFts.run(existing.rowid, toSearchTokens(doc.text), doc.sourceType, doc.sourceId, doc.sessionId ?? "", doc.visibilityScope);
+        result.updated++;
         continue;
       }
 
@@ -441,6 +469,7 @@ export interface UnifiedSearchOptions {
   visibility: SearchVisibilityContext;
   includeContext?: boolean;
   debug?: boolean;
+  minVectorScore?: number;
 }
 
 export interface UnifiedSearchResult {
@@ -593,6 +622,7 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
   const normalizedQuery = normalizeText(query);
   const limit = Math.min(Math.max(Math.floor(options.limit ?? 10), 1), 100);
   const candidateLimit = Math.min(Math.max(Math.floor(options.candidateLimit ?? Math.max(60, limit * 8)), limit), 500);
+  const minVectorScore = Math.min(Math.max(options.minVectorScore ?? 0.55, -1), 1);
   const profile = options.profile ?? "all";
   const db = getDb();
   const byId = new Map<string, {
@@ -618,16 +648,24 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
     .join(" OR ");
   if (ftsQuery) {
     try {
-      const rows = db.prepare(`
-        SELECT d.rowid, d.id, d.source_type, d.source_id, d.parent_id, d.session_id,
-          d.channel_id, d.visibility_scope, d.ordinal, d.role, d.text, d.content_hash,
-          d.occurred_at, bm25(search_documents_fts) AS lexical_score
-        FROM search_documents_fts f
-        JOIN search_documents d ON d.rowid = f.rowid
-        WHERE search_documents_fts MATCH ?
-        ORDER BY lexical_score
-        LIMIT ?
-      `).all(ftsQuery, candidateLimit) as Array<SearchRow & { lexical_score: number }>;
+      const totalFts = (db.prepare(`SELECT count(*) AS c FROM search_documents_fts WHERE search_documents_fts MATCH ?`).get(ftsQuery) as { c: number }).c;
+      let fetchLimit = Math.min(candidateLimit, totalFts);
+      let rows: Array<SearchRow & { lexical_score: number }> = [];
+      for (;;) {
+        rows = db.prepare(`
+          SELECT d.rowid, d.id, d.source_type, d.source_id, d.parent_id, d.session_id,
+            d.channel_id, d.visibility_scope, d.ordinal, d.role, d.text, d.content_hash,
+            d.occurred_at, bm25(search_documents_fts) AS lexical_score
+          FROM search_documents_fts f
+          JOIN search_documents d ON d.rowid = f.rowid
+          WHERE search_documents_fts MATCH ?
+          ORDER BY lexical_score
+          LIMIT ?
+        `).all(ftsQuery, fetchLimit) as Array<SearchRow & { lexical_score: number }>;
+        const eligible = rows.filter(row => passesSearchFilters(row, options)).length;
+        if (eligible >= limit || fetchLimit >= totalFts) break;
+        fetchLimit = Math.min(totalFts, Math.max(fetchLimit + 1, fetchLimit * 2));
+      }
       ftsCandidates = rows.length;
       let rank = 0;
       for (const row of rows) {
@@ -652,22 +690,31 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
         embeddingAvailable = true;
         const vector = await embed(redactSecrets(normalizedQuery));
         const blob = vectorToBlob(vector);
-        const k = Math.min(candidateLimit, count);
-        const rows = db.prepare(`
-          SELECT d.rowid, d.id, d.source_type, d.source_id, d.parent_id, d.session_id,
-            d.channel_id, d.visibility_scope, d.ordinal, d.role, d.text, d.content_hash,
-            d.occurred_at, v.distance
-          FROM ${SEARCH_DOCUMENT_VEC_TABLE} v
-          JOIN search_documents d ON d.rowid = v.rowid
-          WHERE v.embedding MATCH ? AND k = ?
-        `).all(blob, k) as Array<SearchRow & { distance: number }>;
+        // sqlite-vec applies k before joined-table visibility filters. Increase k until
+        // enough eligible rows survive (or the table is exhausted), preventing private
+        // nearest neighbours from starving later visible results.
+        let k = Math.min(candidateLimit, count);
+        let rows: Array<SearchRow & { distance: number }> = [];
+        for (;;) {
+          rows = db.prepare(`
+            SELECT d.rowid, d.id, d.source_type, d.source_id, d.parent_id, d.session_id,
+              d.channel_id, d.visibility_scope, d.ordinal, d.role, d.text, d.content_hash,
+              d.occurred_at, v.distance
+            FROM ${SEARCH_DOCUMENT_VEC_TABLE} v
+            JOIN search_documents d ON d.rowid = v.rowid
+            WHERE v.embedding MATCH ? AND k = ?
+          `).all(blob, k) as Array<SearchRow & { distance: number }>;
+          const eligible = rows.filter(row => passesSearchFilters(row, options) && (1 - row.distance) >= minVectorScore).length;
+          if (eligible >= limit || k >= count) break;
+          k = Math.min(count, Math.max(k + 1, k * 2));
+        }
         vectorCandidates = rows.length;
         let rank = 0;
         for (const row of rows) {
           if (!passesSearchFilters(row, options)) { filteredCandidates++; continue; }
           rank++;
           const vectorScore = 1 - row.distance;
-          if (vectorScore <= 0) continue;
+          if (vectorScore < minVectorScore) continue;
           const weighted = (1 / (60 + rank)) * sourceWeight(row.source_type, profile);
           const current = byId.get(row.id) ?? { row, score: 0, matchedBy: new Set<"vector" | "fts">() };
           current.score += weighted;
