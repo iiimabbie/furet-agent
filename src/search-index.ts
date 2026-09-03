@@ -105,7 +105,10 @@ export function ingestSearchDocuments(
   const db = getDb();
   const result: IngestResult = { inserted: 0, updated: 0, unchanged: 0, removed: 0, skipped: 0 };
   const normalized = inputs.flatMap(input => {
-    const text = normalizeText(input.text);
+    // Search projections are not the durable source of truth. Keep credentials and
+    // signed URLs out of FTS, recall output, and external embedding payloads; the
+    // original session/tool record remains available under its existing permissions.
+    const text = normalizeText(redactSecrets(input.text));
     if (!input.id || !input.sourceType || !input.sourceId || !input.visibilityScope || !text) {
       result.skipped++;
       return [];
@@ -298,17 +301,20 @@ function retryAt(attempts: number): string {
 export async function processEmbeddingJobs(limit = 10): Promise<EmbeddingWorkerResult> {
   const apiKey = process.env.GOOGLE_API_KEY ?? "";
   const db = getDb();
-  if (!apiKey) {
-    const remaining = (db.prepare("SELECT count(*) AS c FROM embedding_jobs WHERE status IN ('pending', 'failed')").get() as { c: number }).c;
-    return { completed: 0, failed: 0, remaining };
-  }
 
-  // A previous process may have died after claiming a job. Make it retryable.
+  // A previous process may have died after claiming a job. Recover it even when
+  // the API key is currently unavailable, otherwise it disappears from the ready
+  // count and can remain stuck in `processing` forever.
   db.prepare(`
     UPDATE embedding_jobs SET status = 'failed', next_retry_at = datetime('now'),
       last_error = COALESCE(last_error, 'worker interrupted'), updated_at = datetime('now')
     WHERE status = 'processing' AND updated_at < datetime('now', '-10 minutes')
   `).run();
+
+  if (!apiKey) {
+    const remaining = (db.prepare("SELECT count(*) AS c FROM embedding_jobs WHERE status IN ('pending', 'processing', 'failed')").get() as { c: number }).c;
+    return { completed: 0, failed: 0, remaining };
+  }
 
   let completed = 0;
   let failed = 0;
@@ -644,7 +650,7 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
       const count = (db.prepare(`SELECT count(*) AS c FROM ${SEARCH_DOCUMENT_VEC_TABLE}`).get() as { c: number }).c;
       if (count > 0) {
         embeddingAvailable = true;
-        const vector = await embed(normalizedQuery);
+        const vector = await embed(redactSecrets(normalizedQuery));
         const blob = vectorToBlob(vector);
         const k = Math.min(candidateLimit, count);
         const rows = db.prepare(`

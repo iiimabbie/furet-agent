@@ -38,7 +38,7 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
     │   ├── tool_catalog # 探索／代理入口，exposure 開啟時走它取用未直接暴露的工具
     │   ├── bash / read_file / write_file / get_weather
     │   ├── image_gen     # GPT-only，Responses API 生圖／參考圖 edit 並附檔
-    │   ├── memory_*      # 記憶管理（save / search / list / add / replace / remove）
+    │   ├── diary_note / memory_* # 日記補註與記憶管理（search / list / add / replace / remove）
     │   ├── cron_*        # 排程管理（create / list / delete / toggle / update）
     │   ├── reminder_*    # 提醒管理（create / list / delete）
     │   ├── discord_*     # Discord 操作（fetch / send / buttons / react / pin / thread / forum / edit / delete）
@@ -85,7 +85,8 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
 
 
 1. 組 system prompt（`prompt.ts` 的 `buildSystemPrompt()`）
-2. 自動記憶召回：用使用者訊息做語意搜尋（`searchVectors`），結果注入 system prompt。
+2. 自動記憶召回：用使用者訊息呼叫 permission-aware `searchUnified()`，以同一套 FTS + vector
+   索引跨對話、日記、人物、工具證據與附件召回，再把結果注入 system prompt。
    `prompt` 為 null 時（Discord 路徑）改取 session 最後一則 user message，並剝掉
    `[msg:id 時間] <@id>(帳號名｜暱稱):` 這類中繼資料前綴，避免稀釋語意訊號
 3. 從 session 載入歷史 messages（標準 multi-turn 格式），用 `trimToTokenBudget()` 控制 context 上限，
@@ -127,7 +128,7 @@ thinking block 的 `signature` 不是 `thinking` 欄位的校驗碼 —— **它
 - 完整文字 result；
 - 成功／失敗狀態。
 
-這份完整紀錄存於 active session JSON，也會跟著 session archive／compact archive 保存，是稽核與後續查證的資料來源；不因為 context 控制而截斷。每筆 tool call、完整 result 切片與 bounded evidence summary 亦透過統一搜尋 ingestion pipeline 建立可重建的 FTS／embedding projection；送往外部 embedding provider 前會先遮罩 secrets。
+這份完整紀錄存於 active session JSON，也會跟著 session archive／compact archive 保存，是稽核與後續查證的資料來源；不因為 context 控制而截斷。每筆 tool call、完整 result 切片與 bounded evidence summary 亦透過統一搜尋 ingestion pipeline 建立可重建的 FTS／embedding projection。搜尋投影本身先遮罩 secrets，因此 FTS、召回輸出與外部 embedding payload 都不含 credential；未遮罩的原始證據只留在既有權限保護的 session source of truth。
 
 正常下一輪不會把完整 stdout 或每一筆工具操作塞回 messages。`renderToolHistory()` 只把**最近 8 筆**投影到 system prompt，每筆 input 最多 180 字、outcome 最多 280 字，並標示為 untrusted data。模型因此知道「做過什麼、成功或失敗、結果概略」，但不會每輪重付長輸出的 token；需要細節時，目前仍可從 session JSON／archive 查閱。
 
@@ -153,8 +154,8 @@ cron / reminder / journal 跟使用者對話是並行跑的，trigger 與待送�
 放在模組級全域變數會互相覆蓋：cron 觸發時把 trigger 蓋成 `"cron"`，正在執行 tool call 的
 非 owner 請求就繞過了 `registry.ts` 的 owner-only 檢查；附件也會串到別人的回覆去。
 
-- `runWithContext(trigger, fn)` — `ask()` 用它包住整個執行流程
-- `getTrigger()` / `setTrigger()` — 權限判定用的 trigger source
+- `runWithContext(trigger, userId, model, fn, { sessionId, channelId })` — `ask()` 用它包住整個執行流程，並把搜尋權限所需的 request identity 綁在同一個 ALS scope
+- `getTrigger()` / `setTrigger()` / `getUserId()` / `getSessionId()` / `getChannelId()` — 工具權限與搜尋 visibility 判定用的 request identity
 - `queueAttachment()` / `drainAttachments()` — 工具排隊的檔案附件
 - ALS 範圍外呼叫時退回 `{ trigger: "unknown", pendingFiles: [] }`
 
@@ -524,7 +525,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 | Plugins | 背景服務接流量前先 `loadPlugins()`；Discord 啟用時待 client ready 後才 `startPlugins()`，再註冊含外掛在內的 slash commands。Discord 停用或登入失敗時仍啟動非 Discord 能力，message transport 會明確拒絕。shutdown 時 `stopPlugins()`（見 Plugin 系統） |
 | PID file | `furet.pid`，啟動時殺掉舊進程確保單實例 |
 
-日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日記憶檔的 diary_note 補註只當輔助。transcript 是完整的對話紀錄，diary_note 僅補充 transcript 無法保留的觀察（情緒、反省、跨日脈絡），不重複記錄事件本身。
+日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日檔的 diary_note 補註只當輔助。transcript 是完整的對話紀錄；diary_note 僅補充明確背景、有證據的當下反思、跨日關聯與附件／工具脈絡，不重複記錄事件，也不把未確認的情緒推測寫成事實。
 
 `diary_note` 是補充性的日記註記，不是事件記錄，因此不能成為日記骨架。它只保存 transcript 無法保留的明確背景、有證據的當下反思、跨日關聯，以及附件或工具結果的必要脈絡；不得把推測的心理狀態寫成事實。Daily Journal prompt 以 transcript 為唯一事實來源，找出整天的主線，把相關的起因、行動、反應與結果融合成有脈絡的第一人稱段落；diary_note 只作為輔助色彩織入。正文以連續散文為主，只有真正的清單才用 bullet；實作命令、檔名與中間步驟只保留足以理解事件意義的部分，避免成品退化成 changelog、工作報告或分類後的流水帳。這項規則必須同時維護 runtime `workspace/JOURNAL.md` 與 `templates/JOURNAL.md`。部署時使用 `scripts/migrate-diary-note.ts` 做精確、可重跑的段落遷移與舊名稱掃描，不得整份 template 覆蓋客製 workspace。
 
@@ -599,8 +600,8 @@ exposure 合法、`match` 至少有 keyword/alias/signal。
 | `read_file` | 讀檔 |
 | `write_file` | 寫檔 |
 | `get_weather` | OpenWeatherMap 天氣查詢；先以 Direct Geocoding 解析地點，再用經緯度取得目前天氣與預報，並為容易誤判的地名提供明確別名 |
-| `diary_note` | 追加日記補註到當日檔案 + SQLite 向量；僅用於 transcript 無法保留的觀察，不做事件記錄 |
-| `memory_search` | 語意搜尋 + 關鍵字搜尋 |
+| `diary_note` | 追加 transcript 無法保留的日記補註，並透過統一搜尋索引建立可重建 projection；不做事件流水帳 |
+| `memory_search` | Permission-aware 統一 hybrid search；偏重人物、長期記憶、日記與重要對話證據 |
 | `memory_list` | 列出所有記憶檔 |
 | `memory_add` | 在 MEMORY.md 新增條目（有字數上限） |
 | `memory_replace` | 用 substring match 更新 MEMORY.md |
@@ -625,7 +626,7 @@ exposure 合法、`match` 至少有 keyword/alias/signal。
 | `google_drive_*` | Drive 搜尋/讀取/上傳 |
 | `google_tasks_*` | Tasks 列表/建立/完成/刪除 |
 | `soul_guardian_*` | 核心檔案保護（status/check/approve/restore/history） |
-| `session_search` | FTS5 全文搜尋歸檔的歷史對話 |
+| `session_search` | 與 memory_search 共用 `searchUnified()`，但限定／偏重對話、工具、compact summary 與附件來源 |
 | `sessions_by_date` | 依日期（YYYY-MM-DD）撈當天所有歸檔 session 的原始內容，供除錯／稽核 |
 | `journal_transcript_by_date` | 依日期產生移除工具與 harness 雜訊的對話投影，供日記重建 |
 | `skill_install/uninstall/list` | 技能管理 |
@@ -807,7 +808,7 @@ interface PluginRuntimeContext {
 |----|------|------|
 | Owner 檔 | `workspace/OWNER.md` | owner 個人資料的唯一權威：稱呼、身分、帳號、住處、工作、關係、權限；變更時原地更新 |
 | 長期記憶 | `workspace/MEMORY.md` | 非人物檔案的規則、偏好、流程、持續計畫與世界事實；有字數上限（config `memoryCharLimit`），滿了需整合 |
-| 每日記憶 | `workspace/memory/yyyy-MM-dd.md` | 當日事件、對話與修正紀錄；是日記來源，不代替其他權威檔 |
+| 每日檔 | `workspace/memory/yyyy-MM-dd.md` | 日記成品與少量 transcript 外補註；完整事件／對話以 session transcript 為原始來源，不代替其他權威檔 |
 | 人物檔 | `workspace/PEOPLE.md` | owner 以外人物的權威資料（名字、Discord ID、關係、稱呼與權限） |
 
 ### 儲存層
@@ -836,30 +837,32 @@ interface PluginRuntimeContext {
 
 ### 記憶工具
 
-- `diary_note`：追加日記補註到當日檔案 + 存 SQLite 向量；僅用於 transcript 無法保留的觀察（情緒、反省、跨日脈絡），不做事件記錄
-- `memory_search`：語意搜尋（sqlite-vec KNN）+ 全文搜尋（FTS5）
-- `memory_add/replace/remove`：操作非人物檔案的長期脈絡 MEMORY.md，同時重建 MEMORY.md 的向量
-- `session_search`：混合搜尋歸檔歷史；FTS5 查所有原始訊息的字面內容，語意搜尋查 compact continuation summary
-- 自動召回：每次對話時用 user message 做語意搜尋，結果注入 system prompt
+- `diary_note`：追加 transcript 無法保存的明確背景、有證據反思、跨日關聯或附件／工具脈絡；寫入每日檔後立即接入統一索引，不做事件記錄
+- `memory_search`：呼叫 permission-aware `searchUnified()`，偏重 durable memory、people、diary 與重要 conversation evidence
+- `memory_add/replace/remove`：操作非人物檔案的長期脈絡 MEMORY.md，並透過 workspace adapter 重建統一搜尋 documents
+- `session_search`：與 memory_search 共用同一個 hybrid search，只調整來源 filter、ranking profile 與輸出格式
+- 自動召回：每次對話以 request identity 先做 visibility filter，再從統一索引召回；trace 會記錄命中文件、來源與分數
 
-### 向量維護
+### 搜尋投影維護
 
-- `write_file` 覆寫 PEOPLE.md 或日記檔時：刪除舊向量 → 拆段重建
-- `memory_replace` / `memory_remove`：刪除 MEMORY.md 所有舊向量 → 整份重建
-- Migration 腳本：`npx tsx scripts/migrate-vectors.ts` 把現有資料灌進向量庫
+- Session message、conversation window、tool evidence 與附件 reference 在 durable persistence 後立即建立／更新統一 documents。
+- compact、archive、`/new`、startup restore 只呼叫同一個冪等 reconciliation，補齊缺漏而不另做一套 embedding。
+- PEOPLE.md、MEMORY.md、OWNER.md 與正式日記由 workspace source adapter 以 remove-missing policy 重建；刪除來源內容會同步移除失效 projection。
+- `scripts/backfill-search-index.ts` 可 dry-run、冪等回填歷史來源、修復 orphan FTS/vector rows，並輸出來源與 job 狀態報告。
+- `scripts/migrate-diary-note.ts` 只在部署時精確遷移 runtime AGENT.md/JOURNAL.md；不整份覆蓋客製 workspace。
 
 ### 統一搜尋 ingestion 與 embedding outbox
 
 `src/search-index.ts` 是新搜尋投影的唯一寫入層：
 
 1. source adapter 先產生 `SearchDocumentInput`。
-2. `ingestSearchDocuments()` 正規化文字、計算 deterministic ID／SHA-256 content hash，並在同一個 SQLite transaction 內 upsert document、FTS row 與 embedding job。
+2. `ingestSearchDocuments()` 正規化文字並先遮罩 secrets，再計算 deterministic ID／SHA-256 content hash，並在同一個 SQLite transaction 內 upsert document、FTS row 與 embedding job。未遮罩原文仍只存在 durable source。
 3. 寫入層只依 identity/hash 去重，不用 cosine 相似度刪資料；不同時間的相似事件都會保留。
 4. `processEmbeddingJobs()` 由 gateway 的單一背景 worker 分批處理。程序中斷後 pending/failed job 仍在 SQLite，可於重啟後續跑；卡住的 processing job 超時後會回到 retry 流程。
-5. 外部 embedding payload 先經 secret redaction；本機 durable source 與權限 metadata 不因遮罩而失去可稽核性。
+5. FTS／recall 使用的 searchable projection 與外部 embedding payload 都使用遮罩後文字；本機 durable source 與權限 metadata 不因遮罩而失去可稽核性。查詢本身在送 embedding provider 前也會遮罩可能的 credential。
 6. vector rowid 與 FTS rowid 都使用 `search_documents.rowid`，deterministic text ID 則放在 unique `id`；這避開 sqlite-vec 只接受 integer rowid 的限制，同時保持 reconciliation 冪等。
 
-目前 migration 採新舊索引並行：legacy memory/session tables 仍保留，直到 unified hybrid search、權限 filter、歷史回填與 rollback 驗證完成才移除。
+部署觀察期採新舊資料表並行：讀取入口已統一到 hybrid search，但 legacy memory/session tables 暫不刪除，作為資料比對與程式 rollback 的安全網。回滾時還原上一版程式與 runtime AGENT.md/JOURNAL.md 備份；新表是可重建 projection，不影響 session JSON、archive、workspace 文件或附件原檔。
 
 ### 附件索引與非同步分析
 
@@ -1032,9 +1035,7 @@ daily memory，skill 也只給路徑不給內容（`prompt.ts` 的 `loadSkills`�
 比對前先 `resolve()` 正規化 `..`，再 `realpathSync()` 解 symlink——只比字面
 路徑的話，一條指向外部的 symlink 就能繞過整道邊界。
 
-已知不足：這擋得住直接讀檔，擋不住 `memory_search` 之類的語意搜尋撈出日記
-內容。目前刻意不擋（記錄的都是公開頻道對話）。真正的隱私邊界要另外決定
-`memory_search` / `session_search` 對非 owner 的行為。
+`memory_search`／`session_search` 另有獨立的 visibility boundary：搜尋候選在 ranking 前依 request context 的 owner、user 與 channel identity 過濾；`owner_private` 不會對非 owner 回傳，`channel:<id>`／`user:<id>` 只對相符 caller 開放。Session、tool、附件與 workspace 私人來源目前預設採保守的 `owner_private`。
 
 另一個結構性缺口：非 owner 的訊息會進 session（`bot.ts` 的 messageCreate），
 owner 稍後在同頻道觸發時 trigger 是 `discord-owner`、權限全開，而那段內容
@@ -1045,6 +1046,6 @@ owner 稍後在同頻道觸發時 trigger 是 `discord-owner`、權限全開，�
 ### Bash Sandbox
 非 owner 的 bash 指令跑在限制環境（timeout + 禁止寫入敏感路徑 + 禁止讀 .env）。目前 bash 完全開放給所有人。
 
-### Unified Search 後續切換
+### Unified Search 部署與後續清理
 
-統一 document/FTS/vector/outbox 與 active session ingestion 已建立；後續仍需完成 attachment OCR／視覺描述／文件抽取、workspace source adapters、hybrid ranking、visibility filter、auto recall 切換與歷史回填。切換前 legacy `memory_vectors`、`session_fts` 與 compact summary tables 保持可用；正式驗證與觀察完成後才移除。
+統一 document/FTS/vector/outbox、active session、tool history、附件 OCR／視覺描述／文件抽取、workspace adapters、hybrid ranking、visibility filter、auto recall 與歷史回填均已實作。正式部署必須先 build，再對 runtime workspace 執行 diary-note migration dry-run／apply、跑 backfill 與權限／recovery smoke test，全部通過後才重啟。觀察期內保留 legacy `memory_vectors`、`session_fts` 與 compact summary tables；確認資料量、搜尋品質、job failure 與權限邊界穩定後，另開清理變更移除舊表與舊函式。
