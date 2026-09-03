@@ -3,6 +3,7 @@ import { logger } from "../logger.js";
 import { loadConfig } from "../config.js";
 export { setTrigger, getTrigger } from "./context.js";
 import { getTrigger, getUserId, getRequestModel } from "./context.js";
+import { isTrustedForOwnerActions } from "./authz.js";
 import type { ToolRegistration, ExposureLevel } from "./metadata.js";
 import {
   GROUP_LABELS, isGptModel, normalizeForMatch, detectSignals, matchTools,
@@ -441,9 +442,13 @@ function isOwnerOnly(name: string): boolean {
 }
 
 export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
-  if (isOwnerOnly(name) && getTrigger() === "discord-other") {
+  // Fail-closed owner gate: an owner-only tool is allowed ONLY for triggers explicitly
+  // trusted for owner actions (owner identity + owner-configured system automation).
+  // `discord-other`, `unknown`, and any future trigger are denied by absence, not by
+  // being singled out — so a new TriggerSource cannot silently inherit owner power.
+  if (isOwnerOnly(name) && !isTrustedForOwnerActions(getTrigger())) {
     logger.warn({ tool: name, trigger: getTrigger() }, "tool permission denied");
-    return "⚠️ PERMISSION DENIED: This tool is owner-only. You are responding to a non-owner user. Do NOT attempt to use this tool again for this request.";
+    return "⚠️ PERMISSION DENIED: This tool is owner-only. You are not running under a trusted owner context. Do NOT attempt to use this tool again for this request.";
   }
   // Model-capability gate on the UNIFIED execution path. A tool's modelPredicate is a
   // real capability guard, not just schema visibility: without this check, tool_catalog

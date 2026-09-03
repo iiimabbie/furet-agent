@@ -32,8 +32,9 @@ interface RequestContext {
 const storage = new AsyncLocalStorage<RequestContext>();
 
 /**
- * 在 ALS 範圍外呼叫時的退路（例如 CLI 直接叫工具）。
- * 權限預設保守：unknown 不等於 discord-other，維持放行。
+ * 在 ALS 範圍外呼叫時的退路（例如 CLI 直接叫工具、或 ALS scope 遺失）。
+ * trigger 一律為 "unknown"，而授權模型（tools/authz.ts）把 "unknown" 視為不受信任：
+ * 不通過 owner-only 工具閘、套用檔案讀取邊界、且不給 owner 搜尋可見度。fail-closed。
  */
 const fallback: RequestContext = { trigger: "unknown", pendingFiles: [] };
 

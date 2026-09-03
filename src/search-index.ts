@@ -3,10 +3,23 @@ import { getDb, SEARCH_DOCUMENT_VEC_TABLE } from "./db.js";
 import { embed } from "./embedding.js";
 import { logger } from "./logger.js";
 import { toSearchTokens } from "./utils/cjk.js";
+import {
+  buildFilterPlan,
+  planToSqlFilters,
+  rowPassesPlan,
+  type FilterPlan,
+} from "./utils/search-filter-plan.js";
 
 export const SEARCH_EMBED_MODEL = "gemini-embedding-001";
 export const SEARCH_EMBED_DIMENSIONS = 3072;
 const MAX_EMBED_ATTEMPTS = 5;
+/**
+ * Conservative initial ceiling on cumulative nearest-neighbour rows scanned by the
+ * progressive-k vector pass. It bounds worst-case local work while still allowing growth
+ * past the first visibility cliff; deployments can tune it from local benchmark/telemetry
+ * via UnifiedSearchOptions.vectorScanBudget.
+ */
+const DEFAULT_VECTOR_SCAN_BUDGET = 2_000;
 
 export type SearchSourceType =
   | "session_message"
@@ -117,8 +130,19 @@ export function ingestSearchDocuments(
     return [{ ...input, text, contentHash: sha256(text) }];
   });
 
-  if (options.removeMissingForSource && normalized.length === 0 && inputs.length === 0) {
-    throw new Error("removeMissingForSource requires at least one input to identify the source");
+  let removalSource: { sourceType: SearchSourceType; sourceId: string } | undefined;
+  if (options.removeMissingForSource) {
+    if (inputs.length === 0) {
+      throw new Error("removeMissingForSource requires at least one input to identify the source");
+    }
+    const first = inputs[0];
+    if (!first.sourceType || !first.sourceId) {
+      throw new Error("removeMissingForSource requires sourceType and sourceId on every input");
+    }
+    if (inputs.some(doc => doc.sourceType !== first.sourceType || doc.sourceId !== first.sourceId)) {
+      throw new Error("removeMissingForSource inputs must share sourceType and sourceId");
+    }
+    removalSource = { sourceType: first.sourceType, sourceId: first.sourceId };
   }
 
   const find = db.prepare(`SELECT rowid, source_type, source_id, parent_id, session_id, channel_id,
@@ -211,15 +235,11 @@ export function ingestSearchDocuments(
       result.updated++;
     }
 
-    if (options.removeMissingForSource && normalized.length > 0) {
-      const first = normalized[0];
-      if (normalized.some(doc => doc.sourceType !== first.sourceType || doc.sourceId !== first.sourceId)) {
-        throw new Error("removeMissingForSource inputs must share sourceType and sourceId");
-      }
+    if (removalSource) {
       const keep = new Set(normalized.map(doc => doc.id));
       const existing = db.prepare(
         "SELECT rowid, id FROM search_documents WHERE source_type = ? AND source_id = ?",
-      ).all(first.sourceType, first.sourceId) as Array<{ rowid: number; id: string }>;
+      ).all(removalSource.sourceType, removalSource.sourceId) as Array<{ rowid: number; id: string }>;
       const stale = existing.filter(row => !keep.has(row.id));
       if (stale.length > 0) {
         deleteRowsByRowids(stale.map(row => row.rowid));
@@ -480,6 +500,14 @@ export interface UnifiedSearchOptions {
   includeContext?: boolean;
   debug?: boolean;
   minVectorScore?: number;
+  /**
+   * Upper bound on how many vector rows sqlite-vec may scan across the progressive-k
+   * expansion for one query. Caps worst-case work on large tables; when hit, the
+   * vector pass returns whatever eligible rows it found and marks the result
+   * `vectorTruncated` instead of expanding k unboundedly. Defaults to a conservative
+   * value chosen from the large-fixture benchmark.
+   */
+  vectorScanBudget?: number;
 }
 
 export interface UnifiedSearchResult {
@@ -509,6 +537,10 @@ export interface UnifiedSearchResponse {
     ftsCandidates: number;
     groupedCandidates: number;
     embeddingAvailable: boolean;
+    vectorIterations: number;
+    vectorFinalK: number;
+    vectorScanned: number;
+    vectorTruncated: boolean;
   };
 }
 
@@ -536,19 +568,23 @@ const DURABLE_SOURCE_TYPES = new Set<SearchSourceType>([
   "diary", "diary_note", "people", "memory", "owner",
 ]);
 
-function canViewScope(scope: string, visibility: SearchVisibilityContext): boolean {
-  if (visibility.isOwner) return true;
-  if (scope === "public") return true;
-  if (visibility.channelId && scope === `channel:${visibility.channelId}`) return true;
-  if (visibility.userId && scope === `user:${visibility.userId}`) return true;
-  return false;
-}
-
-function sourceAllowed(sourceType: SearchSourceType, options: UnifiedSearchOptions): boolean {
-  if (options.sourceTypes && !options.sourceTypes.includes(sourceType)) return false;
-  if (options.excludeSourceTypes?.includes(sourceType)) return false;
-  if (options.profile === "session" && !SESSION_SOURCE_TYPES.has(sourceType)) return false;
-  return true;
+/**
+ * Compile the one shared filter plan for this query. Both the SQL push-down and the
+ * in-memory (context) predicate are derived from it, so visibility/source/exclusion
+ * policy cannot drift between the two paths. See utils/search-filter-plan.ts.
+ */
+function planForOptions(options: UnifiedSearchOptions): FilterPlan {
+  return buildFilterPlan({
+    visibility: options.visibility,
+    sourceTypes: options.sourceTypes,
+    excludeSourceTypes: options.excludeSourceTypes,
+    excludeSourceIds: options.excludeSourceIds,
+    excludeSessionIds: options.excludeSessionIds,
+    excludeDocumentIds: options.excludeDocumentIds,
+    excludeRecentDays: options.excludeRecentDays,
+    profileSessionTypes: SESSION_SOURCE_TYPES,
+    restrictToProfileSession: options.profile === "session",
+  });
 }
 
 function sourceWeight(sourceType: SearchSourceType, profile: UnifiedSearchProfile): number {
@@ -568,76 +604,6 @@ function sourceWeight(sourceType: SearchSourceType, profile: UnifiedSearchProfil
   return DURABLE_SOURCE_TYPES.has(sourceType) ? 1.1 : 1.0;
 }
 
-function dateFileCutoff(excludeRecentDays?: number): string | undefined {
-  if (!excludeRecentDays || excludeRecentDays <= 0) return undefined;
-  const date = new Date();
-  date.setDate(date.getDate() - excludeRecentDays);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function passesSearchFilters(row: SearchRow, options: UnifiedSearchOptions): boolean {
-  if (!canViewScope(row.visibility_scope, options.visibility)) return false;
-  if (!sourceAllowed(row.source_type, options)) return false;
-  if (options.excludeSourceIds?.includes(row.source_id)) return false;
-  if (row.session_id && options.excludeSessionIds?.includes(row.session_id)) return false;
-  if (options.excludeDocumentIds?.includes(row.id)) return false;
-  const cutoff = dateFileCutoff(options.excludeRecentDays);
-  if (cutoff && /^\d{4}-\d{2}-\d{2}\.md$/.test(row.source_id) && row.source_id.slice(0, 10) >= cutoff) return false;
-  return true;
-}
-
-function searchSqlFilters(options: UnifiedSearchOptions, alias = "d"): { sql: string; params: unknown[] } {
-  const clauses: string[] = [];
-  const params: unknown[] = [];
-  const column = (name: string) => `${alias}.${name}`;
-  const placeholders = (values: unknown[]) => values.map(() => "?").join(", ");
-
-  if (!options.visibility.isOwner) {
-    const scopes = ["public"];
-    if (options.visibility.channelId) scopes.push(`channel:${options.visibility.channelId}`);
-    if (options.visibility.userId) scopes.push(`user:${options.visibility.userId}`);
-    clauses.push(`${column("visibility_scope")} IN (${placeholders(scopes)})`);
-    params.push(...scopes);
-  }
-
-  let allowedSourceTypes = options.sourceTypes ? [...options.sourceTypes] : undefined;
-  if (options.profile === "session") {
-    allowedSourceTypes = (allowedSourceTypes ?? [...SESSION_SOURCE_TYPES])
-      .filter(sourceType => SESSION_SOURCE_TYPES.has(sourceType));
-  }
-  if (allowedSourceTypes) {
-    if (allowedSourceTypes.length === 0) clauses.push("0 = 1");
-    else {
-      clauses.push(`${column("source_type")} IN (${placeholders(allowedSourceTypes)})`);
-      params.push(...allowedSourceTypes);
-    }
-  }
-  if (options.excludeSourceTypes?.length) {
-    clauses.push(`${column("source_type")} NOT IN (${placeholders(options.excludeSourceTypes)})`);
-    params.push(...options.excludeSourceTypes);
-  }
-  if (options.excludeSourceIds?.length) {
-    clauses.push(`${column("source_id")} NOT IN (${placeholders(options.excludeSourceIds)})`);
-    params.push(...options.excludeSourceIds);
-  }
-  if (options.excludeSessionIds?.length) {
-    clauses.push(`(${column("session_id")} IS NULL OR ${column("session_id")} NOT IN (${placeholders(options.excludeSessionIds)}))`);
-    params.push(...options.excludeSessionIds);
-  }
-  if (options.excludeDocumentIds?.length) {
-    clauses.push(`${column("id")} NOT IN (${placeholders(options.excludeDocumentIds)})`);
-    params.push(...options.excludeDocumentIds);
-  }
-  const cutoff = dateFileCutoff(options.excludeRecentDays);
-  if (cutoff) {
-    clauses.push(`NOT (${column("source_id")} GLOB '????-??-??.md' AND substr(${column("source_id")}, 1, 10) >= ?)`);
-    params.push(cutoff);
-  }
-  return { sql: clauses.length > 0 ? ` AND ${clauses.join(" AND ")}` : "", params };
-}
 
 function rowToResult(row: SearchRow): Omit<UnifiedSearchResult, "score" | "matchedBy"> {
   return {
@@ -655,7 +621,7 @@ function rowToResult(row: SearchRow): Omit<UnifiedSearchResult, "score" | "match
   };
 }
 
-function addContext(result: UnifiedSearchResult, options: UnifiedSearchOptions): void {
+function addContext(result: UnifiedSearchResult, plan: FilterPlan): void {
   if (result.sourceType !== "session_message" || !result.sessionId || result.ordinal === undefined) return;
   const rows = getDb().prepare(`
     SELECT rowid, id, source_type, source_id, parent_id, session_id, channel_id,
@@ -664,7 +630,9 @@ function addContext(result: UnifiedSearchResult, options: UnifiedSearchOptions):
     WHERE source_type = 'session_message' AND session_id = ? AND ordinal BETWEEN ? AND ?
     ORDER BY ordinal
   `).all(result.sessionId, Math.max(0, result.ordinal - 1), result.ordinal + 1) as SearchRow[];
-  const visible = rows.filter(row => row.id !== result.id && passesSearchFilters(row, options));
+  // Re-apply the SAME compiled plan the SQL layer used, so an excluded document /
+  // session / source / recent-diary row cannot leak back in through context expansion.
+  const visible = rows.filter(row => row.id !== result.id && rowPassesPlan(row, plan));
   if (visible.length > 0) {
     result.context = visible.map(row => ({
       id: row.id,
@@ -683,6 +651,7 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
   const candidateLimit = Math.min(Math.max(Math.floor(options.candidateLimit ?? Math.max(60, limit * 8)), limit), 500);
   const minVectorScore = Math.min(Math.max(options.minVectorScore ?? 0.55, -1), 1);
   const profile = options.profile ?? "all";
+  const filterPlan = planForOptions(options);
   const db = getDb();
   const byId = new Map<string, {
     row: SearchRow;
@@ -694,9 +663,14 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
   let vectorCandidates = 0;
   let ftsCandidates = 0;
   let embeddingAvailable = false;
+  let vectorIterations = 0;
+  let vectorFinalK = 0;
+  let vectorScanned = 0;
+  let vectorTruncated = false;
+  const vectorScanBudget = Math.max(limit, Math.floor(options.vectorScanBudget ?? DEFAULT_VECTOR_SCAN_BUDGET));
 
   if (!normalizedQuery) {
-    return { traceId, results: [], diagnostics: { vectorCandidates, ftsCandidates, groupedCandidates: 0, embeddingAvailable } };
+    return { traceId, results: [], diagnostics: { vectorCandidates, ftsCandidates, groupedCandidates: 0, embeddingAvailable, vectorIterations, vectorFinalK, vectorScanned, vectorTruncated } };
   }
 
   const ftsQuery = toSearchTokens(normalizedQuery)
@@ -706,7 +680,7 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
     .join(" OR ");
   if (ftsQuery) {
     try {
-      const sqlFilters = searchSqlFilters(options);
+      const sqlFilters = planToSqlFilters(filterPlan);
       const totalFts = (db.prepare(`
         SELECT count(*) AS c
         FROM search_documents_fts f
@@ -747,13 +721,19 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
         embeddingAvailable = true;
         const vector = await embed(redactSecrets(normalizedQuery));
         const blob = vectorToBlob(vector);
-        // sqlite-vec applies k before joined-table visibility filters. Increase k until
-        // enough eligible rows survive (or the table is exhausted), preventing private
-        // nearest neighbours from starving later visible results.
-        const sqlFilters = searchSqlFilters(options);
-        let k = Math.min(candidateLimit, count);
+        const sqlFilters = planToSqlFilters(filterPlan);
+        // sqlite-vec applies k (the KNN cut) BEFORE the joined visibility/source/
+        // exclusion filters, so a top-k full of private neighbours starves the visible
+        // results. We progressively grow k until enough ELIGIBLE rows survive, the
+        // table is exhausted, or we hit the scan budget. Never stop before at least
+        // `limit` eligible rows unless one of those hard bounds is reached — that is
+        // the invariant that prevents re-introducing candidate starvation.
+        let k = Math.min(Math.max(candidateLimit, limit), count, vectorScanBudget);
         let rows: Array<SearchRow & { distance: number }> = [];
         for (;;) {
+          vectorIterations++;
+          vectorFinalK = k;
+          vectorScanned += k;
           rows = db.prepare(`
             SELECT d.rowid, d.id, d.source_type, d.source_id, d.parent_id, d.session_id,
               d.channel_id, d.visibility_scope, d.ordinal, d.role, d.text, d.content_hash,
@@ -763,8 +743,13 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
             WHERE v.embedding MATCH ? AND k = ?${sqlFilters.sql}
           `).all(blob, k, ...sqlFilters.params) as Array<SearchRow & { distance: number }>;
           const eligible = rows.filter(row => (1 - row.distance) >= minVectorScore).length;
-          if (eligible >= limit || k >= count) break;
-          k = Math.min(count, Math.max(k + 1, k * 2));
+          if (eligible >= limit) break;
+          if (k >= count) break;              // whole table scanned
+          const remainingScanBudget = vectorScanBudget - vectorScanned;
+          if (remainingScanBudget <= 0) { vectorTruncated = true; break; }
+          const nextK = Math.min(count, Math.max(k + 1, k * 2), remainingScanBudget);
+          if (nextK <= k) { vectorTruncated = true; break; }
+          k = nextK;
         }
         vectorCandidates = rows.length;
         let rank = 0;
@@ -806,7 +791,7 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
     matchedBy: [...candidate.matchedBy],
   } satisfies UnifiedSearchResult));
   if (options.includeContext !== false) {
-    for (const result of results) addContext(result, options);
+    for (const result of results) addContext(result, filterPlan);
   }
 
   const response: UnifiedSearchResponse = {
@@ -817,6 +802,10 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
       ftsCandidates,
       groupedCandidates: results.length,
       embeddingAvailable,
+      vectorIterations,
+      vectorFinalK,
+      vectorScanned,
+      vectorTruncated,
     },
   };
   if (options.debug) {

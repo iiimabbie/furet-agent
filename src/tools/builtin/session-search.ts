@@ -2,6 +2,7 @@ import { logger } from "../../logger.js";
 import { getDb } from "../../db.js";
 import { searchUnified } from "../../search-index.js";
 import { getChannelId, getTrigger, getUserId } from "../context.js";
+import { hasOwnerSearchVisibility } from "../authz.js";
 import type { ContentBlock, Tool } from "../../types.js";
 import { renderSearchOutput, truncateSearchText } from "../../utils/search-output.js";
 
@@ -107,7 +108,7 @@ export const sessionSearch: Tool = {
         profile: "session",
         limit: Math.min(Math.max(Math.floor(limit), 1), 100),
         visibility: {
-          isOwner: getTrigger() !== "discord-other",
+          isOwner: hasOwnerSearchVisibility(getTrigger()),
           userId: getUserId(),
           channelId: getChannelId(),
         },

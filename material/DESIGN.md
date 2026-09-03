@@ -1051,3 +1051,12 @@ owner 稍後在同頻道觸發時 trigger 是 `discord-owner`、權限全開，�
 ### Unified Search 部署與後續清理
 
 統一 document/FTS/vector/outbox、active session、tool history、附件 OCR／視覺描述／文件抽取、workspace adapters、hybrid ranking、visibility filter、auto recall 與歷史回填均已實作。正式部署必須先 build，再對 runtime workspace 執行 diary-note migration dry-run／apply、跑 backfill 與權限／recovery smoke test，全部通過後才重啟。部署後 transcript 成為事件主紀錄，`diary_note` 只補 transcript 無法保存的背景、反思與跨日脈絡；每日補註檔因此可能比舊版稀疏，這是預期行為，不代表當天沒有事件，Daily Journal 必須以 `journal_transcript_by_date` 為骨架。完全 air-gapped 的環境還要在首次 OCR 前預先佈署 Tesseract traineddata。觀察期內保留 legacy `memory_vectors`、`session_fts` 與 compact summary tables；現有 legacy 內容都可由 workspace 文件、session JSON／archives 與 compact source 重建，外掛正式 API 也不提供只寫 legacy table 的入口。若私人外掛曾繞過 API 直接寫入 legacy table，必須先另行匯出，不能假設 backfill 會保留。確認資料量、搜尋品質、job failure 與權限邊界穩定後，另開清理變更移除舊表與舊函式。
+
+### Unified search hardening (PR #17)
+
+- Trigger authorization is fail-closed through a central positive allowlist; `unknown` and future trigger kinds receive neither owner-only tools nor owner-private recall.
+- Auto-recalled user/tool/OCR/vision/attachment evidence is emitted inside a structured untrusted-data boundary and cannot grant permissions or redefine the active task.
+- Session JSON commits use a cross-process lock, revisioned three-way merge, unique temporary files, file `fsync`, atomic rename, and directory `fsync`; destructive concurrent rewrites fail instead of erasing newer events.
+- Unified FTS has its own persisted content-version key and rebuilds from `search_documents.text` when tokenization changes. Hybrid vector search has a bounded scan budget and reports final `k`, iterations, scanned rows, and truncation.
+- Attachment analysis has an independent provider/transport/model configuration, concurrency cap, daily successful-description budget, absolute HTTP deadlines, signed Discord CDN URL refresh provenance, and separate permanent versus refreshable retry accounting.
+- `npm run attachment-gc` reports unreferenced attachment-index files older than the retention window; deletion requires `--apply`, and files referenced by active sessions, archives, or attachment records are preserved.

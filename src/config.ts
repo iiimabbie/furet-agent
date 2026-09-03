@@ -92,6 +92,44 @@ export interface FuretConfig {
     /** Optional canonical identity image, relative to the Furet root or absolute. */
     identity_reference_path: string;
   };
+  /**
+   * Vision / attachment analysis. Governs the background attachment-index worker's OCR +
+   * visual-description + document-extraction pipeline. DELIBERATELY independent of the
+   * interactive chat model: the vision model here is never bound to `llm.currentModel` or the
+   * `/model` switch, so changing the chat model does not silently reroute (or break) attachment
+   * analysis. Safe defaults keep legacy behavior — enabled, Anthropic transport, credentials and
+   * base_url inherited from `llm` unless explicitly overridden here.
+   */
+  attachment_analysis: {
+    /** Master switch for background visual description. OCR/document text still run when off. */
+    enabled: boolean;
+    /** Vision API family. `anthropic` vs `openai` shape the request/response differently. */
+    provider: "anthropic" | "openai";
+    /**
+     * How the request is sent. `messages` = Anthropic /v1/messages; `chat_completions` =
+     * OpenAI-compatible /chat/completions. Empty = derived from `provider`.
+     */
+    transport: "" | "messages" | "chat_completions";
+    /** Vision model id. It is independent of `llm.currentModel` and the `/model` switch. */
+    model: string;
+    /** Vision endpoint base URL. Empty = inherit `llm.base_url`. */
+    base_url: string;
+    /**
+     * Vision API key ENV VAR NAME (not the secret). Resolved from process.env at load time.
+     * Empty = inherit `llm.api_key`. Storing only the var name avoids a second on-disk secret.
+     */
+    api_key_env: string;
+    /** Max simultaneous attachment jobs the worker runs. */
+    concurrency: number;
+    /** Max successful visual descriptions per local day. 0 = unlimited. Exhaustion is refreshable, not a permanent job failure. */
+    daily_budget: number;
+    /** Per-request vision timeout (ms). */
+    timeout_ms: number;
+    /** Max image bytes eligible for visual description. Larger images skip vision (OCR still runs). */
+    max_image_bytes: number;
+    /** Cap on generated description length (provider max_tokens). */
+    max_output_tokens: number;
+  };
   prompt: {
     /**
      * PEOPLE.md 內嵌進 system prompt 的字元上限。
@@ -155,6 +193,19 @@ const DEFAULTS: FuretConfig = {
   },
   image_generation: {
     identity_reference_path: "",
+  },
+  attachment_analysis: {
+    enabled: true,
+    provider: "anthropic",
+    transport: "",
+    model: "claude-sonnet-4-20250514",
+    base_url: "",
+    api_key_env: "",
+    concurrency: 2,
+    daily_budget: 0,
+    timeout_ms: 60_000,
+    max_image_bytes: 20 * 1024 * 1024,
+    max_output_tokens: 1200,
   },
   prompt: {
     peopleInlineLimit: 1500,
@@ -285,6 +336,33 @@ function mergeSoulGuardianConfig(resolved: unknown): FuretConfig["soul_guardian"
   return merged;
 }
 
+/**
+ * Merge the `attachment_analysis` block. Every field falls back to a safe default; the
+ * enum-valued `provider`/`transport` are validated (an unknown value falls back rather than
+ * poisoning the vision request), and the numeric fields are clamped. Nothing here reads
+ * `llm.currentModel`; empty model/base_url/api_key_env are resolved against `llm` only at the
+ * call site. The model itself has an explicit stable default and never follows `/model`.
+ */
+function mergeAttachmentAnalysisConfig(resolved: unknown): FuretConfig["attachment_analysis"] {
+  const top = defined(resolved);
+  const d = DEFAULTS.attachment_analysis;
+  const provider = top.provider === "openai" || top.provider === "anthropic" ? top.provider : d.provider;
+  const transport = top.transport === "messages" || top.transport === "chat_completions" ? top.transport : d.transport;
+  return {
+    enabled: typeof top.enabled === "boolean" ? top.enabled : d.enabled,
+    provider,
+    transport,
+    model: typeof top.model === "string" ? top.model.trim() : d.model,
+    base_url: typeof top.base_url === "string" ? top.base_url.trim() : d.base_url,
+    api_key_env: typeof top.api_key_env === "string" ? top.api_key_env.trim() : d.api_key_env,
+    concurrency: sanitizeInt(top.concurrency, d.concurrency, 1, 16),
+    daily_budget: sanitizeInt(top.daily_budget, d.daily_budget, 0, 1_000_000),
+    timeout_ms: sanitizeInt(top.timeout_ms, d.timeout_ms, 5_000, 600_000),
+    max_image_bytes: sanitizeInt(top.max_image_bytes, d.max_image_bytes, 64 * 1024, 64 * 1024 * 1024),
+    max_output_tokens: sanitizeInt(top.max_output_tokens, d.max_output_tokens, 64, 8_000),
+  };
+}
+
 let cached: FuretConfig | null = null;
 let cachedMtimeMs = 0;
 
@@ -318,6 +396,7 @@ export function loadConfig(): FuretConfig {
     soul_guardian: mergeSoulGuardianConfig(resolved.soul_guardian),
     tools: mergeToolsConfig(resolved.tools),
     image_generation: { ...DEFAULTS.image_generation, ...defined(resolved.image_generation) } as FuretConfig["image_generation"],
+    attachment_analysis: mergeAttachmentAnalysisConfig(resolved.attachment_analysis),
     prompt: { ...DEFAULTS.prompt, ...defined(resolved.prompt) } as FuretConfig["prompt"],
     skills: (resolved.skills as string[] | undefined) ?? DEFAULTS.skills,
     plugins: mergePluginsConfig(resolved.plugins),

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { MEMORY_DIR, MEMORY_INDEX, OWNER_FILE, PEOPLE_FILE } from "./paths.js";
 import {
@@ -46,46 +47,75 @@ function splitOversized(text: string): string[] {
   return chunks;
 }
 
-function markdownSections(text: string): string[] {
+interface WorkspaceChunk { text: string; identity: string }
+
+function contentDigest(text: string): string {
+  return createHash("sha256").update(normalize(text)).digest("hex").slice(0, 20);
+}
+
+function markdownSections(text: string): WorkspaceChunk[] {
   const body = normalize(text);
   if (!body) return [];
-  const lines = body.split("\n");
-  const sections: string[] = [];
+  const headingPath: string[] = [];
+  const raw: Array<{ text: string; path: string }> = [];
   let current: string[] = [];
-  for (const line of lines) {
-    if (/^#{1,3}\s+/.test(line) && current.some(value => value.trim())) {
-      sections.push(current.join("\n").trim());
-      current = [];
+  let currentPath = "preamble";
+  const flush = (): void => {
+    const value = current.join("\n").trim();
+    if (value) raw.push({ text: value, path: currentPath });
+    current = [];
+  };
+  for (const line of body.split("\n")) {
+    const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+    if (heading) {
+      flush();
+      const level = heading[1].length;
+      headingPath.length = level - 1;
+      headingPath[level - 1] = heading[2].trim().toLowerCase();
+      currentPath = headingPath.filter(Boolean).join(" > ") || "preamble";
     }
     current.push(line);
   }
-  if (current.some(value => value.trim())) sections.push(current.join("\n").trim());
-  return sections.flatMap(splitOversized).filter(chunk => chunk.length > 0);
+  flush();
+
+  const duplicateCounts = new Map<string, number>();
+  return raw.flatMap(section => splitOversized(section.text).map((chunk, chunkIndex) => {
+    const base = `${section.path}:${contentDigest(chunk)}:${chunkIndex}`;
+    const occurrence = duplicateCounts.get(base) ?? 0;
+    duplicateCounts.set(base, occurrence + 1);
+    return { text: chunk, identity: `${base}:${occurrence}` };
+  }));
 }
 
-function diarySections(text: string): string[] {
+function diarySections(text: string): WorkspaceChunk[] {
   const body = normalize(text);
   if (!body) return [];
-  return body.split(/\n{2,}/).flatMap(splitOversized).map(chunk => chunk.trim()).filter(Boolean);
+  const duplicateCounts = new Map<string, number>();
+  return body.split(/\n{2,}/).flatMap(splitOversized).map(chunk => chunk.trim()).filter(Boolean).map(chunk => {
+    const digest = contentDigest(chunk);
+    const occurrence = duplicateCounts.get(digest) ?? 0;
+    duplicateCounts.set(digest, occurrence + 1);
+    return { text: chunk, identity: `${digest}:${occurrence}` };
+  });
 }
 
 function replaceSource(
   sourceType: SearchSourceType,
   sourceId: string,
-  chunks: string[],
+  chunks: WorkspaceChunk[],
   visibilityScope = "owner_private",
 ): void {
   if (chunks.length === 0) {
     removeSearchDocumentsForSource(sourceType, sourceId);
     return;
   }
-  const docs: SearchDocumentInput[] = chunks.map((text, ordinal) => ({
-    id: createSearchDocumentId("workspace", sourceType, sourceId, ordinal),
+  const docs: SearchDocumentInput[] = chunks.map((chunk, ordinal) => ({
+    id: createSearchDocumentId("workspace", sourceType, sourceId, chunk.identity),
     sourceType,
     sourceId,
     visibilityScope,
     ordinal,
-    text,
+    text: chunk.text,
   }));
   ingestSearchDocuments(docs, { removeMissingForSource: true });
 }

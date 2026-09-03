@@ -50,6 +50,40 @@ function ensureColumn(database: Database.Database, table: string, column: string
   database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
+/**
+ * Numbered, run-once schema migrations. `schema_migrations` records the highest
+ * version already applied so a migration body never runs again on later boots.
+ * This replaces the previous pattern of executing a full-table `UPDATE` on every
+ * process start (which rewrote every attachment row unconditionally).
+ */
+function hasSchemaVersion(database: Database.Database, version: number): boolean {
+  database.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))");
+  return Boolean(database.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version));
+}
+
+function markSchemaVersion(database: Database.Database, version: number): void {
+  database.prepare("INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)").run(version);
+}
+
+/**
+ * Backfill per-stage attachment status from the coarse `status` column. Runs once
+ * (migration version 1); subsequent boots skip it entirely instead of rewriting
+ * every attachment_records row on each startup.
+ */
+function migrateAttachmentStageStatus(database: Database.Database): void {
+  const SCHEMA_ATTACHMENT_STAGES = 1;
+  if (hasSchemaVersion(database, SCHEMA_ATTACHMENT_STAGES)) return;
+  database.transaction(() => {
+    database.exec(`
+      UPDATE attachment_records SET
+        ocr_status = CASE WHEN status = 'complete' THEN 'complete' ELSE ocr_status END,
+        vision_status = CASE WHEN status = 'complete' THEN 'complete' ELSE vision_status END,
+        extract_status = CASE WHEN status = 'complete' THEN 'complete' ELSE extract_status END
+    `);
+    markSchemaVersion(database, SCHEMA_ATTACHMENT_STAGES);
+  })();
+}
+
 export function getDb(): Database.Database {
   if (db) return db;
 
@@ -268,17 +302,33 @@ export function getDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS attachment_jobs_ready
       ON attachment_jobs(status, next_retry_at, attempts);
+
+    -- Per-local-day counter of successful visual descriptions. The attachment worker
+    -- enforces attachment_analysis.daily_budget against this; the row is keyed by the
+    -- local date string (config.timezone-aware, same convention as diary/log filenames)
+    -- so a budget resets naturally at local midnight without any scheduled job.
+    CREATE TABLE IF NOT EXISTS vision_usage (
+      day TEXT PRIMARY KEY,
+      descriptions INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   ensureColumn(db, "attachment_records", "ocr_status", "TEXT NOT NULL DEFAULT 'pending'");
   ensureColumn(db, "attachment_records", "vision_status", "TEXT NOT NULL DEFAULT 'pending'");
   ensureColumn(db, "attachment_records", "extract_status", "TEXT NOT NULL DEFAULT 'pending'");
-  db.exec(`
-    UPDATE attachment_records SET
-      ocr_status = CASE WHEN status = 'complete' THEN 'complete' ELSE ocr_status END,
-      vision_status = CASE WHEN status = 'complete' THEN 'complete' ELSE vision_status END,
-      extract_status = CASE WHEN status = 'complete' THEN 'complete' ELSE extract_status END
-  `);
+  // Discord provenance for signed-CDN-URL refresh. Nullable and added via ensureColumn so
+  // pre-existing attachment rows migrate forward with NULLs (refresh simply degrades to the
+  // stored URL for rows that predate provenance capture).
+  ensureColumn(db, "attachment_records", "discord_channel_id", "TEXT");
+  ensureColumn(db, "attachment_records", "discord_message_id", "TEXT");
+  ensureColumn(db, "attachment_records", "discord_attachment_id", "TEXT");
+  // Count of refreshable (non-permanent) job failures — e.g. a stale signed URL or a
+  // transient daily-budget stop — that must NOT drain the permanent retry attempts budget.
+  ensureColumn(db, "attachment_jobs", "refresh_attempts", "INTEGER NOT NULL DEFAULT 0");
+  // One-time backfill of the per-stage status columns, gated by schema version so it
+  // stops touching every attachment row on subsequent process starts.
+  migrateAttachmentStageStatus(db);
 
   rebuildFtsIfNeeded(db);
 
@@ -300,39 +350,38 @@ function isJsonArray(s: string): boolean {
   try { return Array.isArray(JSON.parse(s)); } catch { return false; }
 }
 
-/** 用 bigram 展開規則重建 FTS 索引。原文都還在來源表，重建是安全的。 */
+/** Rebuild legacy and unified FTS projections when their own token versions change. */
 function rebuildFtsIfNeeded(database: Database.Database): void {
   database.exec(`CREATE TABLE IF NOT EXISTS fts_meta (key TEXT PRIMARY KEY, value INTEGER)`);
-  const row = database.prepare("SELECT value FROM fts_meta WHERE key='content_version'").get() as { value: number } | undefined;
-  if (row?.value === FTS_CONTENT_VERSION) return;
+  const legacy = database.prepare("SELECT value FROM fts_meta WHERE key='content_version'").get() as { value: number } | undefined;
+  const unified = database.prepare("SELECT value FROM fts_meta WHERE key='search_documents_content_version'").get() as { value: number } | undefined;
 
   try {
-    const memRows = database.prepare("SELECT id, text, file FROM memory_vectors").all() as Array<{ id: number; text: string; file: string }>;
-    const sessRows = database.prepare("SELECT id, content, session_id FROM session_archive").all() as Array<{ id: number; content: string; session_id: string }>;
+    if (legacy?.value !== FTS_CONTENT_VERSION) {
+      const memRows = database.prepare("SELECT id, text, file FROM memory_vectors").all() as Array<{ id: number; text: string; file: string }>;
+      const sessRows = database.prepare("SELECT id, content, session_id FROM session_archive").all() as Array<{ id: number; content: string; session_id: string }>;
+      const insMem = database.prepare("INSERT INTO memory_fts (rowid, text, file) VALUES (?, ?, ?)");
+      const insSess = database.prepare("INSERT INTO session_fts (rowid, content, session_id) VALUES (?, ?, ?)");
+      database.transaction(() => {
+        database.exec("DELETE FROM memory_fts");
+        for (const r of memRows) insMem.run(r.id, toSearchTokens(r.text), r.file);
+        database.exec("DELETE FROM session_fts");
+        for (const r of sessRows) if (r.content && !isJsonArray(r.content)) insSess.run(r.id, toSearchTokens(r.content), r.session_id);
+        database.prepare("INSERT INTO fts_meta (key, value) VALUES ('content_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(FTS_CONTENT_VERSION);
+      })();
+      logger.info({ version: FTS_CONTENT_VERSION, memory: memRows.length, session: sessRows.length }, "legacy FTS indexes rebuilt");
+    }
 
-    const insMem = database.prepare("INSERT INTO memory_fts (rowid, text, file) VALUES (?, ?, ?)");
-    const insSess = database.prepare("INSERT INTO session_fts (rowid, content, session_id) VALUES (?, ?, ?)");
-
-    database.transaction(() => {
-      database.exec("DELETE FROM memory_fts");
-      for (const r of memRows) insMem.run(r.id, toSearchTokens(r.text), r.file);
-
-      database.exec("DELETE FROM session_fts");
-      for (const r of sessRows) {
-        // 歸檔時只對純文字訊息建 FTS。content blocks 是 JSON.stringify 存的，
-        // 這裡靠 parse 得到 array 來排除——不能用 startsWith("[") 判斷，
-        // 因為使用者訊息本身就常以 "[System] " / "[msg:123 …]" 開頭。
-        if (r.content && !isJsonArray(r.content)) insSess.run(r.id, toSearchTokens(r.content), r.session_id);
-      }
-
-      database.prepare("INSERT INTO fts_meta (key, value) VALUES ('content_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-        .run(FTS_CONTENT_VERSION);
-    })();
-
-    logger.info(
-      { version: FTS_CONTENT_VERSION, memory: memRows.length, session: sessRows.length },
-      "FTS index rebuilt with CJK bigram tokens"
-    );
+    if (unified?.value !== FTS_CONTENT_VERSION) {
+      const rows = database.prepare("SELECT rowid, text, source_type, source_id, session_id, visibility_scope FROM search_documents").all() as Array<{ rowid: number; text: string; source_type: string; source_id: string; session_id: string | null; visibility_scope: string }>;
+      const insert = database.prepare("INSERT INTO search_documents_fts (rowid, text, source_type, source_id, session_id, visibility_scope) VALUES (?, ?, ?, ?, ?, ?)");
+      database.transaction(() => {
+        database.exec("DELETE FROM search_documents_fts");
+        for (const r of rows) insert.run(r.rowid, toSearchTokens(r.text), r.source_type, r.source_id, r.session_id ?? "", r.visibility_scope);
+        database.prepare("INSERT INTO fts_meta (key, value) VALUES ('search_documents_content_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(FTS_CONTENT_VERSION);
+      })();
+      logger.info({ version: FTS_CONTENT_VERSION, searchDocuments: rows.length }, "unified FTS index rebuilt");
+    }
   } catch (err) {
     logger.error({ err: (err as Error).message }, "FTS rebuild failed");
   }

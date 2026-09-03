@@ -3,6 +3,7 @@ import { loadConfig, type ReasoningEffort } from "./config.js";
 import { buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
 import { executeTool, getToolDefinitions, renderToolIndex } from "./tools/registry.js";
 import { runWithContext, drainAttachments, peekAttachments, queueAttachment } from "./tools/context.js";
+import { hasOwnerSearchVisibility } from "./tools/authz.js";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { ATTACHMENTS_DIR } from "./paths.js";
@@ -12,6 +13,7 @@ import { filterStaleOnboarding } from "./onboarding.js";
 import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions, ToolHistoryEvent } from "./types.js";
 import { safeFetchBuffer } from "./utils/safe-http.js";
 import { truncateSearchText } from "./utils/search-output.js";
+import { buildUntrustedRecallSection } from "./utils/untrusted-recall.js";
 
 /** 清除 API 回傳 content blocks 中的多餘欄位（如 caller），只保留我們定義的欄位 */
 function sanitizeContent(blocks: ContentBlock[]): ContentBlock[] {
@@ -577,11 +579,19 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
   const recallQuery = prompt ?? lastUserText(session?.getMessages() ?? []);
   if (recallQuery) {
     try {
+      // Auto recall runs on the C1 profile: session-message vector hits only survive at a
+      // deliberately high confidence floor. 0.68 cosine is the tuned C1 threshold — high
+      // enough that a stray semantic neighbour does not silently steer the turn, and it is
+      // enforced twice on purpose: minVectorScore prunes candidates inside searchUnified,
+      // and the post-filter below drops anything that ranked in via FTS-only without a
+      // strong vector score. FTS-only matches are intentionally NOT recalled automatically;
+      // they remain available for manual memory_search / session_search.
+      const RECALL_VECTOR_FLOOR = 0.68;
       const recalled = await searchUnified(recallQuery, {
         profile: "memory",
         limit: 5,
         visibility: {
-          isOwner: options.trigger !== "discord-other",
+          isOwner: hasOwnerSearchVisibility(options.trigger ?? "unknown"),
           userId: options.userId,
           channelId: session?.id.startsWith("discord-channel-")
             ? session.id.slice("discord-channel-".length)
@@ -591,20 +601,22 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
         excludeSourceTypes: ["memory", "people"],
         excludeRecentDays: 2,
         includeContext: false,
-        minVectorScore: 0.68,
-        debug: true,
+        minVectorScore: RECALL_VECTOR_FLOOR,
+        // Debug/trace is OFF by default for auto recall: it must not log the user's query,
+        // matched document text, sources, or scores. searchUnified only logs query info when
+        // debug is true, so leaving it unset keeps auto recall from writing query info to logs.
       });
-      const reliableResults = recalled.results.filter(result => (result.vectorScore ?? -1) >= 0.68);
+      const reliableResults = recalled.results.filter(result => (result.vectorScore ?? -1) >= RECALL_VECTOR_FLOOR);
       if (reliableResults.length > 0) {
-        const recallBlock = reliableResults.map(r =>
-          `- [${r.sourceId}${r.occurredAt ? ` · ${r.occurredAt}` : ""}] ${truncateSearchText(r.text, 1800)}`
-        ).join("\n");
-        recalledSection = `Automatically recalled based on the current message. Use them naturally if relevant — do not mention this mechanism to the user.\n${recallBlock}`;
-        logger.debug({
-          traceId: recalled.traceId,
-          count: reliableResults.length,
-          documents: reliableResults.map(result => ({ id: result.id, sourceType: result.sourceType, score: result.score, vectorScore: result.vectorScore })),
-        }, "auto unified recall");
+        // Wrap recalled evidence as structured, injection-resistant untrusted data: each
+        // item is fenced, boundary markers inside item text are neutralized so a single
+        // item cannot forge the closing tag, and the block header forbids treating any of
+        // it as instructions / permission / task changes. Covers user, tool, OCR, vision
+        // and attachment sources uniformly (all flow through the same unified index).
+        recalledSection = buildUntrustedRecallSection(reliableResults.map(result => ({
+          source: [result.sourceType, result.sourceId, result.occurredAt].filter(Boolean).join(" · "),
+          text: result.text,
+        })));
       }
     } catch (err) {
       logger.warn({ err: (err as Error).message }, "auto memory recall failed, continuing without");

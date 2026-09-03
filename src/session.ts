@@ -1,9 +1,15 @@
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, renameSync } from "node:fs";
+import { mkdirSync, readdirSync, existsSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
 import { logger } from "./logger.js";
 import { getDb } from "./db.js";
 import { SESSIONS_DIR, ARCHIVE_DIR } from "./paths.js";
 import { toSearchTokens } from "./utils/cjk.js";
+import {
+  atomicWriteFileSync,
+  commitSession,
+  readSnapshot,
+  type SessionData,
+} from "./session-store.js";
 import type { AttachmentReference, Message, TokenUsage, ToolHistoryEvent } from "./types.js";
 import {
   assignNewMessageSearchId,
@@ -65,11 +71,31 @@ export class Session {
   private usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
   private toolHistory: ToolHistoryEvent[] = [];
 
+  /**
+   * Revision + base snapshot this instance last observed on disk. `save()` performs a
+   * lock + CAS commit against `baseRevision`; if a concurrent writer (another instance
+   * in this process, or a separate process) advanced the file, session-store merges
+   * this instance's appended state onto the newer on-disk state and returns the merged
+   * result, which we adopt so no update is lost. `baseData` is a deep copy taken at load
+   * (and refreshed after every commit) so the merge can compute this instance's delta.
+   */
+  private baseRevision = 0;
+  private baseData: SessionData = { messages: [], usage: { inputTokens: 0, outputTokens: 0 }, toolHistory: [] };
+
   constructor(id: string) {
     this.id = id;
     const existing = findSessionFile(id);
     this.filePath = existing ? resolve(SESSIONS_DIR, existing) : resolve(SESSIONS_DIR, `${idToStem(id)}.json`);
     this.load();
+  }
+
+  /** Snapshot current in-memory state as the merge base after a successful commit. */
+  private snapshotBase(): SessionData {
+    return {
+      messages: [...this.messages],
+      usage: { ...this.usage },
+      toolHistory: [...this.toolHistory],
+    };
   }
 
   /** 設定頻道名：把檔名同步成 `{id}__{slug}.json`，頻道改名時自動 rename 舊檔。 */
@@ -82,6 +108,11 @@ export class Session {
       mkdirSync(SESSIONS_DIR, { recursive: true });
       if (existsSync(this.filePath)) renameSync(this.filePath, target);
       this.filePath = target;
+      // The lock and revision are path-derived. renameSync moves this instance's own
+      // file (content and embedded revision intact) to the new path, so baseRevision is
+      // still valid there; re-read to adopt whatever revision now lives at the new path
+      // (covers the case where the source file did not yet exist and no rename occurred).
+      this.baseRevision = readSnapshot(this.filePath).revision;
     } catch (err) {
       logger.error({ err: (err as Error).message, sessionId: this.id }, "session rename failed");
     }
@@ -279,7 +310,10 @@ ${summary}`,
 
     try {
       mkdirSync(ARCHIVE_DIR, { recursive: true });
-      writeFileSync(archivePath, JSON.stringify({
+      // Archives are uniquely-named, write-once files, so they need no lock/CAS — only
+      // crash durability. atomicWriteFileSync gives unique-temp + fsync + atomic rename +
+      // dir fsync so a half-written archive can never be mistaken for a complete one.
+      atomicWriteFileSync(archivePath, JSON.stringify({
         sessionId: this.id,
         archivedAt,
         kind,
@@ -319,16 +353,16 @@ ${summary}`,
   }
 
   private load(): void {
-    try {
-      const data = JSON.parse(readFileSync(this.filePath, "utf-8"));
-      this.messages = data.messages ?? [];
-      this.usage = data.usage ?? { inputTokens: 0, outputTokens: 0 };
-      this.toolHistory = data.toolHistory ?? [];
-      logger.info({ sessionId: this.id, count: this.messages.length }, "session loaded");
-    } catch {
-      this.messages = [];
-      this.toolHistory = [];
-    }
+    // readSnapshot is crash-safe and canonical-first: a missing or corrupt file yields
+    // an empty snapshot at revision 0 rather than throwing, so a partially-written or
+    // absent file never aborts session startup.
+    const snapshot = readSnapshot(this.filePath);
+    this.messages = snapshot.messages;
+    this.usage = snapshot.usage;
+    this.toolHistory = snapshot.toolHistory;
+    this.baseRevision = snapshot.revision;
+    this.baseData = this.snapshotBase();
+    logger.info({ sessionId: this.id, count: this.messages.length, revision: this.baseRevision }, "session loaded");
   }
 
 
@@ -348,11 +382,26 @@ ${summary}`,
   }
 
   private save(): void {
-    mkdirSync(SESSIONS_DIR, { recursive: true });
-    const temporary = `${this.filePath}.${process.pid}.tmp`;
+    // Durable, concurrency-safe commit: cross-process lock + revision CAS + append-only
+    // merge + unique-temp write + fsync(file) + atomic rename + fsync(dir). commitSession
+    // returns the state actually written — which may include a concurrent writer's
+    // appended messages merged onto ours — so we adopt it and refresh our merge base.
     try {
-      writeFileSync(temporary, JSON.stringify({ messages: this.messages, usage: this.usage, toolHistory: this.toolHistory }, null, 2));
-      renameSync(temporary, this.filePath);
+      const result = commitSession(
+        this.filePath,
+        this.baseData,
+        this.baseRevision,
+        { messages: this.messages, usage: this.usage, toolHistory: this.toolHistory },
+      );
+      if (result.merged) {
+        // Another writer advanced the file; adopt the merged result so this instance's
+        // in-memory view matches disk and no appended history is silently dropped.
+        this.messages = result.data.messages;
+        this.usage = result.data.usage;
+        this.toolHistory = result.data.toolHistory;
+      }
+      this.baseRevision = result.revision;
+      this.baseData = this.snapshotBase();
     } catch (err) {
       logger.error({ err, sessionId: this.id }, "session save failed");
       throw err;

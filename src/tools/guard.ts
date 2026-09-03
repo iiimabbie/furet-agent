@@ -2,9 +2,10 @@ import { realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { WORKSPACE_DIR, WORKSPACE_CONFIG_DIR, SESSIONS_DIR } from "../paths.js";
 import { getTrigger } from "./context.js";
+import { requiresFileAccessGuard } from "./authz.js";
 
 /**
- * 非 owner（`trigger === "discord-other"`）的檔案讀取邊界。
+ * 非受信任 trigger 的檔案讀取邊界（`discord-other`、`unknown` 與任何未來 trigger）。
  *
  * registry.ts 的 OWNER_ONLY_TOOLS 是「整個工具擋掉」，但 read_file 不能整個擋：
  * AGENT.md 的開場流程每次都要讀當天的 daily memory，skill 也只給路徑不給內容
@@ -45,7 +46,10 @@ function within(child: string, parent: string): boolean {
  * 只比對字面路徑的話，一條 symlink 就能把整個邊界繞過。
  */
 export function checkFileAccess(path: string): string | null {
-  if (getTrigger() !== "discord-other") return null;
+  // Fail-closed: guard applies to every trigger NOT trusted for owner actions, i.e.
+  // discord-other, unknown, and any future trigger — not only discord-other. A trigger
+  // trusted for owner actions (owner identity + owner-configured automation) reads freely.
+  if (!requiresFileAccessGuard(getTrigger())) return null;
 
   const target = realOrSelf(resolve(path));
   const root = realOrSelf(WORKSPACE_DIR);

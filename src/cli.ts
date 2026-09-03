@@ -2,6 +2,8 @@ import * as readline from "node:readline";
 import { ask } from "./agent.js";
 import { Session } from "./session.js";
 import { fixMarkdownLinks } from "./utils/format.js";
+import { startSearchIndexWorker, stopSearchIndexWorker } from "./search-index.js";
+import { startAttachmentIndexWorker, stopAttachmentIndexWorker } from "./attachment-index.js";
 
 /**
  * CLI 只能在主機的 shell 上執行，打字的人必然是 owner——`trigger: "cli"` 也因此享有完整權限。
@@ -13,6 +15,9 @@ Address them as <owner> specifies.
 </cli-context>`;
 
 let session = new Session("cli");
+
+startSearchIndexWorker();
+startAttachmentIndexWorker();
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -30,9 +35,23 @@ function prompt(): void {
     }
 
     if (trimmed === "new") {
-      session.archive();
+      // archive() returns the archive path on success, or null when the session was
+      // empty OR its durable archive could not be written. On write failure it
+      // deliberately RETAINS the active session (does not clear), so opening a fresh
+      // session here would abandon still-live history without telling the operator.
+      // Distinguish the two null cases so a real failure is surfaced and the current
+      // session is kept instead of silently replaced.
+      const hadHistory = session.length > 0;
+      const archivePath = session.archive();
+      if (archivePath === null && hadHistory && session.length > 0) {
+        console.error("⚠️  previous session was NOT archived (durable write failed); keeping it active. Fix the archive path and retry 'new'.");
+        prompt();
+        return;
+      }
       session = new Session("cli");
-      console.log("new session started (previous session archived)");
+      console.log(archivePath
+        ? "new session started (previous session archived)"
+        : "new session started (previous session was empty)");
       prompt();
       return;
     }
@@ -115,6 +134,17 @@ function formatToolSummary(tool: string, input: Record<string, unknown>): string
 function truncate(str: string, max: number): string {
   return str.length > max ? str.slice(0, max) + "..." : str;
 }
+
+let shuttingDown = false;
+function shutdown(): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  stopSearchIndexWorker();
+  stopAttachmentIndexWorker();
+}
+rl.once("close", shutdown);
+process.once("SIGINT", () => { shutdown(); rl.close(); });
+process.once("SIGTERM", () => { shutdown(); rl.close(); });
 
 console.log(`Furet CLI — type 'new' for new session, 'exit' to quit (history: ${session.length} messages)`);
 prompt();

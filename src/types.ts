@@ -18,6 +18,17 @@ export interface AttachmentReference {
   size?: number;
   contentHash?: string;
   relation?: "upload" | "embed" | "reply_reference" | "generated" | "tool_output";
+  /**
+   * Discord provenance, present only for attachments that came from a Discord message.
+   * These let the background worker re-fetch a fresh signed CDN URL when the stored one
+   * expires (Discord CDN URLs are time-limited): re-fetch the ORIGINAL message by
+   * `discordChannelId`/`discordMessageId`, match the attachment by `discordAttachmentId`,
+   * and read its current `url`. They are never used to fetch arbitrary caller-chosen
+   * messages — only the exact IDs recorded when the attachment was first ingested.
+   */
+  discordChannelId?: string;
+  discordMessageId?: string;
+  discordAttachmentId?: string;
 }
 
 

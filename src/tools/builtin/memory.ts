@@ -5,6 +5,7 @@ import { loadConfig } from "../../config.js";
 import { MEMORY_DIR, MEMORY_INDEX } from "../../paths.js";
 import { searchUnified } from "../../search-index.js";
 import { getChannelId, getSessionId, getTrigger, getUserId } from "../context.js";
+import { hasOwnerSearchVisibility } from "../authz.js";
 import { indexDiaryNote, reindexMemory } from "../../workspace-index.js";
 import { today, clockTime } from "../../utils/time.js";
 import { appendInsideTag, stripTag } from "../../utils/tagged-file.js";
@@ -67,7 +68,7 @@ export const memorySearch: Tool = {
         profile: "memory",
         limit: Math.min(Math.max(Math.floor(limit), 1), 50),
         visibility: {
-          isOwner: getTrigger() !== "discord-other",
+          isOwner: hasOwnerSearchVisibility(getTrigger()),
           userId: getUserId(),
           channelId: getChannelId(),
         },
