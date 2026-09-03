@@ -870,7 +870,7 @@ interface PluginRuntimeContext {
 
 Discord uploads、Embed image/thumbnail、回覆引用與 Forum starter 附件會先建立不落 DB 的 `AttachmentReference`，隨訊息成功持久化到 session JSON 後，才建立 SQLite `attachment_records`、job 與搜尋投影；session JSON 保存 stable reference，SQLite 保存處理狀態與抽取結果。遠端 URL 的 query 不進 searchable metadata，背景 worker 會盡快把原檔下載到 `workspace/attachments/search-index/`，避免 Discord CDN URL 過期後失去原始證據。所有遠端圖片／附件下載都經 pinned-DNS safe fetch：逐跳驗證 redirect、拒絕 loopback／private／link-local 位址、限制 timeout，並以 streaming byte counter 在超限時立即中止；本機檔也在讀取前先檢查大小。相同 bytes 在不同訊息被引用時保留各自 reference metadata；binary 本身不塞進 SQLite。
 
-`attachment_jobs` 是可重啟、可重試的 outbox。圖片同時經 Tesseract.js (`eng+chi_tra`) OCR 與目前 vision model 的客觀描述；vision prompt 明確把圖片內容視為 untrusted evidence，不執行畫面中的指令。OCR、vision 與文件抽取各自保存 stage status：已成功的結果立即寫入並建立部分搜尋投影，後續只重試失敗階段，不因另一階段暫時失敗而丟掉可用證據。文字與程式碼檔直接抽取；PDF、DOCX、PPTX、XLSX、ODF、RTF、CSV、Markdown、HTML、EPUB 使用 `officeparser` 產生文字與內嵌圖片 OCR。`pdfjs-dist` 與 `qs` 透過 lockfile override 固定至已修補版本，production audit 必須為零漏洞。處理邊界包含下載大小、解壓 bytes、ZIP entry、spreadsheet cell 與 abort timeout；失敗會保留原因並依退避策略重試。
+`attachment_jobs` 是可重啟、可重試的 outbox。圖片同時經 Tesseract.js (`eng+chi_tra`) OCR 與目前 vision model 的客觀描述；vision prompt 明確把圖片內容視為 untrusted evidence，不執行畫面中的指令。Tesseract.js 的 npm postinstall 不下載語言資料；`eng`／`chi_tra` traineddata 會在首次建立 OCR worker 時依 runtime 設定取得並寫入 cache，因此完全 air-gapped 的部署必須在啟動 worker 前預先提供語言資料，並設定受控的 `langPath`／cache path。OCR、vision 與文件抽取各自保存 stage status：已成功的結果立即寫入並建立部分搜尋投影，後續只重試失敗階段，不因另一階段暫時失敗而丟掉可用證據。文字與程式碼檔直接抽取；PDF、DOCX、PPTX、XLSX、ODF、RTF、CSV、Markdown、HTML、EPUB 使用 `officeparser` 產生文字與內嵌圖片 OCR。`pdfjs-dist` 與 `qs` 透過 lockfile override 固定至已修補版本；升級 override 後必須在乾淨安裝上跑 PDF extraction fixture，且 production audit 必須為零漏洞。處理邊界包含下載大小、解壓 bytes、ZIP entry、spreadsheet cell 與 abort timeout；失敗會保留原因並依退避策略重試。
 
 Provider 生成圖片及本地工具排入最終 Discord 回覆的檔案，會在 request 完成時附到最後一則 assistant message，再走相同的 attachment ingestion，而不是另開生成檔專用索引。這條路徑先 stat/hash 並建立不落 DB 的 reference，session JSON temp+rename 成功後才建立附件 record/job/search projection；若 session 寫入失敗則回滾記憶體 reference，不留下 ghost attachment。所有 attachment metadata、OCR、視覺描述與文件 chunks 最後仍落入 `search_documents`／FTS／embedding outbox；attachment worker 只負責把原始檔轉成統一文件。達最大嘗試次數的附件 job 另列 `exhausted`，不計入可繼續處理的 `remaining`。
 
@@ -1037,7 +1037,7 @@ daily memory，skill 也只給路徑不給內容（`prompt.ts` 的 `loadSkills`�
 比對前先 `resolve()` 正規化 `..`，再 `realpathSync()` 解 symlink——只比字面
 路徑的話，一條指向外部的 symlink 就能繞過整道邊界。
 
-`memory_search`／`session_search` 另有獨立的 visibility boundary：搜尋候選在 ranking 前依 request context 的 owner、user 與 channel identity 過濾；`owner_private` 不會對非 owner 回傳，`channel:<id>`／`user:<id>` 只對相符 caller 開放。Session、tool、附件與 workspace 私人來源目前預設採保守的 `owner_private`。
+`memory_search`／`session_search` 另有獨立的 visibility boundary：搜尋候選在 ranking 前依 request context 的 owner、user 與 channel identity 過濾；`owner_private` 不會對非 owner 回傳，`channel:<id>`／`user:<id>` 只對相符 caller 開放。Session、tool、附件與 workspace 私人來源目前預設採保守的 `owner_private`。這個預設也代表目前尚未啟用 Discord 頻道成員式 recall；未來只有在 durable source 能保存並驗證 guild channel membership、thread membership 與 DM participants 後，才能把對應 session／attachment projection 升級為 `channel:<id>` 或 `user:<id>`，且必須同步更新既有文件的 visibility metadata，不能只改新寫入資料。
 
 另一個結構性缺口：非 owner 的訊息會進 session（`bot.ts` 的 messageCreate），
 owner 稍後在同頻道觸發時 trigger 是 `discord-owner`、權限全開，而那段內容
@@ -1050,4 +1050,4 @@ owner 稍後在同頻道觸發時 trigger 是 `discord-owner`、權限全開，�
 
 ### Unified Search 部署與後續清理
 
-統一 document/FTS/vector/outbox、active session、tool history、附件 OCR／視覺描述／文件抽取、workspace adapters、hybrid ranking、visibility filter、auto recall 與歷史回填均已實作。正式部署必須先 build，再對 runtime workspace 執行 diary-note migration dry-run／apply、跑 backfill 與權限／recovery smoke test，全部通過後才重啟。觀察期內保留 legacy `memory_vectors`、`session_fts` 與 compact summary tables；確認資料量、搜尋品質、job failure 與權限邊界穩定後，另開清理變更移除舊表與舊函式。
+統一 document/FTS/vector/outbox、active session、tool history、附件 OCR／視覺描述／文件抽取、workspace adapters、hybrid ranking、visibility filter、auto recall 與歷史回填均已實作。正式部署必須先 build，再對 runtime workspace 執行 diary-note migration dry-run／apply、跑 backfill 與權限／recovery smoke test，全部通過後才重啟。部署後 transcript 成為事件主紀錄，`diary_note` 只補 transcript 無法保存的背景、反思與跨日脈絡；每日補註檔因此可能比舊版稀疏，這是預期行為，不代表當天沒有事件，Daily Journal 必須以 `journal_transcript_by_date` 為骨架。完全 air-gapped 的環境還要在首次 OCR 前預先佈署 Tesseract traineddata。觀察期內保留 legacy `memory_vectors`、`session_fts` 與 compact summary tables；現有 legacy 內容都可由 workspace 文件、session JSON／archives 與 compact source 重建，外掛正式 API 也不提供只寫 legacy table 的入口。若私人外掛曾繞過 API 直接寫入 legacy table，必須先另行匯出，不能假設 backfill 會保留。確認資料量、搜尋品質、job failure 與權限邊界穩定後，另開清理變更移除舊表與舊函式。
