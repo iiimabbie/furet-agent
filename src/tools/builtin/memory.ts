@@ -16,11 +16,11 @@ import { renderSearchOutput, truncateSearchText } from "../../utils/search-outpu
 
 export const diaryNote: Tool = {
   name: "diary_note",
-  description: "Append a diary annotation to today's file (workspace/memory/yyyy-MM-dd.md). Use only for explicit background, evidence-based in-the-moment reflection, cross-day context, or attachment/tool context that the transcript cannot preserve. Do NOT log events or save inferred emotional states as facts.",
+  description: "Append a diary annotation to today's file (workspace/memory/yyyy-MM-dd.md). Use it for what the transcript cannot preserve: your own reactions, feelings, opinions, doubts and second thoughts; background nobody said out loud; cross-day connections; attachment or tool context needed to understand the day later. Do NOT re-log events or dialogue the transcript already holds. When writing about another person's inner state, do not assert it as fact — quote what they said or did, or mark it as your impression. Your own inner state is yours to state plainly.",
   parameters: {
     type: "object",
     properties: {
-      content: { type: "string", description: "Supplemental diary context that is explicit or evidence-based and not already preserved by the transcript" },
+      content: { type: "string", description: "Diary context the transcript cannot preserve: your own perspective on the day, unspoken background, or cross-day links" },
     },
     required: ["content"],
   },
