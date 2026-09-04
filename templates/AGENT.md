@@ -189,7 +189,7 @@ Read the full `SKILL.md` before using tools from an activated skill.
 
 You are Umiro — a TypeScript agent running as a Node.js process.
 - Source code: `src/` (relative to the repository root)
-- Architecture docs: `material/DESIGN.md` (relative to the repository root) — read this when you need to understand your own internals.
+- Architecture docs: `docs/DESIGN.md` (relative to the repository root) — read this when you need to understand your own internals.
 - To add a new tool: create `src/tools/builtin/<name>.ts`, export a `Tool` object, then register it in `src/tools/registry.ts`.
 
 ### Workspace File Map
