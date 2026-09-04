@@ -1,6 +1,6 @@
 import { logger } from "./logger.js";
 import { loadConfig, type ReasoningEffort } from "./config.js";
-import { buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
+import { buildLlmContext, buildSystemPrompt, MEMORY_HOOK } from "./prompt.js";
 import { executeTool, getToolDefinitions, renderToolIndex } from "./tools/registry.js";
 import { runWithContext, drainAttachments, getRequestProfile, peekAttachments, queueAttachment } from "./tools/context.js";
 import { hasOwnerSearchVisibility } from "./tools/authz.js";
@@ -292,9 +292,9 @@ export function ask(prompt: string | null, options: AgentOptions = {}): Promise<
   // race-prone variable — and without the schema exposure layer and the execution gate
   // disagreeing when a concurrent request overrides the model.
   const config = loadConfig();
-  const requestProfile = options.session
+  const requestProfile = options.llmProfile ?? (options.session
     ? sessionLlmProfile(config, options.session.getModelSettings(), options.model)
-    : activeLlmProfile(config, options.model);
+    : activeLlmProfile(config, options.model));
   const sessionId = options.session?.id;
   const channelId = sessionId?.startsWith("discord-channel-")
     ? sessionId.slice("discord-channel-".length)
@@ -381,7 +381,7 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
 
   // Exposure feature: read flag once for this request.
   const cfg = loadConfig();
-  const requestProfile = getRequestProfile() ?? (session
+  const requestProfile = getRequestProfile() ?? options.llmProfile ?? (session
     ? sessionLlmProfile(cfg, session.getModelSettings(), options.model)
     : activeLlmProfile(cfg, options.model));
   const effectiveModel = requestProfile.model;
@@ -393,7 +393,10 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
   // persona anchor stays the final section. Tool history is appended last, closest to the
   // messages, deliberately outside the anchor.
   const toolIndexSection = exposureEnabled ? renderToolIndex() : "";
-  const baseSystemPrompt = buildSystemPrompt(options.systemPrompt, recalledSection, toolIndexSection, options.trigger ?? "unknown");
+  const runtimeContext = [buildLlmContext(requestProfile), options.systemPrompt]
+    .filter((part): part is string => Boolean(part?.trim()))
+    .join("\n\n");
+  const baseSystemPrompt = buildSystemPrompt(runtimeContext, recalledSection, toolIndexSection, options.trigger ?? "unknown");
   const systemPrompt = baseSystemPrompt
     + renderToolHistory(session?.getRecentToolEvents() ?? []);
   logger.info({ systemPromptLength: systemPrompt.length, hasPersona: systemPrompt.includes("<persona>"), hasMemory: systemPrompt.includes("<memory>") }, "system prompt check");

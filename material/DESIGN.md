@@ -528,7 +528,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 |------|------|
 | Cron 排程 | 每 1 小時重新載入 crons.json，執行到期任務 |
 | Reminder | 一次性提醒，每 15 秒輪詢 reminders.json 掃到期的，觸發後自動刪除 |
-| Journal | 每天固定時間：silent flush 所有 active session → 歸檔 → 重寫日記 → 更新 MEMORY.md |
+| Journal | 每天固定時間：使用 `journal.model` 指定的獨立模型 silent flush 所有 active session → 歸檔 → 重寫日記 → 更新 MEMORY.md |
 | Soul Guardian | 可選的 deterministic 內建排程，直接執行完整性檢查並把 drift 送到指定 Discord 頻道；不經 LLM，重複未處理 drift 以 fingerprint 去重 |
 | Discord Bot | 有 token 且 enabled 時啟動 |
 | Plugins | 背景服務接流量前先 `loadPlugins()`；Discord 啟用時待 client ready 後才 `startPlugins()`，再註冊含外掛在內的 slash commands。Discord 停用或登入失敗時仍啟動非 Discord 能力，message transport 會明確拒絕。shutdown 時 `stopPlugins()`（見 Plugin 系統） |
@@ -537,6 +537,13 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日檔的 diary_note 補註只當輔助。transcript 是完整的對話紀錄；diary_note 僅補充明確背景、有證據的當下反思、跨日關聯與附件／工具脈絡，不重複記錄事件，也不把未確認的情緒推測寫成事實。
 
 `diary_note` 是補充性的日記註記，不是事件記錄，因此不能成為日記骨架。它只保存 transcript 無法保留的明確背景、有證據的當下反思、跨日關聯，以及附件或工具結果的必要脈絡；不得把推測的心理狀態寫成事實。Daily Journal prompt 以 transcript 為唯一事實來源，找出整天的主線，把相關的起因、行動、反應與結果融合成有脈絡的第一人稱段落；diary_note 只作為輔助色彩織入。正文以連續散文為主，只有真正的清單才用 bullet；實作命令、檔名與中間步驟只保留足以理解事件意義的部分，避免成品退化成 changelog、工作報告或分類後的流水帳。這項規則必須同時維護 runtime `workspace/JOURNAL.md` 與 `templates/JOURNAL.md`。部署時使用 `scripts/migrate-diary-note.ts` 做精確、可重跑的段落遷移與舊名稱掃描，不得整份 template 覆蓋客製 workspace。Apply 前必須完成 projected-state preflight 並指定 backup directory；兩個 runtime 檔先寫 temp，再逐一 rename，任何失敗都從備份回滾整組檔案，避免半套切換。
+
+### 背景工作的模型路由
+
+- Cron 與 Reminder 有 `channel_id` 時，執行端會載入該 Discord channel／thread／DM 對應 session 的 `modelSettings`，只借用它解析 request-scoped LLM profile；排程 prompt 不重播聊天歷史，產生的推播仍由 `sendAndPersist()` 寫回目標 session。沒有 `channel_id` 或無法解析 Discord session 時，使用 active connection profile 的預設模型。
+- Journal 不跟隨任何 conversation session。`journal.model` 是整條日記流程的獨立模型設定，涵蓋每日 silent memory flush、session archive 前整理與最終日記重寫；留空才使用 active connection profile 的預設模型。
+- 上述 profile 都在每次背景工作開始時解析成 immutable request profile，同一輪不受並行 `/model` 變更影響。
+- 每次 Agent request 的 system prompt 都會注入非敏感的 `<llm-context>`，包含該輪已固定的 profile name、protocol、model 與 reasoning effort。模型因此能準確回答自己當下使用的路由，不需從模型名稱或全域 config 猜測；base URL、auth、API key 與 capability 細節不注入。Profile/model 文字以 JSON string escaping 維持單行，不能偽造 prompt 區塊邊界。
 
 ### Reminder 用輪詢而不是 setTimeout
 

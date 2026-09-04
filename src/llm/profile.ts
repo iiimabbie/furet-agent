@@ -50,3 +50,9 @@ export function defaultSessionModelSettings(config: FuretConfig): SessionModelSe
 export function supportsCapability(profile: LlmProfile, capability: LlmCapability): boolean {
   return profile.capabilities[capability] === true;
 }
+
+/** Resolve the dedicated model used by all journal work. Journal never inherits a
+ * conversation session's model selection. */
+export function journalLlmProfile(config: FuretConfig): LlmProfile {
+  return activeLlmProfile(config, config.journal.model || undefined);
+}

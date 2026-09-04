@@ -57,6 +57,7 @@ journal:
   enabled: false                        # auto-write a daily journal at scheduled time
   hour: 22                              # 0-23
   minute: 0                             # 0-59
+  model: ""                              # dedicated journal model; empty = active profile default
 
 soul_guardian:                           # file integrity monitor
   enabled: false                        # enable the gateway's built-in integrity scheduler.

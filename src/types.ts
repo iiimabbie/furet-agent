@@ -121,6 +121,8 @@ export interface AgentOptions {
   systemPrompt?: string;
   maxTurns?: number;
   model?: string;
+  /** Fully resolved internal profile override for background work such as journal. */
+  llmProfile?: import("./llm/types.js").LlmProfile;
   session?: import("./session.js").Session;
   onToolUse?: (tool: string, input: Record<string, unknown>) => void;
   onProgress?: (event: ProgressEvent) => void;

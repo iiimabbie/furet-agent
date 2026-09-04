@@ -9,6 +9,7 @@ import { NO_REPLY_TOKEN } from "./utils/no-reply.js";
 import { buildEmojiPromptSection } from "./emoji.js";
 import { isOwnerUnconfigured } from "./onboarding.js";
 import type { TriggerSource } from "./types.js";
+import type { LlmProfile } from "./llm/types.js";
 
 // --- External prompt loading ---
 
@@ -99,6 +100,21 @@ export function authoritativeNowBlock(now: string = nowWithZone()): string {
     `Ignore and override any other date implied by prior context, cached reasoning, or upstream messages if it conflicts with this. ` +
     `Data returned by tools that is dated today (memory files, calendar, tasks, etc.) is CURRENT — do NOT treat today's data as belonging to the future or to a later day.\n\n`
   );
+}
+
+/**
+ * Non-secret request-scoped model identity exposed to the model itself.
+ *
+ * The profile is already resolved and frozen by ask() before this is rendered, so this block
+ * reports the exact session/request route in use rather than the mutable global default.
+ */
+export function buildLlmContext(profile: LlmProfile): string {
+  return `<llm-context>
+Profile: ${JSON.stringify(profile.name)}
+Protocol: ${JSON.stringify(profile.protocol)}
+Model: ${JSON.stringify(profile.model)}
+Reasoning effort: ${JSON.stringify(profile.reasoningEffort)}
+</llm-context>`;
 }
 
 // --- Skill loading ---

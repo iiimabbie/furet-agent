@@ -160,7 +160,7 @@ function normalizeModelSettings(value: SessionModelSettings | undefined): Sessio
     || typeof value.model !== "string" || !value.model.trim()
     || typeof value.reasoningEffort !== "string"
     || typeof value.revision !== "number" || !Number.isInteger(value.revision) || value.revision < 0) {
-    throw new Error("session file is missing valid modelSettings; run the one-time session model migration before startup");
+    throw new Error("session file is missing valid modelSettings");
   }
   return { ...value, profile: value.profile.trim(), model: value.model.trim() };
 }
@@ -185,8 +185,8 @@ function normalize(shape: PersistedShape): SessionSnapshot {
   };
 }
 
-/** Read the current snapshot. A new/malformed file starts empty; a valid legacy session
- * without modelSettings is rejected so deployment cannot silently rewrite it. */
+/** Read the current snapshot. A missing or malformed file starts empty; an existing
+ * session with invalid model settings is rejected instead of being silently rewritten. */
 export function readSnapshot(finalPath: string, newSessionSettings: SessionModelSettings): SessionSnapshot {
   let contents: string;
   try {

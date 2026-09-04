@@ -48,6 +48,8 @@ export interface FuretConfig {
     enabled: boolean;
     hour: number;
     minute: number;
+    /** Dedicated model for journal work. Empty = active profile default. */
+    model: string;
   };
   soul_guardian: {
     /**
@@ -181,6 +183,7 @@ const DEFAULTS: FuretConfig = {
     enabled: false,
     hour: 22,
     minute: 0,
+    model: "",
   },
   soul_guardian: {
     enabled: false,
@@ -410,6 +413,17 @@ function mergeAttachmentAnalysisConfig(resolved: unknown): FuretConfig["attachme
   };
 }
 
+function mergeJournalConfig(resolved: unknown): FuretConfig["journal"] {
+  const top = defined(resolved);
+  const d = DEFAULTS.journal;
+  return {
+    enabled: typeof top.enabled === "boolean" ? top.enabled : d.enabled,
+    hour: sanitizeInt(top.hour, d.hour, 0, 23),
+    minute: sanitizeInt(top.minute, d.minute, 0, 59),
+    model: typeof top.model === "string" ? top.model.trim() : d.model,
+  };
+}
+
 let cached: FuretConfig | null = null;
 let cachedMtimeMs = 0;
 
@@ -439,7 +453,7 @@ export function loadConfig(): FuretConfig {
   cached = {
     llm: normalizeLlmConfig(resolved.llm),
     discord: { ...DEFAULTS.discord, ...defined(resolved.discord) } as FuretConfig["discord"],
-    journal: { ...DEFAULTS.journal, ...defined(resolved.journal) } as FuretConfig["journal"],
+    journal: mergeJournalConfig(resolved.journal),
     soul_guardian: mergeSoulGuardianConfig(resolved.soul_guardian),
     tools: mergeToolsConfig(resolved.tools),
     image_generation: { ...DEFAULTS.image_generation, ...defined(resolved.image_generation) } as FuretConfig["image_generation"],
