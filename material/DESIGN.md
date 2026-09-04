@@ -186,6 +186,11 @@ cron / reminder / journal 跟使用者對話是並行跑的，trigger 與待送�
 | 額外層 | `options.systemPrompt` | （無） | 動態注入（如 Discord channel ID、session ID、flush 指令） |
 | 錨定層 | 自動生成 | `<persona-reminder>` | 結尾把語氣的最終依據指回 `<persona>` |
 
+AGENT.md 整份載入每一輪 prompt，唯一的例外是 `## Onboarding Protocol`：該段只在 `OWNER.md`
+仍含模板佔位符（或檔案不存在）時保留，設定完成後於載入時剝除。條件放在 `prompt.ts` 而非改檔案，
+workspace 的 AGENT.md 因此能與 `templates/` 保持一致，同時已設定的 workspace 不必為永遠不會
+再觸發的指令付出每輪的 token。
+
 ### OWNER.md 為什麼獨立成一層
 
 稱呼、身分、權限每一輪都要用得到，但這些資訊原本散在三個檔案：SOUL.md 的人格描述、

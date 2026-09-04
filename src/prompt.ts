@@ -7,14 +7,37 @@ import { nowWithZone } from "./utils/time.js";
 import { wrapTag } from "./utils/tagged-file.js";
 import { NO_REPLY_TOKEN } from "./utils/no-reply.js";
 import { buildEmojiPromptSection } from "./emoji.js";
+import { isOwnerUnconfigured } from "./onboarding.js";
 import type { TriggerSource } from "./types.js";
 
 // --- External prompt loading ---
 
-function loadAgentInstructions(): string {
+const ONBOARDING_HEADING = "## Onboarding Protocol";
+
+/**
+ * Drop the onboarding protocol once the workspace is configured.
+ *
+ * AGENT.md is loaded whole into every prompt, while the protocol can only ever fire when
+ * OWNER.md still holds template placeholders. Left in, it would spend tokens on every turn
+ * for the rest of the workspace's life on instructions that can never apply again. Removing
+ * it here rather than from the file keeps workspace AGENT.md in sync with the template.
+ */
+function stripOnboardingProtocol(instructions: string): string {
+  const lines = instructions.split("\n");
+  const start = lines.findIndex(line => line.trim() === ONBOARDING_HEADING);
+  if (start === -1) return instructions;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].startsWith("## ")) { end = i; break; }
+  }
+  return [...lines.slice(0, start), ...lines.slice(end)].join("\n");
+}
+
+function loadAgentInstructions(ownerConfigured: boolean): string {
   try {
-    const raw = readFileSync(resolve(WORKSPACE_DIR, "AGENT.md"), "utf-8");
-    return raw.replace(/\{\{ROOT\}\}/g, ROOT);
+    const raw = readFileSync(resolve(WORKSPACE_DIR, "AGENT.md"), "utf-8")
+      .replace(/\{\{ROOT\}\}/g, ROOT);
+    return ownerConfigured ? stripOnboardingProtocol(raw) : raw;
   } catch {
     return "You are an autonomous personal assistant agent.";
   }
@@ -208,10 +231,15 @@ export function buildSystemPrompt(extra?: string, recalled?: string, toolIndex?:
     "skills",
   );
 
+  // A missing or placeholder-bearing OWNER.md means setup is unfinished, so the onboarding
+  // protocol must stay in the instructions. Read the file once and share it with both slots.
+  const owner = loadWorkspaceFile("OWNER.md");
+  const ownerConfigured = owner.trim().length > 0 && !isOwnerUnconfigured(owner);
+
   const parts = [
     section(persona, "persona"),                       // 你是誰——放在操作規範後面會被淹沒
-    section(loadAgentInstructions(), "agent-instructions"),  // 你怎麼做事
-    section(loadWorkspaceFile("OWNER.md"), "owner"),   // 你為誰服務——永遠內嵌，見下
+    section(loadAgentInstructions(ownerConfigured), "agent-instructions"),  // 你怎麼做事
+    section(owner, "owner"),                           // 你為誰服務——永遠內嵌，見下
     section(loadWorkspaceFile("MEMORY.md"), "memory"), // ┐
     buildPeopleSection(),                              // ├ 你知道什麼（太大時 people 退化成指標）
     section(recalled ?? "", "recalled-memories"),      // ┘
