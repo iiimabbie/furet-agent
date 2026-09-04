@@ -268,15 +268,25 @@ export async function safeFetchBuffer(urlValue: string, options: SafeFetchBuffer
         resolve(result);
       };
 
-      const req = requester({
+      // @types/node in the project's TypeScript baseline predates this Node runtime's
+      // `autoSelectFamily` request option. Keep the narrow compatibility type here;
+      // Node 24 accepts the option and forwards it to net.connect().
+      const requestOptions = {
         protocol: current.protocol,
         hostname: current.hostname,
         port: current.port || undefined,
         path: `${current.pathname}${current.search}`,
         method: "GET",
         headers: { "User-Agent": "Furet-AttachmentIndexer/1.0", ...(options.headers ?? {}) },
-        lookup: (_hostname, _lookupOptions, callback) => callback(null, pinned.address, pinned.family),
-      }, response => {
+        // The custom lookup deliberately returns exactly the vetted, pinned address.
+        // Disable Node's multi-address family racing: with autoSelectFamily enabled it
+        // asks lookup() for an all-address result and treats a single pinned answer as
+        // malformed. This keeps the DNS-rebinding protection intact without allowing
+        // Node to perform a second, unvalidated resolution.
+        autoSelectFamily: false,
+        lookup: (_hostname: string, _lookupOptions: unknown, callback: (error: Error | null, address: string, family: number) => void) => callback(null, pinned.address, pinned.family),
+      };
+      const req = requester(requestOptions as unknown as import("node:http").RequestOptions, response => {
         const status = response.statusCode ?? 0;
         const location = headerValue(response.headers.location);
         if (status >= 300 && status < 400 && location) {
