@@ -83,7 +83,7 @@ function isGptModel(model: string): boolean {
 
 export const imageGen: Tool = {
   name: "image_gen",
-  description: "Generate or edit an image, save it directly into an organized subdirectory under workspace/attachments/, and attach the final path to the Discord reply. Before calling, prefer an existing semantically appropriate attachments subdirectory and pass it as output_directory; otherwise omit it to use generated-images/. Never leave generated files at the attachments root or rename/move them after this tool queues them. When depicting the agent itself, always set use_identity_reference=true so the configured canonical face is actually sent to the image model. Use reference_images for other image references. Never claim identity was preserved unless this tool returns success with references_used.",
+  description: "Generate or edit an image, save it directly into an organized subdirectory under workspace/attachments/, and attach the final path to the Discord reply. Before calling, list workspace/attachments/ and prefer an existing semantically appropriate subdirectory, then pass it as output_directory; otherwise omit it to use generated-images/. Never leave generated files at the attachments root or rename/move them after this tool queues them. When depicting the agent itself, always set use_identity_reference=true so the configured canonical face is actually sent to the image model. Use reference_images for other image references. Never claim identity was preserved unless this tool returns success with references_used.",
   parameters: {
     type: "object",
     properties: {
@@ -110,7 +110,7 @@ export const imageGen: Tool = {
       },
       output_directory: {
         type: "string",
-        description: "Relative subdirectory under workspace/attachments/ for the generated image. Prefer an existing semantically appropriate directory. Default: generated-images.",
+        description: "Relative subdirectory under workspace/attachments/ for the generated image. Before calling, list workspace/attachments/ and prefer an existing semantically appropriate directory. Default: generated-images.",
       },
       filename_hint: {
         type: "string",

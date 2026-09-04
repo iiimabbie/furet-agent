@@ -161,7 +161,7 @@ cron / reminder / journal 跟使用者對話是並行跑的，trigger 與待送�
 
 附件由 `ask()` 在結束時收集，透過 `AgentResponse.attachments` 回傳給呼叫端。這同時涵蓋本地工具用 `discord_attach_to_reply` 排入的檔案、GPT-only `image_gen` 經 Responses API 生成的圖片，以及 provider 直接回傳之 base64 `image` block。`image_gen` 可把 `workspace/attachments/` 內的圖片轉成 data URL，作為 Responses API 的 `input_image`；生成人格本人時以 `use_identity_reference=true` 掛上 `config.image_generation.identity_reference_path`，其他服裝／場景參考則用 `reference_images`。有參考圖時 tool 會用 edit action；不傳 `input_fidelity`，避免實際 image backend 與父層模型不同時拒絕不支援的參數。讀檔失敗或 canonical path 未設定會直接報錯，不得宣稱已鎖臉。
 
-生成檔不落在 `workspace/attachments/` 根目錄：呼叫端應先觀察現有目錄，透過 `output_directory` 指定語意合適的相對子目錄；未指定時由工具直接存入通用的 `generated-images/`。`filename_hint` 會清理成安全、可辨識的檔名 stem，再加時間戳與隨機尾碼避免碰撞。輸出目錄同時做 lexical path 與 `realpath` 邊界檢查，拒絕絕對路徑、`..` 逃逸與 symlink 逃逸。工具從一開始就寫入最終路徑並只把該路徑排入附件佇列，不再依賴生成後移動／改名，因此不會留下失效的 queued path。`drainAttachments()` 會去重並丟棄已被移動／改名而不存在的舊路徑，避免單一 stale path 讓 Discord 拒絕整批附件；Discord 最終進度訊息若在附檔 edit 時失敗，會記錄原始 Error 並退回發送一則新的完整回覆，而不是靜默留下工具進度。`callAnthropic()` 只在 GPT 模型的工具清單中暴露 `image_gen`；Claude 不會看到或呼叫此工具。
+生成檔不落在 `workspace/attachments/` 根目錄：呼叫端應先列出（`ls`）`workspace/attachments/` 的現有目錄，再透過 `output_directory` 優先指定語意合適的既有相對子目錄；未指定時由工具直接存入通用的 `generated-images/`。`filename_hint` 會清理成安全、可辨識的檔名 stem，再加時間戳與隨機尾碼避免碰撞。輸出目錄同時做 lexical path 與 `realpath` 邊界檢查，拒絕絕對路徑、`..` 逃逸與 symlink 逃逸。工具從一開始就寫入最終路徑並只把該路徑排入附件佇列，不再依賴生成後移動／改名，因此不會留下失效的 queued path。`drainAttachments()` 會去重並丟棄已被移動／改名而不存在的舊路徑，避免單一 stale path 讓 Discord 拒絕整批附件；Discord 最終進度訊息若在附檔 edit 時失敗，會記錄原始 Error 並退回發送一則新的完整回覆，而不是靜默留下工具進度。`callAnthropic()` 只在 GPT 模型的工具清單中暴露 `image_gen`；Claude 不會看到或呼叫此工具。
 
 ## Prompt 架構
 
