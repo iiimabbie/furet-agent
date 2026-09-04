@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { logger } from "./logger.js";
 import { getDb } from "./db.js";
 import { SESSIONS_DIR, ARCHIVE_DIR } from "./paths.js";
-import { toSearchTokens } from "./utils/cjk.js";
 import {
   atomicWriteFileSync,
   commitSession,
@@ -60,10 +59,9 @@ function findSessionFile(id: string): string | null {
   }
 }
 
-/** Backward-compatible detection for summaries created before isCompactSummary existed. */
+/** A compact summary is bookkeeping, not conversation: it is never archived as history. */
 function isCompactSummary(message: Message): boolean {
-  return message.isCompactSummary
-    || (typeof message.content === "string" && message.content.startsWith("[System] Previous conversation summary:\n"));
+  return message.isCompactSummary === true;
 }
 
 export class Session {
@@ -371,14 +369,10 @@ ${summary}`,
     try {
       const db = getDb();
       const insert = db.prepare("INSERT INTO session_archive (session_id, role, content, time, msg_id, reply_to) VALUES (?, ?, ?, ?, ?, ?)");
-      const insertFts = db.prepare("INSERT INTO session_fts (rowid, content, session_id) VALUES (?, ?, ?)");
       const tx = db.transaction(() => {
         for (const m of messages) {
           const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-          const result = insert.run(this.id, m.role, content, m.time ?? null, m.msgId ?? null, m.replyTo ?? null);
-          if (typeof m.content === "string" && m.content.length > 0) {
-            insertFts.run(result.lastInsertRowid, toSearchTokens(m.content), this.id);
-          }
+          insert.run(this.id, m.role, content, m.time ?? null, m.msgId ?? null, m.replyTo ?? null);
         }
       });
       tx();

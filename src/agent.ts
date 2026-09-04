@@ -109,7 +109,7 @@ function ensureUserFirst(messages: Message[]): Message[] {
 /** Fetch a single image URL and return an OpenAI image_url part. */
 async function fetchImageAsDataUrl(url: string): Promise<LlmImagePart | null> {
   try {
-    const response = await safeFetchBuffer(url, { maxBytes: 20 * 1024 * 1024, timeoutMs: 30_000, maxRedirects: 4 });
+    const response = await safeFetchBuffer(url, { maxBytes: 20 * 1024 * 1024, idleTimeoutMs: 30_000, deadlineMs: 120_000, maxRedirects: 4 });
     if (!response.ok) {
       logger.warn({ url, status: response.status }, "image fetch failed (non-OK status)");
       return null;

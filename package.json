@@ -10,7 +10,6 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "start": "node dist/index.js",
-    "migrate:diary-note": "tsx scripts/migrate-diary-note.ts",
     "typecheck": "tsc --noEmit",
     "typecheck:scripts": "tsc --noEmit -p scripts/tsconfig.json",
     "attachment-gc": "tsx scripts/attachment-gc.ts",

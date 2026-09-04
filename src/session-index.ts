@@ -47,11 +47,18 @@ export function searchableMessageText(message: Message): string | null {
   return text || null;
 }
 
+/**
+ * The stable identity a search document hangs off, used as its `parent_id`.
+ *
+ * Messages get a UUID when they are first persisted. A message that reaches indexing
+ * without one is identified by its own content instead: the same message must produce
+ * the same ID on every rebuild, or its existing documents and attachment references are
+ * orphaned and re-indexed. Archives are write-once, so the messages inside them keep
+ * resolving through this path rather than ever gaining a stored ID.
+ */
 export function ensureMessageSearchId(sessionId: string, message: Message, ordinal: number): string {
   if (message.searchId) return message.searchId;
-  // New messages receive a UUID before persistence. This deterministic fallback is for
-  // legacy active/archive messages that predate searchId and must remain stable on rebuild.
-  const legacyIdentity = JSON.stringify({
+  const derivedIdentity = JSON.stringify({
     sessionId,
     ordinal,
     role: message.role,
@@ -60,7 +67,8 @@ export function ensureMessageSearchId(sessionId: string, message: Message, ordin
     msgId: message.msgId ?? null,
     replyTo: message.replyTo ?? null,
   });
-  message.searchId = `legacy-${stableHash(legacyIdentity)}`;
+  // The prefix is part of the stored identity, not a label.
+  message.searchId = `legacy-${stableHash(derivedIdentity)}`;
   return message.searchId;
 }
 

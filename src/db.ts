@@ -10,39 +10,8 @@ const DB_PATH = resolve(WORKSPACE_CONFIG_DIR, "furet.db");
 let db: Database.Database | null = null;
 
 /** 向量表名稱（cosine 版）。embedding.ts 一律走這張。 */
-export const VEC_TABLE = "memory_vectors_vec_cos";
-export const SESSION_SUMMARY_VEC_TABLE = "session_summary_vectors_vec_cos";
 export const SEARCH_DOCUMENT_VEC_TABLE = "search_document_vectors_vec_cos";
 
-/**
- * 把 L2 向量表的內容搬到 cosine 表。
- * 向量值本身不變（只是距離算法不同），所以直接複製 blob，不用重打 embedding API。
- */
-function migrateVecTable(database: Database.Database): void {
-  const hasOld = database.prepare(
-    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_vectors_vec'"
-  ).get();
-  if (!hasOld) return;
-
-  const target = (database.prepare(`SELECT count(*) c FROM ${VEC_TABLE}`).get() as { c: number }).c;
-  if (target > 0) return; // 已經搬過
-
-  try {
-    const rows = database.prepare(
-      "SELECT rowid, embedding FROM memory_vectors_vec"
-    ).all() as Array<{ rowid: number; embedding: Buffer }>;
-    if (rows.length === 0) return;
-
-    const insert = database.prepare(`INSERT INTO ${VEC_TABLE} (rowid, embedding) VALUES (?, ?)`);
-    database.transaction(() => {
-      // vec0 的 rowid 綁定只吃 BigInt，傳一般 number 會被拒
-      for (const r of rows) insert.run(BigInt(r.rowid), r.embedding);
-    })();
-    logger.info({ count: rows.length }, "vec table migrated to cosine metric");
-  } catch (err) {
-    logger.error({ err: (err as Error).message }, "vec table migration failed");
-  }
-}
 
 function ensureColumn(database: Database.Database, table: string, column: string, definition: string): void {
   const columns = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -92,33 +61,6 @@ export function getDb(): Database.Database {
   db.pragma("foreign_keys = ON");
   sqliteVec.load(db);
 
-  // 向量表：記憶的 embedding
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS memory_vectors (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      text TEXT NOT NULL,
-      file TEXT NOT NULL,
-      created_at TEXT DEFAULT (datetime('now'))
-    )
-  `);
-  // vec0 預設用 L2 距離，但 searchVectors 把 (1 - distance) 當成 cosine 相似度在比。
-  // 兩者對不上（L2 ∈ [0,2] 但意義不同），閾值形同永遠不成立。
-  // 指定 distance_metric=cosine，此時 distance = 1 - cos，(1 - distance) 才真的是相似度。
-  // CREATE TABLE IF NOT EXISTS 不會改既有表的 schema，所以開一張新表並搬遷。
-  db.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors_vec_cos USING vec0(
-      embedding FLOAT[3072] distance_metric=cosine
-    )
-  `);
-  migrateVecTable(db);
-
-  // 全文搜尋：記憶
-  db.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-      text, file
-    )
-  `);
-
   // Persistent Discord button state. Flexible button/action payloads remain JSON, while
   // lifecycle fields stay queryable for atomic transitions and retention cleanup.
   db.exec(`
@@ -158,31 +100,6 @@ export function getDb(): Database.Database {
       msg_id TEXT,
       reply_to TEXT,
       archived_at TEXT DEFAULT (datetime('now'))
-    )
-  `);
-
-  // 全文搜尋：session archive
-  db.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
-      content, session_id
-    )
-  `);
-
-  // Semantic session search indexes compact continuation summaries rather than every
-  // raw message. The JSON compact archive remains the durable source; these tables are
-  // a rebuildable search projection.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS session_summary_vectors (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT NOT NULL,
-      summary TEXT NOT NULL,
-      created_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(session_id, summary)
-    )
-  `);
-  db.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS session_summary_vectors_vec_cos USING vec0(
-      embedding FLOAT[3072] distance_metric=cosine
     )
   `);
 
@@ -345,33 +262,12 @@ export function getDb(): Database.Database {
  */
 const FTS_CONTENT_VERSION = 2;
 
-function isJsonArray(s: string): boolean {
-  if (!s.startsWith("[")) return false;
-  try { return Array.isArray(JSON.parse(s)); } catch { return false; }
-}
-
-/** Rebuild legacy and unified FTS projections when their own token versions change. */
+/** Rebuild the search-document FTS projection when its token version changes. */
 function rebuildFtsIfNeeded(database: Database.Database): void {
   database.exec(`CREATE TABLE IF NOT EXISTS fts_meta (key TEXT PRIMARY KEY, value INTEGER)`);
-  const legacy = database.prepare("SELECT value FROM fts_meta WHERE key='content_version'").get() as { value: number } | undefined;
   const unified = database.prepare("SELECT value FROM fts_meta WHERE key='search_documents_content_version'").get() as { value: number } | undefined;
 
   try {
-    if (legacy?.value !== FTS_CONTENT_VERSION) {
-      const memRows = database.prepare("SELECT id, text, file FROM memory_vectors").all() as Array<{ id: number; text: string; file: string }>;
-      const sessRows = database.prepare("SELECT id, content, session_id FROM session_archive").all() as Array<{ id: number; content: string; session_id: string }>;
-      const insMem = database.prepare("INSERT INTO memory_fts (rowid, text, file) VALUES (?, ?, ?)");
-      const insSess = database.prepare("INSERT INTO session_fts (rowid, content, session_id) VALUES (?, ?, ?)");
-      database.transaction(() => {
-        database.exec("DELETE FROM memory_fts");
-        for (const r of memRows) insMem.run(r.id, toSearchTokens(r.text), r.file);
-        database.exec("DELETE FROM session_fts");
-        for (const r of sessRows) if (r.content && !isJsonArray(r.content)) insSess.run(r.id, toSearchTokens(r.content), r.session_id);
-        database.prepare("INSERT INTO fts_meta (key, value) VALUES ('content_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(FTS_CONTENT_VERSION);
-      })();
-      logger.info({ version: FTS_CONTENT_VERSION, memory: memRows.length, session: sessRows.length }, "legacy FTS indexes rebuilt");
-    }
-
     if (unified?.value !== FTS_CONTENT_VERSION) {
       const rows = database.prepare("SELECT rowid, text, source_type, source_id, session_id, visibility_scope FROM search_documents").all() as Array<{ rowid: number; text: string; source_type: string; source_id: string; session_id: string | null; visibility_scope: string }>;
       const insert = database.prepare("INSERT INTO search_documents_fts (rowid, text, source_type, source_id, session_id, visibility_scope) VALUES (?, ?, ?, ?, ?, ?)");

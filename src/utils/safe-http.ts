@@ -14,11 +14,9 @@ export interface SafeFetchBufferOptions {
   /**
    * Absolute wall-clock budget for the whole operation, shared across every redirect
    * hop and every socket. Once it elapses the request is aborted regardless of idle
-   * activity. Kept as `timeoutMs` alias for backward compatibility with callers.
+   * activity.
    */
   deadlineMs?: number;
-  /** @deprecated use deadlineMs; retained so existing callers keep compiling. */
-  timeoutMs?: number;
   maxRedirects?: number;
   headers?: Record<string, string>;
   allowPrivateAddresses?: boolean;
@@ -218,7 +216,7 @@ function headerValue(value: string | string[] | undefined): string | undefined {
 }
 
 export async function safeFetchBuffer(urlValue: string, options: SafeFetchBufferOptions): Promise<SafeFetchBufferResult> {
-  const idleTimeoutMs = options.idleTimeoutMs ?? options.timeoutMs ?? 30_000;
+  const idleTimeoutMs = options.idleTimeoutMs ?? 30_000;
   // Absolute budget defaults generously relative to the idle timeout so a legitimate
   // multi-hop download is not cut off, but a redirect loop or slow-drip cannot run
   // forever. Callers may override with deadlineMs.
