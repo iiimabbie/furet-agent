@@ -105,7 +105,7 @@ llm:
 
 `timezone` affects timestamps, memory filenames, and journal dates. Leaving it empty uses the host system timezone.
 
-The active connection profile selects the wire protocol, gateway URL, authentication, model ID, token-limit field, and hosted capabilities independently. `/model` autocomplete discovers model IDs from the active gateway’s OpenAI-compatible `GET /models` endpoint; model lists are not duplicated in config, and manually entered IDs remain allowed for gateways that omit aliases from discovery. The first supported interactive adapter is `openai_chat_completions`, suitable for CPA, OpenRouter-style gateways, GCLI proxies, Ollama, and other compatible endpoints. Hosted Responses capabilities are exposed only when the same active profile declares them; Furet never silently switches profile or model.
+The active connection profile selects the wire protocol, gateway URL, authentication, default model ID, token-limit field, and hosted capabilities independently. Each session snapshots that profile's model and reasoning effort when it is created. `/model` changes only the current Discord session; other channels, threads, DMs, CLI sessions, and background sessions keep their own selection. Autocomplete discovers model IDs from that session's gateway through the OpenAI-compatible `GET /models` endpoint; model lists are not duplicated in config, and manually entered IDs remain allowed for gateways that omit aliases from discovery. The first supported interactive adapter is `openai_chat_completions`, suitable for CPA, OpenRouter-style gateways, GCLI proxies, Ollama, and other compatible endpoints. Hosted Responses capabilities are exposed only when the same active profile declares them; Furet never silently switches profile or model.
 
 ## Running Furet
 
@@ -175,7 +175,7 @@ Available slash commands:
 - `/status` — show model, session, and token information.
 - `/compact` — summarize older context while retaining recent messages.
 - `/task` — list Google Tasks.
-- `/model` — switch models; owner only.
+- `/model` — switch the current session’s model and reasoning effort; owner only.
 - `/google-auth` — finish Google OAuth authorization; owner only.
 - `/restart` — exit the gateway so its process manager can restart it; owner only.
 - `/plugin 動作:<安裝|更新|卸載> [目標:<GitHub URL or installed plugin>]` — owner-only plugin management; update without a target updates all managed plugins.

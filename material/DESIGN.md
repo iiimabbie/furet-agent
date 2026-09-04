@@ -58,7 +58,7 @@ Agent (agent.ts) ── normalized LLM client ──► profile adapter ──�
 
 `config.llm.active_profile` 選出目前 connection profile。每個 profile 分別保存 `protocol`、`baseUrl`、`auth`、`apiKey`、`model`、`reasoningEffort`、token-limit field、capabilities 與 model list；不得依 model ID 前綴猜測協議或能力。
 
-每次 `ask()` 開始時，`activeLlmProfile()` 會建立 immutable request profile 並綁進 AsyncLocalStorage。同一請求的主對話、compaction、attachment vision、self-evolve 子請求，以及 hosted web/image/code capability 都沿用這份 profile；並行 `/model` 只影響後續請求。`/model` 只更新 active profile 的 model 與 reasoning effort，不改 protocol、endpoint、auth 或 capability。
+每個 session 建立時會從 active connection profile 快照 `profile + model + reasoning effort`，並持久化於 session source of truth。每次 `ask()` 開始時，`sessionLlmProfile()` 將 session 選擇與 connection profile 合成 immutable request profile，再綁進 AsyncLocalStorage。同一請求的主對話、compaction、attachment vision、self-evolve 子請求，以及 hosted web/image/code capability 都沿用這份 profile。`/model` 只更新目前 Discord session 的 model 與 reasoning effort，不改 connection profile 的 protocol、endpoint、auth、capability 或其他 session。
 
 OpenAI Chat adapter 依 profile 的 `tokenLimitField` 選擇 `max_completion_tokens` 或 `max_tokens`。`reasoningEffort: default` 不送 reasoning 欄位，其餘值以 `reasoning_effort` 傳給相容 gateway。Hosted capability 由 profile 明確宣告；不支援時工具不曝光，也不能跨 profile 或跨模型 fallback。
 
@@ -495,7 +495,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 - `/new` — silent memory flush + 歸檔 session + AI 重新打招呼
 - `/status` — 顯示 model / tokens / sessions / crons / reminders / plugin jobs / plugins / skills
 - `/restart` — 重啟 gateway（spawn detached child）
-- `/model` — 切換 AI 模型與思考等級（模型名稱 autocomplete from active profile `GET /models` discovery；effort 省略時為 default）
+- `/model` — 切換目前 session 的 AI 模型與思考等級（模型名稱 autocomplete from that session profile’s `GET /models` discovery；effort 省略時為 default）
 - `/google-auth` — Google OAuth 授權流程
 - `/task` — 列出 Google Tasks
 - `/plugin` — owner-only 外掛管理入口；必填 `動作` 選安裝／更新／卸載，共用 `目標` string：安裝時自由輸入 GitHub URL，更新／卸載時依 `動作` autocomplete 已安裝外掛，更新省略目標代表全部
@@ -886,7 +886,7 @@ Discord uploads、Embed image/thumbnail、回覆引用與 Forum starter 附件�
 
 帶圖片的對話輪次會在同一次請求裡產生描述：該輪本來就已上傳圖片，追加一個 `<image-index>` 區塊只花 output token，省下第二次重新上傳圖片的視覺呼叫。區塊在送往 Discord 前（含進度訊息）剝除，並依序寫入該訊息的圖片附件記錄，標記 `vision_status='complete'`。背景 vision worker 會跳過已完成的記錄，因此它是取代而非競爭；區塊缺漏、格式錯誤、編號超界或非對話來源的附件（工具輸出、生成圖、歷史回填）仍由 worker 照常描述。
 
-附件視覺描述固定使用當下設定的 `llm.currentModel`；`attachment_analysis` 只控制 endpoint credentials、語言、預算與 worker 限制，不允許另設模型，因此 `/model` 切換後背景分析也會跟著切換，不會暗中由其他模型代跑。wire format 固定為 OpenAI-compatible `/chat/completions`，使用 Bearer auth 與 `image_url` data URI。該區塊預設 `enabled: false`；端點不支援目前模型的 vision 時會明確失敗。`base_url`／`api_key_env` 留空時沿用 `llm`。
+附件視覺描述固定使用工作所屬 request/session 的模型；`attachment_analysis` 只控制 endpoint credentials、語言、預算與 worker 限制，不允許另設模型，因此不會暗中由其他模型代跑。wire format 固定為 OpenAI-compatible `/chat/completions`，使用 Bearer auth 與 `image_url` data URI。該區塊預設 `enabled: false`；端點不支援目前模型的 vision 時會明確失敗。`base_url`／`api_key_env` 留空時沿用 `llm`。
 
 模型自己產生的圖片（生圖工具與內嵌輸出）標記為 `relation='generated'`，不跑視覺描述：產生它的 prompt 已經是對話的一部分並建立索引，比事後再看圖產生的描述更能表達意圖。OCR 仍照跑（本機、免費）。
 

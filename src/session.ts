@@ -10,7 +10,9 @@ import {
   readSnapshot,
   type SessionData,
 } from "./session-store.js";
-import type { AttachmentReference, Message, TokenUsage, ToolHistoryEvent } from "./types.js";
+import type { AttachmentReference, Message, SessionModelSettings, TokenUsage, ToolHistoryEvent } from "./types.js";
+import { loadConfig, REASONING_EFFORTS, type ReasoningEffort } from "./config.js";
+import { defaultSessionModelSettings } from "./llm/profile.js";
 import {
   assignNewMessageSearchId,
   ensureMessageSearchId,
@@ -67,6 +69,7 @@ function isCompactSummary(message: Message): boolean {
 export class Session {
   readonly id: string;
   private filePath: string;
+  private modelSettings: SessionModelSettings;
   private messages: Message[] = [];
   private usage: TokenUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
   private toolHistory: ToolHistoryEvent[] = [];
@@ -80,10 +83,12 @@ export class Session {
    * (and refreshed after every commit) so the merge can compute this instance's delta.
    */
   private baseRevision = 0;
-  private baseData: SessionData = { messages: [], usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, toolHistory: [] };
+  private baseData: SessionData;
 
   constructor(id: string) {
     this.id = id;
+    this.modelSettings = defaultSessionModelSettings(loadConfig());
+    this.baseData = { modelSettings: { ...this.modelSettings }, messages: [], usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, toolHistory: [] };
     const existing = findSessionFile(id);
     this.filePath = existing ? resolve(SESSIONS_DIR, existing) : resolve(SESSIONS_DIR, `${idToStem(id)}.json`);
     this.load();
@@ -92,6 +97,7 @@ export class Session {
   /** Snapshot current in-memory state as the merge base after a successful commit. */
   private snapshotBase(): SessionData {
     return {
+      modelSettings: { ...this.modelSettings },
       messages: [...this.messages],
       usage: { ...this.usage },
       toolHistory: [...this.toolHistory],
@@ -112,10 +118,37 @@ export class Session {
       // file (content and embedded revision intact) to the new path, so baseRevision is
       // still valid there; re-read to adopt whatever revision now lives at the new path
       // (covers the case where the source file did not yet exist and no rename occurred).
-      this.baseRevision = readSnapshot(this.filePath).revision;
+      this.baseRevision = readSnapshot(this.filePath, this.modelSettings).revision;
     } catch (err) {
       logger.error({ err: (err as Error).message, sessionId: this.id }, "session rename failed");
     }
+  }
+
+  getModelSettings(): SessionModelSettings {
+    return { ...this.modelSettings };
+  }
+
+  setModelSettings(model: string, reasoningEffort: ReasoningEffort): void {
+    const normalizedModel = model.trim();
+    if (!normalizedModel) throw new Error("model must not be empty");
+    if (!REASONING_EFFORTS.includes(reasoningEffort)) throw new Error(`invalid reasoning effort: ${reasoningEffort}`);
+    const previous = this.modelSettings;
+    this.modelSettings = {
+      ...previous,
+      model: normalizedModel,
+      reasoningEffort,
+      revision: previous.revision + 1,
+    };
+    try { this.save(); }
+    catch (error) { this.modelSettings = previous; throw error; }
+  }
+
+  resetModelSettings(): void {
+    const previous = this.modelSettings;
+    const defaults = defaultSessionModelSettings(loadConfig());
+    this.modelSettings = { ...defaults, revision: previous.revision + 1 };
+    try { this.save(); }
+    catch (error) { this.modelSettings = previous; throw error; }
   }
 
   getMessages(): Message[] {
@@ -228,12 +261,15 @@ export class Session {
   }
 
   clear(): void {
-    const previous = { messages: this.messages, usage: this.usage, toolHistory: this.toolHistory };
+    const previous = { modelSettings: this.modelSettings, messages: this.messages, usage: this.usage, toolHistory: this.toolHistory };
+    const defaults = defaultSessionModelSettings(loadConfig());
+    this.modelSettings = { ...defaults, revision: this.modelSettings.revision + 1 };
     this.messages = [];
     this.usage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
     this.toolHistory = [];
     try { this.save(); }
     catch (error) {
+      this.modelSettings = previous.modelSettings;
       this.messages = previous.messages;
       this.usage = previous.usage;
       this.toolHistory = previous.toolHistory;
@@ -319,6 +355,7 @@ ${summary}`,
         archivedAt,
         kind,
         ...(summary ? { summary } : {}),
+        modelSettings: this.modelSettings,
         messages,
         usage: this.usage,
         toolHistory: this.toolHistory,
@@ -357,7 +394,8 @@ ${summary}`,
     // readSnapshot is crash-safe and canonical-first: a missing or corrupt file yields
     // an empty snapshot at revision 0 rather than throwing, so a partially-written or
     // absent file never aborts session startup.
-    const snapshot = readSnapshot(this.filePath);
+    const snapshot = readSnapshot(this.filePath, this.modelSettings);
+    this.modelSettings = snapshot.modelSettings;
     this.messages = snapshot.messages;
     this.usage = snapshot.usage;
     this.toolHistory = snapshot.toolHistory;
@@ -392,11 +430,12 @@ ${summary}`,
         this.filePath,
         this.baseData,
         this.baseRevision,
-        { messages: this.messages, usage: this.usage, toolHistory: this.toolHistory },
+        { modelSettings: this.modelSettings, messages: this.messages, usage: this.usage, toolHistory: this.toolHistory },
       );
       if (result.merged) {
         // Another writer advanced the file; adopt the merged result so this instance's
         // in-memory view matches disk and no appended history is silently dropped.
+        this.modelSettings = result.data.modelSettings;
         this.messages = result.data.messages;
         this.usage = result.data.usage;
         this.toolHistory = result.data.toolHistory;

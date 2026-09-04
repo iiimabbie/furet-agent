@@ -60,3 +60,31 @@ export async function listGatewayModels(profile: LlmProfile): Promise<string[]> 
   inFlight.set(key, request);
   return request;
 }
+
+/**
+ * Model-ID segments that mark a gateway entry as a media generator rather than a
+ * conversation model. Matched per segment, so `gpt-image-2` and `grok-imagine-video`
+ * are excluded while `grok-imagine-*` alone and ordinary IDs are not.
+ */
+const MEDIA_MODEL_SEGMENTS = new Set(["img", "image", "images", "video", "videos"]);
+
+/** Whether a gateway model ID names an image or video generator. */
+export function isMediaModel(id: string): boolean {
+  return id.toLowerCase().split(/[^a-z0-9]+/).some(part => MEDIA_MODEL_SEGMENTS.has(part));
+}
+
+/**
+ * Discovered models that can serve a conversation.
+ *
+ * A gateway lists every model it can route, including image and video generators that
+ * only answer on their own endpoints — picking one for `/model` would break the session
+ * with a 400 or 503. They are filtered here rather than upstream so plugins that do call
+ * those endpoints still see them through `listGatewayModels`.
+ */
+export async function listConversationModels(profile: LlmProfile): Promise<string[]> {
+  const models = await listGatewayModels(profile);
+  const conversational = models.filter(id => !isMediaModel(id));
+  // Never hand back an empty picker: a gateway that only exposes media models is better
+  // reported as-is than as "no models available".
+  return conversational.length > 0 ? conversational : models;
+}

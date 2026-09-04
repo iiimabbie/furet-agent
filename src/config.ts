@@ -490,26 +490,6 @@ export function configureInitialDiscordOwner(ownerId: string, channelId?: string
   cached = null;
 }
 
-export function setModelConfig(model: string, reasoningEffort: ReasoningEffort): void {
-  let raw: Record<string, unknown> = {};
-  try {
-    raw = (parse(readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) ?? {};
-  } catch {}
-  const normalized = normalizeLlmConfig(resolveEnvVars(raw.llm));
-  const llm = (raw.llm as Record<string, unknown>) ?? {};
-  const profiles = (llm.profiles as Record<string, Record<string, unknown>> | undefined) ?? {};
-  const activeName = normalized.active_profile;
-  const active = profiles[activeName] ?? { ...normalized.profiles[activeName] };
-  active.model = model;
-  active.reasoningEffort = reasoningEffort;
-  profiles[activeName] = active;
-  llm.active_profile = activeName;
-  llm.profiles = profiles;
-  raw.llm = llm;
-  writeFileSync(CONFIG_PATH, stringify(raw, { lineWidth: 0 }));
-  cached = null;
-}
-
 export function setRespondToBots(enabled: boolean): void {
   let raw: Record<string, unknown> = {};
   try {

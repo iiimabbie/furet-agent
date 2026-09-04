@@ -5,7 +5,7 @@ import {
 import { dirname, basename } from "node:path";
 import { randomBytes } from "node:crypto";
 import { logger } from "./logger.js";
-import type { Message, TokenUsage, ToolHistoryEvent } from "./types.js";
+import type { Message, SessionModelSettings, TokenUsage, ToolHistoryEvent } from "./types.js";
 
 /**
  * Durable, concurrency-safe on-disk representation for a single session file.
@@ -30,6 +30,7 @@ import type { Message, TokenUsage, ToolHistoryEvent } from "./types.js";
  */
 
 export interface SessionData {
+  modelSettings: SessionModelSettings;
   messages: Message[];
   usage: TokenUsage;
   toolHistory: ToolHistoryEvent[];
@@ -41,6 +42,7 @@ export interface SessionSnapshot extends SessionData {
 }
 
 interface PersistedShape {
+  modelSettings?: SessionModelSettings;
   messages?: Message[];
   usage?: TokenUsage;
   toolHistory?: ToolHistoryEvent[];
@@ -152,8 +154,30 @@ function parse(contents: string): PersistedShape {
   return JSON.parse(contents) as PersistedShape;
 }
 
+function normalizeModelSettings(value: SessionModelSettings | undefined): SessionModelSettings {
+  if (!value
+    || typeof value.profile !== "string" || !value.profile.trim()
+    || typeof value.model !== "string" || !value.model.trim()
+    || typeof value.reasoningEffort !== "string"
+    || typeof value.revision !== "number" || !Number.isInteger(value.revision) || value.revision < 0) {
+    throw new Error("session file is missing valid modelSettings; run the one-time session model migration before startup");
+  }
+  return { ...value, profile: value.profile.trim(), model: value.model.trim() };
+}
+
+function emptySnapshot(modelSettings: SessionModelSettings): SessionSnapshot {
+  return {
+    modelSettings: { ...modelSettings },
+    messages: [],
+    usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
+    toolHistory: [],
+    revision: 0,
+  };
+}
+
 function normalize(shape: PersistedShape): SessionSnapshot {
   return {
+    modelSettings: normalizeModelSettings(shape.modelSettings),
     messages: shape.messages ?? [],
     usage: shape.usage ? { ...shape.usage, reasoningTokens: shape.usage.reasoningTokens ?? 0 } : { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
     toolHistory: shape.toolHistory ?? [],
@@ -161,17 +185,27 @@ function normalize(shape: PersistedShape): SessionSnapshot {
   };
 }
 
-/** Read the current on-disk snapshot. Missing/corrupt file → empty snapshot at rev 0. */
-export function readSnapshot(finalPath: string): SessionSnapshot {
+/** Read the current snapshot. A new/malformed file starts empty; a valid legacy session
+ * without modelSettings is rejected so deployment cannot silently rewrite it. */
+export function readSnapshot(finalPath: string, newSessionSettings: SessionModelSettings): SessionSnapshot {
+  let contents: string;
   try {
-    return normalize(parse(readFileSync(finalPath, "utf-8")));
+    contents = readFileSync(finalPath, "utf-8");
   } catch {
-    return { messages: [], usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, toolHistory: [], revision: 0 };
+    return emptySnapshot(newSessionSettings);
   }
+  let shape: PersistedShape;
+  try {
+    shape = parse(contents);
+  } catch {
+    return emptySnapshot(newSessionSettings);
+  }
+  return normalize(shape);
 }
 
 function serialize(data: SessionData, revision: number): string {
   return JSON.stringify({
+    modelSettings: data.modelSettings,
     messages: data.messages,
     usage: data.usage,
     toolHistory: data.toolHistory,
@@ -219,6 +253,19 @@ export function mergeSessionState(
     return merged;
   }
 
+  const localSettingsChanged = !equal(desired.modelSettings, base.modelSettings);
+  const remoteSettingsChanged = !equal(current.modelSettings, base.modelSettings);
+  let modelSettings = current.modelSettings;
+  if (localSettingsChanged && !remoteSettingsChanged) {
+    modelSettings = desired.modelSettings;
+  } else if (localSettingsChanged && remoteSettingsChanged) {
+    if (equal(desired.modelSettings, current.modelSettings)) {
+      modelSettings = current.modelSettings;
+    } else {
+      throw new Error("concurrent session conflict while changing model settings");
+    }
+  }
+
   const messages = mergeLog("messages", base.messages, desired.messages, current.messages);
   const toolHistory = mergeLog("toolHistory", base.toolHistory, desired.toolHistory, current.toolHistory);
   const usage: TokenUsage = {
@@ -229,7 +276,7 @@ export function mergeSessionState(
   if (usage.inputTokens < 0 || usage.outputTokens < 0 || usage.reasoningTokens < 0) {
     throw new Error("concurrent session conflict produced negative usage");
   }
-  return { messages, usage, toolHistory };
+  return { modelSettings, messages, usage, toolHistory };
 }
 
 export interface CommitResult {
@@ -247,7 +294,7 @@ export interface CommitResult {
 export function commitSession(finalPath: string, base: SessionData, baseRevision: number, desired: SessionData): CommitResult {
   const release = acquireLock(finalPath);
   try {
-    const current = readSnapshot(finalPath);
+    const current = readSnapshot(finalPath, base.modelSettings);
     let committed = desired;
     let merged = false;
     if (current.revision !== baseRevision) {

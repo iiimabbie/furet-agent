@@ -9,7 +9,7 @@ import { stamp } from "./utils/time.js";
 import { filterStaleOnboarding } from "./onboarding.js";
 import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions, ToolHistoryEvent } from "./types.js";
 import { generateLlmResponse } from "./llm/client.js";
-import { activeLlmProfile } from "./llm/profile.js";
+import { activeLlmProfile, sessionLlmProfile } from "./llm/profile.js";
 import type { LlmContent, LlmImagePart, LlmMessage, LlmFunctionTool, LlmProfile } from "./llm/types.js";
 import { safeFetchBuffer } from "./utils/safe-http.js";
 import { truncateSearchText } from "./utils/search-output.js";
@@ -226,7 +226,7 @@ export async function compactSession(session: import("./session.js").Session, pr
   if (!transcript) return null;
 
   try {
-    const profile = profileOverride ?? activeLlmProfile(loadConfig());
+    const profile = profileOverride ?? sessionLlmProfile(loadConfig(), session.getModelSettings());
     const response = await generateLlmResponse({
       messages: [
         { role: "system", content: COMPACT_SYSTEM_PROMPT },
@@ -291,7 +291,10 @@ export function ask(prompt: string | null, options: AgentOptions = {}): Promise<
   // from the immutable LLM profile bound to the request,
   // race-prone variable — and without the schema exposure layer and the execution gate
   // disagreeing when a concurrent request overrides the model.
-  const requestProfile = activeLlmProfile(loadConfig(), options.model);
+  const config = loadConfig();
+  const requestProfile = options.session
+    ? sessionLlmProfile(config, options.session.getModelSettings(), options.model)
+    : activeLlmProfile(config, options.model);
   const sessionId = options.session?.id;
   const channelId = sessionId?.startsWith("discord-channel-")
     ? sessionId.slice("discord-channel-".length)
@@ -378,7 +381,9 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
 
   // Exposure feature: read flag once for this request.
   const cfg = loadConfig();
-  const requestProfile = getRequestProfile() ?? activeLlmProfile(cfg, options.model);
+  const requestProfile = getRequestProfile() ?? (session
+    ? sessionLlmProfile(cfg, session.getModelSettings(), options.model)
+    : activeLlmProfile(cfg, options.model));
   const effectiveModel = requestProfile.model;
   const exposureEnabled = cfg.tools.exposure.enabled;
   const maxMatchedTools = cfg.tools.exposure.max_matched_tools;

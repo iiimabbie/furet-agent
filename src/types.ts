@@ -63,6 +63,14 @@ export type Message = {
 
 // --- Token Usage ---
 
+export interface SessionModelSettings {
+  profile: string;
+  model: string;
+  reasoningEffort: import("./config.js").ReasoningEffort;
+  /** Monotonic session-local revision used to detect concurrent setting changes. */
+  revision: number;
+}
+
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
