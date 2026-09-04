@@ -1,4 +1,5 @@
 import type { AgentResponse, Tool } from "../types.js";
+import type { LlmCapability } from "../llm/types.js";
 import type { ExposureLevel, MatchSignalName } from "./metadata.js";
 import type { PluginConfigStore } from "../plugin-config.js";
 
@@ -14,6 +15,7 @@ export interface PluginToolRegistration {
   keywords?: string[];
   aliases?: string[];
   signals?: MatchSignalName[];
+  capability?: LlmCapability;
   modelPredicate?: (model: string) => boolean;
   /** Defaults to true. */
   ownerOnly?: boolean;

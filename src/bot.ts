@@ -8,6 +8,8 @@ import { Session } from "./session.js";
 import { SESSION_SUMMARIZE_PROMPT } from "./prompt.js";
 import { logger } from "./logger.js";
 import { loadConfig, REASONING_EFFORTS, setModelConfig, type ReasoningEffort } from "./config.js";
+import { activeLlmProfile } from "./llm/profile.js";
+import { listGatewayModels } from "./llm/models.js";
 import { setDiscordClient } from "./tools/builtin/discord.js";
 import { executeTool } from "./tools/registry.js";
 import { runWithContext } from "./tools/context.js";
@@ -403,7 +405,7 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
           return runWithContext(
             trigger,
             interaction.user.id,
-            loadConfig().llm.currentModel,
+            activeLlmProfile(loadConfig()),
             () => executeTool(toolName, args),
           );
         },
@@ -420,9 +422,11 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
     if (interaction.isAutocomplete()) {
       if (interaction.commandName === "model") {
         const focused = interaction.options.getFocused();
-        const { llm } = loadConfig();
-        const filtered = llm.modelList
-          .filter(m => m.includes(focused))
+        const profile = activeLlmProfile(loadConfig());
+        const models = await listGatewayModels(profile);
+        const needle = focused.toLowerCase();
+        const filtered = models
+          .filter(model => model.toLowerCase().includes(needle))
           .slice(0, 25);
         await interaction.respond(filtered.map(m => ({ name: m, value: m })));
         return;
@@ -569,8 +573,8 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
         .setTitle("Furet Status")
         .setColor(0x5865f2)
         .addFields(
-          { name: "Model", value: `\`${config.llm.currentModel}\``, inline: true },
-          { name: "Reasoning", value: `\`${config.llm.reasoningEffort}\``, inline: true },
+          { name: "Model", value: `\`${activeLlmProfile(config).model}\``, inline: true },
+          { name: "Reasoning", value: `\`${activeLlmProfile(config).reasoningEffort}\``, inline: true },
           { name: "Tokens", value: `${totalTokens.toLocaleString()} (in: ${usage.inputTokens.toLocaleString()} / out: ${usage.outputTokens.toLocaleString()})`, inline: false },
           { name: "Active Sessions", value: `${activeSessions.length}`, inline: true },
           { name: "Crons", value: `${crons.filter(c => c.enabled).length} active / ${crons.length} total`, inline: true },
@@ -611,13 +615,10 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
         return;
       }
       const name = interaction.options.getString("name", true);
-      if (config.llm.modelList.length > 0 && !config.llm.modelList.includes(name)) {
-        await interaction.reply(interactionPayload(`不在 modelList 裡：\`${name}\``, { ephemeral: true }));
-        return;
-      }
+      const activeProfile = activeLlmProfile(config);
       const effort = (interaction.options.getString("effort") ?? "default") as ReasoningEffort;
-      const prev = config.llm.currentModel;
-      const prevEffort = config.llm.reasoningEffort;
+      const prev = activeProfile.model;
+      const prevEffort = activeProfile.reasoningEffort;
       setModelConfig(name, effort);
       logger.info({ prev, next: name, prevEffort, effort, user: interaction.user.id }, "/model switched");
       await interaction.reply(interactionPayload(

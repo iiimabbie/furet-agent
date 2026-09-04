@@ -68,7 +68,7 @@ export class Session {
   readonly id: string;
   private filePath: string;
   private messages: Message[] = [];
-  private usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+  private usage: TokenUsage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
   private toolHistory: ToolHistoryEvent[] = [];
 
   /**
@@ -80,7 +80,7 @@ export class Session {
    * (and refreshed after every commit) so the merge can compute this instance's delta.
    */
   private baseRevision = 0;
-  private baseData: SessionData = { messages: [], usage: { inputTokens: 0, outputTokens: 0 }, toolHistory: [] };
+  private baseData: SessionData = { messages: [], usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, toolHistory: [] };
 
   constructor(id: string) {
     this.id = id;
@@ -188,6 +188,7 @@ export class Session {
     const previous = { ...this.usage };
     this.usage.inputTokens += usage.inputTokens;
     this.usage.outputTokens += usage.outputTokens;
+    this.usage.reasoningTokens += usage.reasoningTokens;
     try { this.save(); }
     catch (error) { this.usage = previous; throw error; }
   }
@@ -229,7 +230,7 @@ export class Session {
   clear(): void {
     const previous = { messages: this.messages, usage: this.usage, toolHistory: this.toolHistory };
     this.messages = [];
-    this.usage = { inputTokens: 0, outputTokens: 0 };
+    this.usage = { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
     this.toolHistory = [];
     try { this.save(); }
     catch (error) {

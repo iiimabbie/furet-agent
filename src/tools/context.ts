@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
 import { logger } from "../logger.js";
 import type { TriggerSource } from "../types.js";
+import type { LlmProfile } from "../llm/types.js";
 
 /**
  * 每次 ask() 的請求範圍狀態。
@@ -19,13 +20,9 @@ interface RequestContext {
   sessionId?: string;
   channelId?: string;
   /**
-   * 這次請求實際使用的模型（`options.model ?? currentModel`）。
-   * 工具的 model-capability gate（如 image_gen 的 GPT-only）要判的是「這個請求跑在哪個模型」，
-   * 不是全域 config 的 currentModel——並行請求可能各自帶不同的 options.model（cron / /model 切換），
-   * 讀全域變數會有 race。放在 ALS 裡跟 trigger 一樣做請求隔離。
-   * ALS 範圍外呼叫（例如 CLI 直接叫工具）時為 undefined，由 registry 端 fallback 回 currentModel。
+   * Immutable connection profile for this request. Model, protocol, endpoint, authentication and capabilities must remain consistent across the whole request. ALS callers outside ask() may leave it undefined; consumers resolve the configured active profile.
    */
-  model?: string;
+  profile?: LlmProfile;
   pendingFiles: string[];
 }
 
@@ -46,11 +43,11 @@ function ctx(): RequestContext {
 export function runWithContext<T>(
   trigger: TriggerSource,
   userId: string | undefined,
-  model: string | undefined,
+  profile: LlmProfile | undefined,
   fn: () => Promise<T>,
   request?: { sessionId?: string; channelId?: string },
 ): Promise<T> {
-  return storage.run({ trigger, userId, model, sessionId: request?.sessionId, channelId: request?.channelId, pendingFiles: [] }, fn);
+  return storage.run({ trigger, userId, profile, sessionId: request?.sessionId, channelId: request?.channelId, pendingFiles: [] }, fn);
 }
 
 export function setTrigger(trigger: TriggerSource): void { ctx().trigger = trigger; }
@@ -59,8 +56,9 @@ export function getUserId(): string | undefined { return ctx().userId; }
 export function getSessionId(): string | undefined { return ctx().sessionId; }
 export function getChannelId(): string | undefined { return ctx().channelId; }
 
-/** 這次請求的有效模型；ALS 範圍外為 undefined，呼叫端自行 fallback 回 currentModel。 */
-export function getRequestModel(): string | undefined { return ctx().model; }
+/** Immutable LLM connection profile bound to this request. */
+export function getRequestProfile(): LlmProfile | undefined { return ctx().profile; }
+export function getRequestModel(): string | undefined { return ctx().profile?.model; }
 
 // ── Pending attachments (queued by tools, consumed at the end of ask()) ──
 

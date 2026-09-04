@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, statSync } from "node:fs";
 import { parse, stringify } from "yaml";
 import { CONFIG_PATH } from "./paths.js";
 import "dotenv/config";
+import type { LlmAuthStrategy, LlmCapability, LlmProfile, LlmProtocol, TokenLimitField } from "./llm/types.js";
 
 /** One private plugin entry. `path` may be absolute or relative to the Furet root. */
 export interface PluginConfig {
@@ -16,14 +17,10 @@ export type ReasoningEffort = typeof REASONING_EFFORTS[number];
 
 export interface FuretConfig {
   llm: {
-    api_key: string;
-    base_url: string;
-    currentModel: string;
-    reasoningEffort: ReasoningEffort;
-    modelList: string[];
+    active_profile: string;
+    profiles: Record<string, Omit<LlmProfile, "name">>;
     maxContextTokens: number;
     memoryCharLimit: number;
-    codingModel: string;
   };
   discord: {
     enabled: boolean;
@@ -95,35 +92,18 @@ export interface FuretConfig {
   /**
    * Vision / attachment analysis. Governs the background attachment-index worker's OCR +
    * visual-description + document-extraction pipeline. DELIBERATELY independent of the
-   * interactive chat model: the vision model here is never bound to `llm.currentModel` or the
-   * `/model` switch, so changing the chat model does not silently reroute (or break) attachment
-   * analysis. Safe defaults keep legacy behavior — enabled, Anthropic transport, credentials and
-   * base_url inherited from `llm` unless explicitly overridden here.
+   * interactive chat model: background attachment analysis uses the active LLM profile.
+   * Endpoint credentials may be overridden, but the model may not be silently changed. Requests
+   * use the active profile protocol.
    */
   attachment_analysis: {
     /** Master switch for background visual description. OCR/document text still run when off. */
     enabled: boolean;
-    /**
-     * Vision API family. `anthropic` vs `openai` shape the request/response differently.
-     * Empty = derive from `llm.base_url`, so a workspace that never configures this block
-     * does not silently send Anthropic-shaped requests to an OpenAI-compatible endpoint.
-     */
-    provider: "" | "anthropic" | "openai";
-    /**
-     * How the request is sent. `messages` = Anthropic /v1/messages; `chat_completions` =
-     * OpenAI-compatible /chat/completions. Empty = derived from `provider`.
-     */
-    transport: "" | "messages" | "chat_completions";
-    /**
-     * Vision model id. It is independent of the `/model` switch so a conversation model
-     * without vision cannot disable attachment analysis. Empty = inherit `llm.currentModel`.
-     */
-    model: string;
-    /** Vision endpoint base URL. Empty = inherit `llm.base_url`. */
+    /** Vision endpoint base URL. Empty = inherit the active profile base URL. */
     base_url: string;
     /**
      * Vision API key ENV VAR NAME (not the secret). Resolved from process.env at load time.
-     * Empty = inherit `llm.api_key`. Storing only the var name avoids a second on-disk secret.
+     * Empty = inherit the active profile API key. Storing only the var name avoids a second on-disk secret.
      */
     api_key_env: string;
     /** Max simultaneous attachment jobs the worker runs. */
@@ -134,7 +114,7 @@ export interface FuretConfig {
     timeout_ms: number;
     /** Max image bytes eligible for visual description. Larger images skip vision (OCR still runs). */
     max_image_bytes: number;
-    /** Cap on generated description length (provider max_tokens). */
+    /** Cap on generated description length (provider max_completion_tokens). */
     max_output_tokens: number;
     /**
      * Language the description is written in, e.g. "Traditional Chinese". Empty = no language
@@ -162,14 +142,28 @@ export interface FuretConfig {
 
 const DEFAULTS: FuretConfig = {
   llm: {
-    api_key: "",
-    base_url: "",
-    currentModel: "claude-sonnet-4-20250514",
-    reasoningEffort: "default",
-    modelList: [],
+    active_profile: "default",
+    profiles: {
+      default: {
+        protocol: "openai_chat_completions",
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "",
+        auth: "bearer",
+        model: "gpt-4.1-mini",
+        reasoningEffort: "default",
+        tokenLimitField: "max_completion_tokens",
+        capabilities: {
+          vision: true,
+          function_tools: true,
+          responses: false,
+          hosted_web_search: false,
+          hosted_image_generation: false,
+          hosted_code_execution: false,
+        },
+      },
+    },
     maxContextTokens: 150_000,
     memoryCharLimit: 3000,
-    codingModel: "",  // 空字串 = 使用 currentModel
   },
   discord: {
     enabled: false,
@@ -210,9 +204,6 @@ const DEFAULTS: FuretConfig = {
     // Off unless a workspace opts in: vision needs a model the configured endpoint actually
     // serves, and a wrong guess fails silently inside a background job.
     enabled: false,
-    provider: "",
-    transport: "",
-    model: "",
     base_url: "",
     api_key_env: "",
     concurrency: 2,
@@ -271,12 +262,60 @@ function sanitizeInt(value: unknown, fallback: number, min: number, max: number)
  * let a user who writes only `exposure: { enabled: true }` drop `max_matched_tools`
  * into undefined; here we merge exposure key-by-key and sanitize the cap.
  */
-function mergeLlmConfig(resolvedLlm: unknown): FuretConfig["llm"] {
-  const llm = { ...DEFAULTS.llm, ...defined(resolvedLlm) } as FuretConfig["llm"];
-  if (!REASONING_EFFORTS.includes(llm.reasoningEffort as ReasoningEffort)) {
-    llm.reasoningEffort = DEFAULTS.llm.reasoningEffort;
+const LLM_PROTOCOLS = new Set<LlmProtocol>(["openai_chat_completions", "openai_responses"]);
+const LLM_AUTHS = new Set<LlmAuthStrategy>(["bearer", "none"]);
+const TOKEN_LIMIT_FIELDS = new Set<TokenLimitField>(["max_completion_tokens", "max_tokens"]);
+const CAPABILITIES: LlmCapability[] = ["vision", "function_tools", "responses", "hosted_web_search", "hosted_image_generation", "hosted_code_execution"];
+
+function normalizeProfile(name: string, raw: unknown, fallback?: Omit<LlmProfile, "name">): Omit<LlmProfile, "name"> | null {
+  const value = defined(raw);
+  const base = fallback ?? DEFAULTS.llm.profiles.default;
+  const protocol = LLM_PROTOCOLS.has(value.protocol as LlmProtocol) ? value.protocol as LlmProtocol : base.protocol;
+  const auth = LLM_AUTHS.has(value.auth as LlmAuthStrategy) ? value.auth as LlmAuthStrategy : base.auth;
+  const reasoningEffort = REASONING_EFFORTS.includes(value.reasoningEffort as ReasoningEffort)
+    ? value.reasoningEffort as ReasoningEffort
+    : base.reasoningEffort;
+  const tokenLimitField = TOKEN_LIMIT_FIELDS.has(value.tokenLimitField as TokenLimitField)
+    ? value.tokenLimitField as TokenLimitField
+    : base.tokenLimitField;
+  const rawCapabilities = defined(value.capabilities);
+  const capabilities = Object.fromEntries(CAPABILITIES.map(capability => [
+    capability,
+    typeof rawCapabilities[capability] === "boolean" ? rawCapabilities[capability] : base.capabilities[capability],
+  ])) as Record<LlmCapability, boolean>;
+  const model = typeof value.model === "string" ? value.model.trim() : base.model;
+  if (!model) return null;
+  return {
+    protocol,
+    baseUrl: typeof value.baseUrl === "string" && value.baseUrl.trim() ? value.baseUrl.trim().replace(/\/+$/, "") : base.baseUrl,
+    apiKey: typeof value.apiKey === "string" ? value.apiKey : base.apiKey,
+    auth,
+    model,
+    reasoningEffort,
+    tokenLimitField,
+    capabilities,
+  };
+}
+
+export function normalizeLlmConfig(resolvedLlm: unknown): FuretConfig["llm"] {
+  const raw = defined(resolvedLlm);
+  const maxContextTokens = sanitizeInt(raw.maxContextTokens, DEFAULTS.llm.maxContextTokens, 8_000, 2_000_000);
+  const memoryCharLimit = sanitizeInt(raw.memoryCharLimit, DEFAULTS.llm.memoryCharLimit, 500, 100_000);
+  const rawProfiles = defined(raw.profiles);
+  const profiles: FuretConfig["llm"]["profiles"] = {};
+  for (const [name, profile] of Object.entries(rawProfiles)) {
+    const normalized = normalizeProfile(name, profile);
+    if (normalized) profiles[name] = normalized;
   }
-  return llm;
+
+  if (Object.keys(profiles).length === 0) {
+    if (Object.keys(raw).length === 0) profiles.default = { ...DEFAULTS.llm.profiles.default };
+    else throw new Error("llm.profiles must define at least one valid connection profile");
+  }
+
+  const requestedActive = typeof raw.active_profile === "string" ? raw.active_profile.trim() : "";
+  const active_profile = requestedActive && profiles[requestedActive] ? requestedActive : Object.keys(profiles)[0];
+  return { active_profile, profiles, maxContextTokens, memoryCharLimit };
 }
 
 function mergeToolsConfig(resolvedTools: unknown): FuretConfig["tools"] {
@@ -353,21 +392,13 @@ function mergeSoulGuardianConfig(resolved: unknown): FuretConfig["soul_guardian"
 
 /**
  * Merge the `attachment_analysis` block. Every field falls back to a safe default; the
- * enum-valued `provider`/`transport` are validated (an unknown value falls back rather than
- * poisoning the vision request), and the numeric fields are clamped. Nothing here reads
- * `llm.currentModel`; empty model/base_url/api_key_env are resolved against `llm` only at the
- * call site. The model itself has an explicit stable default and never follows `/model`.
+ * numeric fields are clamped. Attachment analysis inherits the active profile model and protocol. base_url/api_key_env may override endpoint credentials without changing the model.
  */
 function mergeAttachmentAnalysisConfig(resolved: unknown): FuretConfig["attachment_analysis"] {
   const top = defined(resolved);
   const d = DEFAULTS.attachment_analysis;
-  const provider = top.provider === "openai" || top.provider === "anthropic" ? top.provider : d.provider;
-  const transport = top.transport === "messages" || top.transport === "chat_completions" ? top.transport : d.transport;
   return {
     enabled: typeof top.enabled === "boolean" ? top.enabled : d.enabled,
-    provider,
-    transport,
-    model: typeof top.model === "string" ? top.model.trim() : d.model,
     base_url: typeof top.base_url === "string" ? top.base_url.trim() : d.base_url,
     api_key_env: typeof top.api_key_env === "string" ? top.api_key_env.trim() : d.api_key_env,
     concurrency: sanitizeInt(top.concurrency, d.concurrency, 1, 16),
@@ -406,7 +437,7 @@ export function loadConfig(): FuretConfig {
   const resolved = resolveEnvVars(raw) as Record<string, unknown>;
 
   cached = {
-    llm: mergeLlmConfig(resolved.llm),
+    llm: normalizeLlmConfig(resolved.llm),
     discord: { ...DEFAULTS.discord, ...defined(resolved.discord) } as FuretConfig["discord"],
     journal: { ...DEFAULTS.journal, ...defined(resolved.journal) } as FuretConfig["journal"],
     soul_guardian: mergeSoulGuardianConfig(resolved.soul_guardian),
@@ -464,9 +495,16 @@ export function setModelConfig(model: string, reasoningEffort: ReasoningEffort):
   try {
     raw = (parse(readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) ?? {};
   } catch {}
+  const normalized = normalizeLlmConfig(resolveEnvVars(raw.llm));
   const llm = (raw.llm as Record<string, unknown>) ?? {};
-  llm.currentModel = model;
-  llm.reasoningEffort = reasoningEffort;
+  const profiles = (llm.profiles as Record<string, Record<string, unknown>> | undefined) ?? {};
+  const activeName = normalized.active_profile;
+  const active = profiles[activeName] ?? { ...normalized.profiles[activeName] };
+  active.model = model;
+  active.reasoningEffort = reasoningEffort;
+  profiles[activeName] = active;
+  llm.active_profile = activeName;
+  llm.profiles = profiles;
   raw.llm = llm;
   writeFileSync(CONFIG_PATH, stringify(raw, { lineWidth: 0 }));
   cached = null;

@@ -1,4 +1,5 @@
 import type { Tool } from "../types.js";
+import type { LlmCapability } from "../llm/types.js";
 
 /**
  * Tool exposure level — controls how much the model sees about a tool each turn.
@@ -34,7 +35,7 @@ export interface ToolRegistration {
   aliases?: string[];
   /** Coarse request signals that may expose a match-level tool. */
   signals?: MatchSignalName[];
-  /** Optional model gate — e.g. image_gen only exposes to GPT family. */
+  capability?: LlmCapability;
   modelPredicate?: (model: string) => boolean;
 }
 

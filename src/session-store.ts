@@ -155,7 +155,7 @@ function parse(contents: string): PersistedShape {
 function normalize(shape: PersistedShape): SessionSnapshot {
   return {
     messages: shape.messages ?? [],
-    usage: shape.usage ?? { inputTokens: 0, outputTokens: 0 },
+    usage: shape.usage ? { ...shape.usage, reasoningTokens: shape.usage.reasoningTokens ?? 0 } : { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
     toolHistory: shape.toolHistory ?? [],
     revision: typeof shape.revision === "number" && shape.revision >= 0 ? shape.revision : 0,
   };
@@ -166,7 +166,7 @@ export function readSnapshot(finalPath: string): SessionSnapshot {
   try {
     return normalize(parse(readFileSync(finalPath, "utf-8")));
   } catch {
-    return { messages: [], usage: { inputTokens: 0, outputTokens: 0 }, toolHistory: [], revision: 0 };
+    return { messages: [], usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, toolHistory: [], revision: 0 };
   }
 }
 
@@ -224,8 +224,9 @@ export function mergeSessionState(
   const usage: TokenUsage = {
     inputTokens: current.usage.inputTokens + (desired.usage.inputTokens - base.usage.inputTokens),
     outputTokens: current.usage.outputTokens + (desired.usage.outputTokens - base.usage.outputTokens),
+    reasoningTokens: (current.usage.reasoningTokens ?? 0) + ((desired.usage.reasoningTokens ?? 0) - (base.usage.reasoningTokens ?? 0)),
   };
-  if (usage.inputTokens < 0 || usage.outputTokens < 0) {
+  if (usage.inputTokens < 0 || usage.outputTokens < 0 || usage.reasoningTokens < 0) {
     throw new Error("concurrent session conflict produced negative usage");
   }
   return { messages, usage, toolHistory };

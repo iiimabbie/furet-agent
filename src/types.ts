@@ -7,7 +7,7 @@ export interface Tool {
   execute: (args: Record<string, unknown>) => Promise<string>;
 }
 
-// --- Anthropic API ---
+// --- Durable conversation content ---
 
 export interface AttachmentReference {
   id: string;
@@ -32,6 +32,8 @@ export interface AttachmentReference {
 }
 
 
+/** New sessions write only text/image blocks. Remaining variants are read-only compatibility
+ * for sessions containing provider-specific blocks written by earlier releases. */
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; thinking: string; signature?: string }
@@ -64,6 +66,8 @@ export type Message = {
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
+  /** Reasoning tokens are a subset/detail of outputTokens and must not be added again to totals. */
+  reasoningTokens: number;
 }
 
 /** Immutable record of a locally executed tool call. Full input/output remain in the
