@@ -1,4 +1,4 @@
-import type { FuretConfig, ReasoningEffort } from "../config.js";
+import type { UmiroConfig, ReasoningEffort } from "../config.js";
 import type { SessionModelSettings } from "../types.js";
 import type { LlmCapability, LlmProfile } from "./types.js";
 
@@ -8,7 +8,7 @@ export interface LlmProfileOverrides {
   reasoningEffort?: ReasoningEffort;
 }
 
-export function resolveLlmProfile(config: FuretConfig, overrides: LlmProfileOverrides = {}): LlmProfile {
+export function resolveLlmProfile(config: UmiroConfig, overrides: LlmProfileOverrides = {}): LlmProfile {
   const name = overrides.profile ?? config.llm.active_profile;
   const configured = config.llm.profiles[name];
   if (!configured) throw new Error(`LLM profile is not configured: ${name}`);
@@ -21,12 +21,12 @@ export function resolveLlmProfile(config: FuretConfig, overrides: LlmProfileOver
   });
 }
 
-export function activeLlmProfile(config: FuretConfig, modelOverride?: string): LlmProfile {
+export function activeLlmProfile(config: UmiroConfig, modelOverride?: string): LlmProfile {
   return resolveLlmProfile(config, { model: modelOverride });
 }
 
 export function sessionLlmProfile(
-  config: FuretConfig,
+  config: UmiroConfig,
   settings: SessionModelSettings,
   modelOverride?: string,
 ): LlmProfile {
@@ -37,7 +37,7 @@ export function sessionLlmProfile(
   });
 }
 
-export function defaultSessionModelSettings(config: FuretConfig): SessionModelSettings {
+export function defaultSessionModelSettings(config: UmiroConfig): SessionModelSettings {
   const profile = activeLlmProfile(config);
   return {
     profile: profile.name,
@@ -53,6 +53,6 @@ export function supportsCapability(profile: LlmProfile, capability: LlmCapabilit
 
 /** Resolve the dedicated model used by all journal work. Journal never inherits a
  * conversation session's model selection. */
-export function journalLlmProfile(config: FuretConfig): LlmProfile {
+export function journalLlmProfile(config: UmiroConfig): LlmProfile {
   return activeLlmProfile(config, config.journal.model || undefined);
 }

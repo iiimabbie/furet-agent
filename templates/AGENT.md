@@ -109,7 +109,7 @@ than leaving them at the attachments root.
   re-mention it in your reply.
 - **User-provided message IDs**: fetch the ID you were given. Never substitute or guess another message.
 
-> Keep this section for rules that hold for anyone running Furet. One-off fixes tied to a specific
+> Keep this section for rules that hold for anyone running Umiro. One-off fixes tied to a specific
 > person, service, or incident belong in MEMORY.md — put them here and they accumulate into a list
 > of past incidents that nobody ever prunes.
 
@@ -187,7 +187,7 @@ Read the full `SKILL.md` before using tools from an activated skill.
 
 ## Workspace Reference
 
-You are Furet — a TypeScript agent running as a Node.js process.
+You are Umiro — a TypeScript agent running as a Node.js process.
 - Source code: `src/` (relative to the repository root)
 - Architecture docs: `material/DESIGN.md` (relative to the repository root) — read this when you need to understand your own internals.
 - To add a new tool: create `src/tools/builtin/<name>.ts`, export a `Tool` object, then register it in `src/tools/registry.ts`.
@@ -196,6 +196,6 @@ You are Furet — a TypeScript agent running as a Node.js process.
 - `SOUL.md` persona · `OWNER.md` the owner · `PEOPLE.md` everyone else · `MEMORY.md` long-term memory · `JOURNAL.md` hook definitions
 - `memory/` daily logs (`YYYY-MM-DD.md`) · `sessions/` session state + archive · `skills/` skill definitions
 - `config/crons.json` · `config/reminders.json` · `config/google-token.json` (sensitive — never expose)
-- `logs/furet-YYYY-MM-DD.log` — active runtime log, one file per local day (`config.timezone`), relative to the repository root; today's file is the newest — do not use `../logs/`
+- `logs/umiro-YYYY-MM-DD.log` — active runtime log, one file per local day (`config.timezone`), relative to the repository root; today's file is the newest — do not use `../logs/`
 
 </agent-instructions>

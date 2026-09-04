@@ -1,10 +1,10 @@
 {
-  "name": "furet",
+  "name": "umiro",
   "version": "0.1.0",
   "description": "Self-hosted personal AI assistant with an OpenAI-compatible agent loop",
   "main": "dist/index.js",
   "bin": {
-    "furet": "./bin/furet.ts"
+    "umiro": "./bin/umiro.ts"
   },
   "scripts": {
     "build": "tsc",
@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit",
     "typecheck:scripts": "tsc --noEmit -p scripts/tsconfig.json",
     "attachment-gc": "tsx scripts/attachment-gc.ts",
-    "test": "FURET_CONFIG_PATH=tests/fixtures/config.yaml tsx --test tests/*.test.ts scripts/test-{openai,llm}-*.ts"
+    "test": "UMIRO_CONFIG_PATH=tests/fixtures/config.yaml tsx --test tests/*.test.ts scripts/test-{openai,llm}-*.ts"
   },
   "keywords": [],
   "author": "iiimabbie",

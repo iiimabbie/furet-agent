@@ -21,7 +21,7 @@ function htmlToText(html: string): string {
 
 export const webFetch: Tool = {
   name: "web_fetch",
-  description: "Fetch a public HTTP(S) URL through Furet's SSRF-safe downloader and return bounded readable text. Private, loopback, link-local, credential-bearing and oversized responses are rejected.",
+  description: "Fetch a public HTTP(S) URL through Umiro's SSRF-safe downloader and return bounded readable text. Private, loopback, link-local, credential-bearing and oversized responses are rejected.",
   parameters: {
     type: "object",
     properties: { url: { type: "string", description: "Public HTTP(S) URL to fetch." } },

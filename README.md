@@ -1,8 +1,8 @@
-# Furet
+# Umiro
 
-A self-hosted personal AI assistant for Discord and the terminal. Furet runs a protocol-neutral agent loop through configurable LLM connection profiles, gives it a local workspace and tools, and keeps the assistant useful across conversations without giving up control of where its data lives.
+A self-hosted personal AI assistant for Discord and the terminal. Umiro runs a protocol-neutral agent loop through configurable LLM connection profiles, gives it a local workspace and tools, and keeps the assistant useful across conversations without giving up control of where its data lives.
 
-> **Early-stage project.** Furet can execute shell commands and access connected services. Run it only on infrastructure and Discord servers you trust, and review its configuration before enabling it for other people.
+> **Early-stage project.** Umiro can execute shell commands and access connected services. Run it only on infrastructure and Discord servers you trust, and review its configuration before enabling it for other people.
 
 ## What it does
 
@@ -12,7 +12,7 @@ A self-hosted personal AI assistant for Discord and the terminal. Furet runs a p
 - Provides tools for files, shell commands, Discord moderation and messaging, scheduled jobs, reminders, Google Calendar/Gmail/Drive/Tasks, and weather.
 - Supports installable workspace skills, local private plugins, and an owner-only `self_evolve` tool for proposing source changes through the active conversation model.
 - Protects configured workspace files with Soul Guardian integrity monitoring.
-- Writes readable local logs, rotated into one file per local day (`logs/furet-YYYY-MM-DD.log`), with timestamps such as `[2026-08-21 09:04:52] INFO: gateway start`.
+- Writes readable local logs, rotated into one file per local day (`logs/umiro-YYYY-MM-DD.log`), with timestamps such as `[2026-08-21 09:04:52] INFO: gateway start`.
 
 For the detailed architecture and data flow, see [material/DESIGN.md](material/DESIGN.md). To build a private tool integration, see [docs/PLUGINS.md](docs/PLUGINS.md).
 
@@ -28,25 +28,25 @@ For the detailed architecture and data flow, see [material/DESIGN.md](material/D
 
 ```bash
 # Clone and enter the project
-git clone <repo-url> ~/.furet
-cd ~/.furet
+git clone <repo-url> ~/.umiro
+cd ~/.umiro
 
-# Install dependencies, create local templates, register `furet`, and install
+# Install dependencies, create local templates, register `umiro`, and install
 # a systemd service when the host supports it.
-npx tsx bin/furet.ts install
+npx tsx bin/umiro.ts install
 
 # Fill in credentials and runtime settings.
 $EDITOR .env
 $EDITOR config.yaml
 
 # Set your Discord user ID and optionally your first allowed channel.
-furet onbord
+umiro onbord
 
 # Start the gateway in the foreground.
-furet gateway
+umiro gateway
 ```
 
-`furet install` runs `npm install`, creates missing `.env`, `config.yaml`, and workspace template files, registers the `furet` command with `npm link`, and installs/enables `furet.service` when systemd is available. Existing configuration and workspace files are not overwritten. Run `furet onbord` locally before the first Discord use to save the owner Discord ID and, optionally, the first allowed channel ID.
+`umiro install` runs `npm install`, creates missing `.env`, `config.yaml`, and workspace template files, registers the `umiro` command with `npm link`, and installs/enables `umiro.service` when systemd is available. Existing configuration and workspace files are not overwritten. Run `umiro onbord` locally before the first Discord use to save the owner Discord ID and, optionally, the first allowed channel ID.
 
 ## Configuration
 
@@ -105,14 +105,14 @@ llm:
 
 `timezone` affects timestamps, memory filenames, and journal dates. Leaving it empty uses the host system timezone.
 
-The active connection profile selects the wire protocol, gateway URL, authentication, default model ID, token-limit field, and hosted capabilities independently. Each session snapshots that profile's model and reasoning effort when it is created. `/model` changes only the current Discord session; other channels, threads, DMs, CLI sessions, and background sessions keep their own selection. Autocomplete discovers model IDs from that session's gateway through the OpenAI-compatible `GET /models` endpoint; model lists are not duplicated in config, and manually entered IDs remain allowed for gateways that omit aliases from discovery. The first supported interactive adapter is `openai_chat_completions`, suitable for CPA, OpenRouter-style gateways, GCLI proxies, Ollama, and other compatible endpoints. Hosted Responses capabilities are exposed only when the same active profile declares them; Furet never silently switches profile or model.
+The active connection profile selects the wire protocol, gateway URL, authentication, default model ID, token-limit field, and hosted capabilities independently. Each session snapshots that profile's model and reasoning effort when it is created. `/model` changes only the current Discord session; other channels, threads, DMs, CLI sessions, and background sessions keep their own selection. Autocomplete discovers model IDs from that session's gateway through the OpenAI-compatible `GET /models` endpoint; model lists are not duplicated in config, and manually entered IDs remain allowed for gateways that omit aliases from discovery. The first supported interactive adapter is `openai_chat_completions`, suitable for CPA, OpenRouter-style gateways, GCLI proxies, Ollama, and other compatible endpoints. Hosted Responses capabilities are exposed only when the same active profile declares them; Umiro never silently switches profile or model.
 
-## Running Furet
+## Running Umiro
 
 ### First-run Discord onboarding
 
 ```bash
-furet onbord
+umiro onbord
 ```
 
 This local interactive command asks for the owner Discord user ID and optionally a first channel ID, then writes `discord.owner_id` and `discord.allowed_channels` in `config.yaml`. It does not ask the gateway to trust the first Discord user it sees. The owner’s preferred form of address and assistant persona are collected privately in the first Discord conversation.
@@ -120,7 +120,7 @@ This local interactive command asks for the owner Discord user ID and optionally
 ### Foreground gateway
 
 ```bash
-furet gateway
+umiro gateway
 ```
 
 Use this for development or for hosts without systemd.
@@ -128,19 +128,19 @@ Use this for development or for hosts without systemd.
 ### systemd service
 
 ```bash
-sudo systemctl start furet
-sudo systemctl stop furet
-sudo systemctl restart furet
-sudo systemctl status furet
-journalctl -u furet -f
+sudo systemctl start umiro
+sudo systemctl stop umiro
+sudo systemctl restart umiro
+sudo systemctl status umiro
+journalctl -u umiro -f
 ```
 
-The installer creates `furet.service` only on Linux hosts where systemd is detected. If you customize the unit file, run `sudo systemctl daemon-reload` before restarting it.
+The installer creates `umiro.service` only on Linux hosts where systemd is detected. If you customize the unit file, run `sudo systemctl daemon-reload` before restarting it.
 
 ### Logs
 
-Furet writes application logs to `logs/`, split into one file per day named
-`logs/furet-YYYY-MM-DD.log`. The date follows the local time zone
+Umiro writes application logs to `logs/`, split into one file per day named
+`logs/umiro-YYYY-MM-DD.log`. The date follows the local time zone
 (`config.timezone`, e.g. `Asia/Taipei`), so a new file starts at local midnight
 without restarting the gateway. Existing daily files are appended to, never
 overwritten. Log entries use local time and a human-readable format:
@@ -152,7 +152,7 @@ overwritten. Log entries use local time and a human-readable format:
 Set `LOG_LEVEL` before launching the gateway to control verbosity. The default is `debug`; use `info` in routine operation if you do not need tool-level diagnostic logs.
 
 ```bash
-LOG_LEVEL=info furet gateway
+LOG_LEVEL=info umiro gateway
 ```
 
 ## Using the assistant
@@ -160,14 +160,14 @@ LOG_LEVEL=info furet gateway
 ### Local CLI
 
 ```bash
-furet
+umiro
 ```
 
 Type `new` to archive the current CLI conversation and start another one. Type `exit` or `quit` to leave the CLI.
 
 ### Discord
 
-By default, Furet responds when mentioned. It can also reply without a mention in the channel IDs listed in `discord.ambient_channels`. Threads do not inherit ambient-channel behavior from their parent channel.
+By default, Umiro responds when mentioned. It can also reply without a mention in the channel IDs listed in `discord.ambient_channels`. Threads do not inherit ambient-channel behavior from their parent channel.
 
 Available slash commands:
 
@@ -182,7 +182,7 @@ Available slash commands:
 
 ## Workspace and data
 
-`workspace/` is Furet's private runtime area. `furet install` creates the prompt templates; the agent then maintains the operational data below.
+`workspace/` is Umiro's private runtime area. `umiro install` creates the prompt templates; the agent then maintains the operational data below.
 
 ```text
 workspace/
@@ -203,7 +203,7 @@ Keep this directory private and back it up. It can contain conversation history,
 
 ## Security model
 
-Furet is designed for a personal, trusted deployment—not as a sandboxed public bot.
+Umiro is designed for a personal, trusted deployment—not as a sandboxed public bot.
 
 - `bash` runs arbitrary host commands without a sandbox. With `tools.bash_owner_only: true` (the default), only the configured owner and any IDs in `bash_allowed_users` can use it.
 - High-impact tools—such as source evolution, Gmail, Google Drive, Calendar, scheduling, and Discord message mutation—are owner-only.
@@ -219,7 +219,7 @@ To enable Calendar, Gmail, Drive, and Tasks:
 2. Enable Calendar API, Gmail API, Drive API, and Tasks API.
 3. Create a Desktop OAuth client.
 4. Put its client ID and secret in `.env`.
-5. Restart Furet and use `/google-auth` as the owner to complete authorization.
+5. Restart Umiro and use `/google-auth` as the owner to complete authorization.
 
 `GOOGLE_API_KEY` is separate: it is only used for Gemini embedding-based semantic memory recall. Without it, memory search still works through full-text search.
 
@@ -228,18 +228,18 @@ To enable Calendar, Gmail, Drive, and Tasks:
 Private plugins can register deployment-specific tools, recurring background jobs, and lifecycle event handlers without editing the built-in registry or committing private integrations to this repository. Managed plugins are installed into `workspace/plugins/` and registered in `workspace/config/plugins.json`:
 
 ```bash
-furet plugin install <git-url>
-furet plugin install <git-url> --workspace <package-name-or-path>
-furet plugin list
-furet plugin enable <name>
-furet plugin disable <name>
-furet plugin update [name]
-furet plugin remove <name>
+umiro plugin install <git-url>
+umiro plugin install <git-url> --workspace <package-name-or-path>
+umiro plugin list
+umiro plugin enable <name>
+umiro plugin disable <name>
+umiro plugin update [name]
+umiro plugin remove <name>
 ```
 
 Discord exposes one owner-only `/plugin` command. Its required `動作` option selects 安裝、更新、or 卸載, and the shared optional `目標` string accepts a GitHub repository/package URL for installation or provides installed-plugin autocomplete for update/removal. Omitting `目標` while updating updates all managed sources; install and removal validate that a target was supplied at runtime. The caller is compared directly with `discord.owner_id`, because installing a plugin executes trusted code on the host. Discord installation accepts public HTTPS GitHub links; host-side CLI commands remain available for local paths, SSH sources, updates, and enable/disable maintenance.
 
-A plugin package declares its entry as `"furet": { "plugin": "./dist/index.js" }` in `package.json`. The installer runs dependency installation and an optional `build` script, but deliberately does not restart the gateway. Tool permissions still flow through the central registry, plugin schedules follow plugin startup/shutdown automatically, and all plugin code runs inside the Furet process without a sandbox.
+A plugin package declares its entry as `"umiro": { "plugin": "./dist/index.js" }` in `package.json`. The installer runs dependency installation and an optional `build` script, but deliberately does not restart the gateway. Tool permissions still flow through the central registry, plugin schedules follow plugin startup/shutdown automatically, and all plugin code runs inside the Umiro process without a sandbox.
 
 See [docs/PLUGINS.md](docs/PLUGINS.md) for a complete first-plugin tutorial, packaging examples, monorepo installation, the API contract, configuration, security guidance, lifecycle behavior, and troubleshooting.
 
@@ -256,12 +256,12 @@ npm run dev
 ## Uninstall
 
 ```bash
-sudo systemctl stop furet
-sudo systemctl disable furet
-sudo rm /etc/systemd/system/furet.service
+sudo systemctl stop umiro
+sudo systemctl disable umiro
+sudo rm /etc/systemd/system/umiro.service
 sudo systemctl daemon-reload
-npm unlink -g furet
-rm -rf ~/.furet
+npm unlink -g umiro
+rm -rf ~/.umiro
 ```
 
 Only run the final command after backing up any workspace data you want to keep.

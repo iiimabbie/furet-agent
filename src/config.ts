@@ -4,9 +4,9 @@ import { CONFIG_PATH } from "./paths.js";
 import "dotenv/config";
 import type { LlmAuthStrategy, LlmCapability, LlmProfile, LlmProtocol, TokenLimitField } from "./llm/types.js";
 
-/** One private plugin entry. `path` may be absolute or relative to the Furet root. */
+/** One private plugin entry. `path` may be absolute or relative to the Umiro root. */
 export interface PluginConfig {
-  /** Path to the plugin module (absolute, or relative to the Furet root). */
+  /** Path to the plugin module (absolute, or relative to the Umiro root). */
   path: string;
   /** Whether to load this plugin. Disabled plugins are skipped entirely. */
   enabled: boolean;
@@ -15,7 +15,7 @@ export interface PluginConfig {
 export const REASONING_EFFORTS = ["default", "none", "auto", "minimal", "low", "medium", "high", "xhigh"] as const;
 export type ReasoningEffort = typeof REASONING_EFFORTS[number];
 
-export interface FuretConfig {
+export interface UmiroConfig {
   llm: {
     active_profile: string;
     profiles: Record<string, Omit<LlmProfile, "name">>;
@@ -88,7 +88,7 @@ export interface FuretConfig {
     };
   };
   image_generation: {
-    /** Optional canonical identity image, relative to the Furet root or absolute. */
+    /** Optional canonical identity image, relative to the Umiro root or absolute. */
     identity_reference_path: string;
   };
   /**
@@ -133,7 +133,7 @@ export interface FuretConfig {
   };
   skills: string[];
   /**
-   * 私有外掛清單（預設空）。每筆指定本機 `path`（絕對或相對 Furet root）與 `enabled`。
+   * 私有外掛清單（預設空）。每筆指定本機 `path`（絕對或相對 Umiro root）與 `enabled`。
    * 外掛可註冊額外工具、背景排程與事件 handler；載入時機與權限見 DESIGN.md。
    * 不要把任何私人連線資料寫進 repo——外掛模組自己從 .env / 私有設定讀。
    */
@@ -142,7 +142,7 @@ export interface FuretConfig {
   timezone: string;
 }
 
-const DEFAULTS: FuretConfig = {
+const DEFAULTS: UmiroConfig = {
   llm: {
     active_profile: "default",
     profiles: {
@@ -300,12 +300,12 @@ function normalizeProfile(name: string, raw: unknown, fallback?: Omit<LlmProfile
   };
 }
 
-export function normalizeLlmConfig(resolvedLlm: unknown): FuretConfig["llm"] {
+export function normalizeLlmConfig(resolvedLlm: unknown): UmiroConfig["llm"] {
   const raw = defined(resolvedLlm);
   const maxContextTokens = sanitizeInt(raw.maxContextTokens, DEFAULTS.llm.maxContextTokens, 8_000, 2_000_000);
   const memoryCharLimit = sanitizeInt(raw.memoryCharLimit, DEFAULTS.llm.memoryCharLimit, 500, 100_000);
   const rawProfiles = defined(raw.profiles);
-  const profiles: FuretConfig["llm"]["profiles"] = {};
+  const profiles: UmiroConfig["llm"]["profiles"] = {};
   for (const [name, profile] of Object.entries(rawProfiles)) {
     const normalized = normalizeProfile(name, profile);
     if (normalized) profiles[name] = normalized;
@@ -321,7 +321,7 @@ export function normalizeLlmConfig(resolvedLlm: unknown): FuretConfig["llm"] {
   return { active_profile, profiles, maxContextTokens, memoryCharLimit };
 }
 
-function mergeToolsConfig(resolvedTools: unknown): FuretConfig["tools"] {
+function mergeToolsConfig(resolvedTools: unknown): UmiroConfig["tools"] {
   const top = defined(resolvedTools);
   const rawExposure = defined(top.exposure);
   delete top.exposure;
@@ -336,14 +336,14 @@ function mergeToolsConfig(resolvedTools: unknown): FuretConfig["tools"] {
       50,
     ),
   };
-  return { ...DEFAULTS.tools, ...top, exposure } as FuretConfig["tools"];
+  return { ...DEFAULTS.tools, ...top, exposure } as UmiroConfig["tools"];
 }
 
 /**
  * Normalize the `plugins` list. Anything that is not an object with a non-empty string
  * `path` is dropped (a malformed entry must not crash config load). `enabled` defaults
  * to `true` when omitted so an author can just list a path; set `false` to keep the entry
- * around but skip loading. Path resolution against the Furet root happens in the loader.
+ * around but skip loading. Path resolution against the Umiro root happens in the loader.
  */
 function mergePluginsConfig(resolvedPlugins: unknown): PluginConfig[] {
   if (!Array.isArray(resolvedPlugins)) return [];
@@ -366,20 +366,20 @@ function mergePluginsConfig(resolvedPlugins: unknown): PluginConfig[] {
  * `path` and a valid `mode`; anything else is dropped. Missing/invalid `targets` keeps
  * the default (empty) list rather than throwing.
  */
-function mergeSoulGuardianConfig(resolved: unknown): FuretConfig["soul_guardian"] {
+function mergeSoulGuardianConfig(resolved: unknown): UmiroConfig["soul_guardian"] {
   const top = defined(resolved);
   const rawTargets = top.targets;
   delete top.targets;
-  const merged = { ...DEFAULTS.soul_guardian, ...top } as FuretConfig["soul_guardian"];
+  const merged = { ...DEFAULTS.soul_guardian, ...top } as UmiroConfig["soul_guardian"];
 
   const validModes = ["restore", "alert", "ignore"] as const;
-  const targets: FuretConfig["soul_guardian"]["targets"] = [];
+  const targets: UmiroConfig["soul_guardian"]["targets"] = [];
   if (Array.isArray(rawTargets)) {
     for (const entry of rawTargets) {
       if (entry === null || typeof entry !== "object") continue;
       const e = entry as Record<string, unknown>;
       const path = typeof e.path === "string" ? e.path.trim() : "";
-      const mode = e.mode as FuretConfig["soul_guardian"]["targets"][number]["mode"];
+      const mode = e.mode as UmiroConfig["soul_guardian"]["targets"][number]["mode"];
       if (!path || !validModes.includes(mode)) continue;
       targets.push({ path, mode });
     }
@@ -397,7 +397,7 @@ function mergeSoulGuardianConfig(resolved: unknown): FuretConfig["soul_guardian"
  * Merge the `attachment_analysis` block. Every field falls back to a safe default; the
  * numeric fields are clamped. Attachment analysis inherits the active profile model and protocol. base_url/api_key_env may override endpoint credentials without changing the model.
  */
-function mergeAttachmentAnalysisConfig(resolved: unknown): FuretConfig["attachment_analysis"] {
+function mergeAttachmentAnalysisConfig(resolved: unknown): UmiroConfig["attachment_analysis"] {
   const top = defined(resolved);
   const d = DEFAULTS.attachment_analysis;
   return {
@@ -413,7 +413,7 @@ function mergeAttachmentAnalysisConfig(resolved: unknown): FuretConfig["attachme
   };
 }
 
-function mergeJournalConfig(resolved: unknown): FuretConfig["journal"] {
+function mergeJournalConfig(resolved: unknown): UmiroConfig["journal"] {
   const top = defined(resolved);
   const d = DEFAULTS.journal;
   return {
@@ -424,10 +424,10 @@ function mergeJournalConfig(resolved: unknown): FuretConfig["journal"] {
   };
 }
 
-let cached: FuretConfig | null = null;
+let cached: UmiroConfig | null = null;
 let cachedMtimeMs = 0;
 
-export function loadConfig(): FuretConfig {
+export function loadConfig(): UmiroConfig {
   // 有 cache 時檢查 mtime，沒變就直接回傳
   if (cached) {
     try {
@@ -452,13 +452,13 @@ export function loadConfig(): FuretConfig {
 
   cached = {
     llm: normalizeLlmConfig(resolved.llm),
-    discord: { ...DEFAULTS.discord, ...defined(resolved.discord) } as FuretConfig["discord"],
+    discord: { ...DEFAULTS.discord, ...defined(resolved.discord) } as UmiroConfig["discord"],
     journal: mergeJournalConfig(resolved.journal),
     soul_guardian: mergeSoulGuardianConfig(resolved.soul_guardian),
     tools: mergeToolsConfig(resolved.tools),
-    image_generation: { ...DEFAULTS.image_generation, ...defined(resolved.image_generation) } as FuretConfig["image_generation"],
+    image_generation: { ...DEFAULTS.image_generation, ...defined(resolved.image_generation) } as UmiroConfig["image_generation"],
     attachment_analysis: mergeAttachmentAnalysisConfig(resolved.attachment_analysis),
-    prompt: { ...DEFAULTS.prompt, ...defined(resolved.prompt) } as FuretConfig["prompt"],
+    prompt: { ...DEFAULTS.prompt, ...defined(resolved.prompt) } as UmiroConfig["prompt"],
     skills: (resolved.skills as string[] | undefined) ?? DEFAULTS.skills,
     plugins: mergePluginsConfig(resolved.plugins),
     timezone: (resolved.timezone as string | undefined) ?? DEFAULTS.timezone,
@@ -495,7 +495,7 @@ export function configureInitialDiscordOwner(ownerId: string, channelId?: string
   try { raw = (parse(readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>) ?? {}; } catch {}
   const discord = (raw.discord as Record<string, unknown>) ?? {};
   discord.owner_id = ownerId;
-  // Re-running `furet onbord` is an intentional full setup pass: a blank
+  // Re-running `umiro onbord` is an intentional full setup pass: a blank
   // channel answer clears the initial channel restriction rather than keeping
   // an old value invisibly.
   discord.allowed_channels = channelId ? [channelId] : [];

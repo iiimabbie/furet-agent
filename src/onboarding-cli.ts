@@ -25,7 +25,7 @@ try {
     console.log("");
   }
 
-  console.log("Furet Discord setup\n");
+  console.log("Umiro Discord setup\n");
   console.log("這個步驟只設定 Discord 的基本存取範圍；助理的稱呼與人格會在 owner 第一次於 Discord 對話時再詢問。\n");
   const ownerId = await askForDiscordId(rl, "你的 Discord user ID：", true);
   const channelId = await askForDiscordId(rl, "第一個要允許使用的 Discord channel ID（可留白）：", false);

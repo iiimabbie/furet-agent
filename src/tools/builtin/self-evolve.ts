@@ -6,7 +6,7 @@ import { getRequestProfile } from "../context.js";
 import { activeLlmProfile } from "../../llm/profile.js";
 import type { Tool } from "../../types.js";
 
-const CODING_SYSTEM_PROMPT = `You are modifying the Furet agent's own source code. Furet is a TypeScript project at ${ROOT}/.
+const CODING_SYSTEM_PROMPT = `You are modifying the Umiro agent's own source code. Umiro is a TypeScript project at ${ROOT}/.
 
 Before making changes:
 1. Read ${ROOT}/material/DESIGN.md for architecture overview
@@ -25,7 +25,7 @@ To add a new tool:
 
 export const selfEvolve: Tool = {
   name: "self_evolve",
-  description: "Modify Furet's own source code using the active conversation model. Use this when you need to add features, fix bugs, or improve yourself. Describe what you want to change clearly.",
+  description: "Modify Umiro's own source code using the active conversation model. Use this when you need to add features, fix bugs, or improve yourself. Describe what you want to change clearly.",
   parameters: {
     type: "object",
     properties: {

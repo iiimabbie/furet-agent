@@ -89,7 +89,7 @@ const SLASH_COMMANDS = [
     .toJSON(),
   new SlashCommandBuilder()
     .setName("restart")
-    .setDescription("重啟整個 furet gateway（owner only）")
+    .setDescription("重啟整個 umiro gateway（owner only）")
     .toJSON(),
   new SlashCommandBuilder()
     .setName("model")
@@ -124,7 +124,7 @@ const SLASH_COMMANDS = [
     .toJSON(),
   new SlashCommandBuilder()
     .setName("plugin")
-    .setDescription("安裝、更新或卸載 Furet 外掛（owner only）")
+    .setDescription("安裝、更新或卸載 Umiro 外掛（owner only）")
     .addStringOption(opt =>
       opt.setName("動作")
         .setDescription("選擇要執行的外掛操作")
@@ -198,7 +198,7 @@ interface PendingRestart {
   createdAt: number;
 }
 
-const RESTART_STATE_FILE = join(tmpdir(), `furet-restart-${process.getuid?.() ?? "unknown"}.json`);
+const RESTART_STATE_FILE = join(tmpdir(), `umiro-restart-${process.getuid?.() ?? "unknown"}.json`);
 const RESTART_TOKEN_TTL_MS = 14 * 60 * 1000;
 const execFileAsync = promisify(execFile);
 
@@ -383,7 +383,7 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
         await syncApplicationEmojis(c);
 
         if (!config.discord.owner_id) {
-          console.log("Discord owner is not configured. Run `furet onbord` locally, then use the bot in Discord.");
+          console.log("Discord owner is not configured. Run `umiro onbord` locally, then use the bot in Discord.");
           logger.warn("fresh install awaiting local onboarding command");
         }
         acceptingTraffic = true;
@@ -462,7 +462,7 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
     // Before the local installer records owner_id, reject every Discord command.
     // This is intentionally before any session write or owner-only command check.
     if (!loadConfig().discord.owner_id) {
-      await interaction.reply(interactionPayload("請在主機本機執行 `furet onbord` 完成 Discord owner 設定。", { ephemeral: true }));
+      await interaction.reply(interactionPayload("請在主機本機執行 `umiro onbord` 完成 Discord owner 設定。", { ephemeral: true }));
       return;
     }
 
@@ -576,7 +576,7 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
 
       const totalTokens = usage.inputTokens + usage.outputTokens;
       const embed = new EmbedBuilder()
-        .setTitle("Furet Status")
+        .setTitle("Umiro Status")
         .setColor(0x5865f2)
         .addFields(
           { name: "Model", value: `\`${sessionProfile.model}\``, inline: true },

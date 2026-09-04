@@ -35,7 +35,7 @@ function serializeError(error: unknown, seen = new WeakSet<object>()): unknown {
 }
 
 /**
- * Log 依「本地日期」每天分檔：`logs/furet-YYYY-MM-DD.log`。
+ * Log 依「本地日期」每天分檔：`logs/umiro-YYYY-MM-DD.log`。
  *
  * pino-pretty 在主執行緒把每筆 log 格式化成人類可讀的
  * `YYYY-MM-DD HH:mm:ss` 單行格式，再寫入 daily file stream；後者依當下本地
@@ -48,7 +48,7 @@ function serializeError(error: unknown, seen = new WeakSet<object>()): unknown {
 const timeZone = resolveTimeZone();
 
 const prettyStream = pretty({
-  destination: createDailyFileStream({ dir: LOGS_DIR, prefix: "furet", timeZone }),
+  destination: createDailyFileStream({ dir: LOGS_DIR, prefix: "umiro", timeZone }),
   colorize: false,
   translateTime: "SYS:yyyy-mm-dd HH:MM:ss",
   ignore: "pid,hostname",

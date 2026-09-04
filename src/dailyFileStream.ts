@@ -54,7 +54,7 @@ interface DatedStream {
 }
 
 export function createDailyFileStream(options: DailyFileStreamOptions): Writable {
-  const { dir, prefix = "furet", timeZone = "UTC" } = options;
+  const { dir, prefix = "umiro", timeZone = "UTC" } = options;
 
   mkdirSync(dir, { recursive: true });
 

@@ -275,7 +275,7 @@ export async function safeFetchBuffer(urlValue: string, options: SafeFetchBuffer
         port: current.port || undefined,
         path: `${current.pathname}${current.search}`,
         method: "GET",
-        headers: { "User-Agent": "Furet-AttachmentIndexer/1.0", ...(options.headers ?? {}) },
+        headers: { "User-Agent": "Umiro-AttachmentIndexer/1.0", ...(options.headers ?? {}) },
         // The custom lookup deliberately returns exactly the vetted, pinned address.
         // Disable Node's multi-address family racing: with autoSelectFamily enabled it
         // asks lookup() for an all-address result and treats a single pinned answer as

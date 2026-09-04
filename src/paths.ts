@@ -4,7 +4,7 @@ export const ROOT = resolve(import.meta.dirname ?? process.cwd(), "..");
 
 export const WORKSPACE_DIR = resolve(ROOT, "workspace");
 export const LOGS_DIR = resolve(ROOT, "logs");
-export const CONFIG_PATH = resolve(ROOT, process.env.FURET_CONFIG_PATH ?? "config.yaml");
+export const CONFIG_PATH = resolve(ROOT, process.env.UMIRO_CONFIG_PATH ?? "config.yaml");
 export const SESSIONS_DIR = resolve(WORKSPACE_DIR, "sessions");
 export const ARCHIVE_DIR = resolve(SESSIONS_DIR, "archive");
 export const MEMORY_DIR = resolve(WORKSPACE_DIR, "memory");

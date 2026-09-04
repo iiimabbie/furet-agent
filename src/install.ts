@@ -103,12 +103,12 @@ if (!existsSync(sgBaselinesPath)) {
 }
 
 // --- 4. npm link ---
-console.log("\n=== Registering furet command ===");
+console.log("\n=== Registering umiro command ===");
 run("npm link");
 
 // --- 5. systemd service ---
 const nodeBinDir = dirname(process.execPath);
-const furetBin = `${nodeBinDir}/furet`;
+const umiroBin = `${nodeBinDir}/umiro`;
 
 /** systemd 只在 Linux 上有，而且不是每個 Linux 都跑 systemd（容器、WSL1、Alpine…） */
 function hasSystemd(): boolean {
@@ -124,12 +124,12 @@ function hasSystemd(): boolean {
 if (!hasSystemd()) {
   console.log("\n=== Skipping systemd service ===");
   console.log(`No systemd on this platform (${process.platform}).`);
-  console.log(`Start the gateway manually with: ${furetBin} gateway`);
+  console.log(`Start the gateway manually with: ${umiroBin} gateway`);
 } else {
   console.log("\n=== Installing systemd service ===");
 
   const unit = `[Unit]
-Description=Furet Discord Bot
+Description=Umiro Discord Bot
 After=network-online.target
 Wants=network-online.target
 
@@ -137,7 +137,7 @@ Wants=network-online.target
 Type=simple
 User=${process.env.USER}
 WorkingDirectory=${ROOT}
-ExecStart=${furetBin} gateway
+ExecStart=${umiroBin} gateway
 Restart=on-failure
 RestartSec=5
 Environment=PATH=${nodeBinDir}:${ROOT}/node_modules/.bin:/usr/bin
@@ -146,14 +146,14 @@ Environment=PATH=${nodeBinDir}:${ROOT}/node_modules/.bin:/usr/bin
 WantedBy=multi-user.target
 `;
 
-  const tmp = "/tmp/furet.service";
+  const tmp = "/tmp/umiro.service";
   writeFileSync(tmp, unit);
-  run(`cp ${tmp} /etc/systemd/system/furet.service`, { sudo: true });
+  run(`cp ${tmp} /etc/systemd/system/umiro.service`, { sudo: true });
   unlinkSync(tmp);
 
   run("systemctl daemon-reload", { sudo: true });
-  run("systemctl enable furet", { sudo: true });
+  run("systemctl enable umiro", { sudo: true });
 }
 
 console.log("\n=== Done ===");
-console.log("Edit .env and config.yaml, then run: furet onbord, followed by furet gateway");
+console.log("Edit .env and config.yaml, then run: umiro onbord, followed by umiro gateway");

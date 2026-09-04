@@ -17,7 +17,7 @@ import { getDb } from "./db.js";
 import { resolveEmojiMarkup } from "./emoji.js";
 import { editPayload, editTextMessageAsV1, interactionPayload, messagePayload } from "./utils/discord-message.js";
 
-const CUSTOM_ID_PREFIX = "furet_button";
+const CUSTOM_ID_PREFIX = "umiro_button";
 const MAX_CONTENT_LENGTH = 1600;
 const MAX_PREVIEW_LENGTH = 850;
 const MAX_RESULT_LENGTH = 350;

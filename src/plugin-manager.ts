@@ -22,7 +22,7 @@ import { PLUGINS_DIR, PLUGIN_REGISTRY_FILE, ROOT, TRASH_DIR } from "./paths.js";
 interface PackageJson {
   name?: string;
   scripts?: Record<string, string>;
-  furet?: {
+  umiro?: {
     name?: string;
     plugin?: string;
   };
@@ -275,15 +275,15 @@ function resolvePackageRoot(sourceRoot: string, workspace?: string): string {
 
 function pluginMetadata(packageRoot: string): { name: string; packageName: string; entryPath: string } {
   const pkg = readPackage(packageRoot);
-  const entry = pkg.furet?.plugin?.trim();
+  const entry = pkg.umiro?.plugin?.trim();
   if (!entry) {
-    throw new Error(`package.json must declare \"furet\": { \"plugin\": \"./path/to/entry.js\" }`);
+    throw new Error(`package.json must declare \"umiro\": { \"plugin\": \"./path/to/entry.js\" }`);
   }
   if (entry.startsWith("/") || entry.split(/[\\/]/).includes("..")) {
-    throw new Error("furet.plugin must be a relative path inside its package");
+    throw new Error("umiro.plugin must be a relative path inside its package");
   }
   const packageName = pkg.name?.trim() || basename(packageRoot);
-  const name = safeSegment(pkg.furet?.name?.trim() || packageName.replace(/^@[^/]+\//, ""));
+  const name = safeSegment(pkg.umiro?.name?.trim() || packageName.replace(/^@[^/]+\//, ""));
   const entryPath = resolve(packageRoot, entry);
   if (!isInside(packageRoot, entryPath)) throw new Error("Plugin entry escapes its package directory");
   return { name, packageName, entryPath };

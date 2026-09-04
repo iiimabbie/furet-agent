@@ -3,7 +3,7 @@ import type { LlmCapability } from "../llm/types.js";
 import type { ExposureLevel, MatchSignalName } from "./metadata.js";
 import type { PluginConfigStore } from "../plugin-config.js";
 
-/** Stable public API for private Furet plugins (extensions). */
+/** Stable public API for private Umiro plugins (extensions). */
 
 export interface PluginToolRegistration {
   /** The tool itself (`src/types.ts` `Tool`). `execute` must return `Promise<string>`. */

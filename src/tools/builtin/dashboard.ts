@@ -269,7 +269,7 @@ export function renderDashboardHTML(stats: DashboardStats): string {
 </head>
 <body>
 <div class="card">
-  <div class="title">Furet Usage</div>
+  <div class="title">Umiro Usage</div>
   <div class="stats-grid">
     <div class="stat-box">
       <div class="stat-label">Sessions</div>
@@ -355,7 +355,7 @@ export async function renderDashboardImage(): Promise<Buffer> {
 
 export const usageDashboard: Tool = {
   name: "usage_dashboard",
-  description: "Generate a visual usage dashboard image showing Furet's session stats, token usage, streaks, and activity heatmap. Returns the image as a Discord attachment.",
+  description: "Generate a visual usage dashboard image showing Umiro's session stats, token usage, streaks, and activity heatmap. Returns the image as a Discord attachment.",
   parameters: {
     type: "object",
     properties: {},

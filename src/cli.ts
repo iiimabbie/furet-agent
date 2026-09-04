@@ -146,5 +146,5 @@ rl.once("close", shutdown);
 process.once("SIGINT", () => { shutdown(); rl.close(); });
 process.once("SIGTERM", () => { shutdown(); rl.close(); });
 
-console.log(`Furet CLI — type 'new' for new session, 'exit' to quit (history: ${session.length} messages)`);
+console.log(`Umiro CLI — type 'new' for new session, 'exit' to quit (history: ${session.length} messages)`);
 prompt();

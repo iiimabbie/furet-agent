@@ -518,7 +518,7 @@ function scheduleSoulGuardian(): void {
 }
 
 // --- PID file: kill old instance before starting ---
-const PID_FILE = `${ROOT}/furet.pid`;
+const PID_FILE = `${ROOT}/umiro.pid`;
 
 if (existsSync(PID_FILE)) {
   const raw = readFileSync(PID_FILE, "utf-8").trim();
@@ -537,7 +537,7 @@ if (existsSync(PID_FILE)) {
 writeFileSync(PID_FILE, String(process.pid));
 
 // --- Start ---
-console.log("Furet Gateway starting...");
+console.log("Umiro Gateway starting...");
 logger.info("gateway start");
 
 // 初始化 SQLite（建表）
@@ -590,7 +590,7 @@ scheduleJournal();
 scheduleSoulGuardian();
 startWatcher();
 
-console.log("Furet Gateway running. Press Ctrl+C to stop.");
+console.log("Umiro Gateway running. Press Ctrl+C to stop.");
 
 function cleanup() {
   try {

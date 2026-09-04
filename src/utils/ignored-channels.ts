@@ -1,4 +1,4 @@
-import type { FuretConfig } from "../config.js";
+import type { UmiroConfig } from "../config.js";
 
 /**
  * Whether a channel / thread should be completely ignored at the Discord message
@@ -10,6 +10,6 @@ import type { FuretConfig } from "../config.js";
  * This is intentionally the highest-priority gate: `ignored_channels` overrides
  * `ambient_channels`, `allowed_channels`, mentions, and DMs.
  */
-export function isIgnoredChannel(channelId: string, config: FuretConfig): boolean {
+export function isIgnoredChannel(channelId: string, config: UmiroConfig): boolean {
   return config.discord.ignored_channels.includes(channelId);
 }

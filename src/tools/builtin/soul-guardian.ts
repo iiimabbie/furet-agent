@@ -341,16 +341,16 @@ export function runSoulGuardianCheck(options: SoulGuardianCheckOptions = {}): So
     }
 
     if ("error" in info) {
-      if (audit) appendAudit({ ts: utcNowIso(), event: "error", actor: "furet", path: t.path, mode: t.mode, error: info.error });
+      if (audit) appendAudit({ ts: utcNowIso(), event: "error", actor: "umiro", path: t.path, mode: t.mode, error: info.error });
       items.push({ path: t.path, mode: t.mode, status: "error", error: String(info.error), canApprove: false });
       continue;
     }
 
-    if (audit) appendAudit({ ts: utcNowIso(), event: "drift", actor: "furet", path: t.path, mode: t.mode, ...info });
+    if (audit) appendAudit({ ts: utcNowIso(), event: "drift", actor: "umiro", path: t.path, mode: t.mode, ...info });
 
     if (t.mode === "restore" && !noRestore) {
       const restored = restoreOne(t.path, info);
-      if (audit) appendAudit({ ts: utcNowIso(), event: "restore", actor: "furet", path: t.path, mode: t.mode, ...restored });
+      if (audit) appendAudit({ ts: utcNowIso(), event: "restore", actor: "umiro", path: t.path, mode: t.mode, ...restored });
       items.push({
         path: t.path, mode: t.mode, status: "restored", canApprove: false,
         approvedSha: info.approvedSha as string | undefined,
@@ -548,7 +548,7 @@ export const soulGuardianApprove: Tool = {
         baselines.files[t.path] = { sha256: curSha, approvedAt: utcNowIso() };
 
         appendAudit({
-          ts: utcNowIso(), event: "approve", actor: "furet", note,
+          ts: utcNowIso(), event: "approve", actor: "umiro", note,
           path: t.path, mode: t.mode, prevApprovedSha: prevSha, approvedSha: curSha, patchPath,
           ...(histPath ? { historyPath: histPath } : {}),
         });
@@ -643,7 +643,7 @@ export const soulGuardianRestore: Tool = {
         }
 
         appendAudit({
-          ts: utcNowIso(), event: "restore", actor: "furet", note,
+          ts: utcNowIso(), event: "restore", actor: "umiro", note,
           path: t.path, mode: t.mode, source: sourceLabel,
         });
         results.push(`${t.path}: restored from ${sourceLabel}`);

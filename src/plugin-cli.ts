@@ -8,15 +8,15 @@ import {
 
 function usage(): never {
   console.error(`Usage:
-  furet plugin install <git-url-or-local-path> [--workspace <name-or-relative-path>]
-  furet plugin list
-  furet plugin enable <name>
-  furet plugin disable <name>
-  furet plugin update [name]
-  furet plugin remove <name>
+  umiro plugin install <git-url-or-local-path> [--workspace <name-or-relative-path>]
+  umiro plugin list
+  umiro plugin enable <name>
+  umiro plugin disable <name>
+  umiro plugin update [name]
+  umiro plugin remove <name>
 
 A plugin package must declare this in package.json:
-  "furet": { "plugin": "./dist/index.js" }
+  "umiro": { "plugin": "./dist/index.js" }
 
 Managed commands update workspace/config/plugins.json but never restart the gateway automatically.`);
   process.exit(1);
