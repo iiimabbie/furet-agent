@@ -224,13 +224,16 @@ export interface ExtractedMessageAttachment {
   discordAttachmentId?: string;
   discordMessageId?: string;
   discordChannelId?: string;
+  /** Source pixel dimensions when Discord reports them; absent for embeds. */
+  width?: number;
+  height?: number;
 }
 
 /** Read user-visible attachments from standard Discord uploads and embeds. */
 export function extractMessageAttachments(message: {
   id?: string;
   channelId?: string;
-  attachments?: { values?: () => Iterable<{ id?: string; url: string; name?: string | null; contentType?: string | null; size?: number }> };
+  attachments?: { values?: () => Iterable<{ id?: string; url: string; name?: string | null; contentType?: string | null; size?: number; width?: number | null; height?: number | null }> };
   embeds?: readonly { toJSON?: () => unknown }[];
 }): ExtractedMessageAttachment[] {
   const results: ExtractedMessageAttachment[] = [];
@@ -243,6 +246,8 @@ export function extractMessageAttachments(message: {
     contentType?: unknown,
     size?: unknown,
     attachmentId?: unknown,
+    width?: unknown,
+    height?: unknown,
   ): void => {
     if (typeof url !== "string" || seen.has(url)) return;
     seen.add(url);
@@ -254,6 +259,7 @@ export function extractMessageAttachments(message: {
       ...(typeof name === "string" ? { name } : {}),
       ...(typeof contentType === "string" ? { contentType } : {}),
       ...(typeof size === "number" ? { size } : {}),
+      ...(typeof width === "number" && typeof height === "number" ? { width, height } : {}),
       ...(hasProvenance ? { discordAttachmentId: attachmentId as string, discordMessageId: messageId } : {}),
       ...(hasProvenance && channelId !== undefined ? { discordChannelId: channelId } : {}),
     });
@@ -261,7 +267,9 @@ export function extractMessageAttachments(message: {
 
   const attachmentValues = message.attachments?.values?.();
   if (attachmentValues) {
-    for (const attachment of attachmentValues) add(attachment.url, attachment.name, attachment.contentType, attachment.size, attachment.id);
+    for (const attachment of attachmentValues) {
+      add(attachment.url, attachment.name, attachment.contentType, attachment.size, attachment.id, attachment.width, attachment.height);
+    }
   }
 
   for (const embedValue of message.embeds ?? []) {

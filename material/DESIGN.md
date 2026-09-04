@@ -879,7 +879,13 @@ interface PluginRuntimeContext {
 
 Discord uploads、Embed image/thumbnail、回覆引用與 Forum starter 附件會先建立不落 DB 的 `AttachmentReference`，隨訊息成功持久化到 session JSON 後，才建立 SQLite `attachment_records`、job 與搜尋投影；session JSON 保存 stable reference，SQLite 保存處理狀態與抽取結果。遠端 URL 的 query 不進 searchable metadata，背景 worker 會盡快把原檔下載到 `workspace/attachments/search-index/`，避免 Discord CDN URL 過期後失去原始證據。所有遠端圖片／附件下載都經 pinned-DNS safe fetch：逐跳驗證 redirect、拒絕 loopback／private／link-local 位址、限制 timeout，並以 streaming byte counter 在超限時立即中止；本機檔也在讀取前先檢查大小。相同 bytes 在不同訊息被引用時保留各自 reference metadata；binary 本身不塞進 SQLite。
 
+送往模型的圖片一律先要求 Discord 的縮圖版本：image token 依像素數計價，而辨識文字、UI 狀態與主體不需要原解析度。縮放在仍握有 Discord 回報長寬的收集點完成（`boundedImageUrl`），依原比例換算目標尺寸——Discord 會精確縮放到指定的寬高而非等比內縮，缺長寬時因此不改寫，寧可不縮也不送變形的圖。只有 `media.discordapp.net` 會實際縮放，`cdn.discordapp.com` 會忽略參數；簽章參數必須原樣保留。落地保存的仍是原檔，縮圖只用於模型請求。
+
+帶圖片的對話輪次會在同一次請求裡產生描述：該輪本來就已上傳圖片，追加一個 `<image-index>` 區塊只花 output token，省下第二次重新上傳圖片的視覺呼叫。區塊在送往 Discord 前（含進度訊息）剝除，並依序寫入該訊息的圖片附件記錄，標記 `vision_status='complete'`。背景 vision worker 會跳過已完成的記錄，因此它是取代而非競爭；區塊缺漏、格式錯誤、編號超界或非對話來源的附件（工具輸出、生成圖、歷史回填）仍由 worker 照常描述。
+
 附件視覺描述的 provider／transport／model／endpoint／語言都由 `attachment_analysis` 決定，與 `/model` 切換無關，避免對話模型換成無視覺能力時靜默失去圖片描述。該區塊預設 `enabled: false`：視覺呼叫跑在背景 job，端點不支援的模型會每次失敗且不易察覺，因此必須由部署明確開啟。`provider` 留空時依 `llm.base_url` 推導（anthropic.com 走 messages，其餘走 chat_completions），`model` 留空時沿用 `llm.currentModel`，`base_url`／`api_key_env` 留空時沿用 `llm`。描述語言由 `language` 設定，留空即不下語言指示；prompt 本身不寫死任何語言。
+
+模型自己產生的圖片（生圖工具與內嵌輸出）標記為 `relation='generated'`，不跑視覺描述：產生它的 prompt 已經是對話的一部分並建立索引，比事後再看圖產生的描述更能表達意圖。OCR 仍照跑（本機、免費）。
 
 `attachment_jobs` 是可重啟、可重試的 outbox。圖片同時經 Tesseract.js (`eng+chi_tra`) OCR 與目前 vision model 的客觀描述；vision prompt 明確把圖片內容視為 untrusted evidence，不執行畫面中的指令。Tesseract.js 的 npm postinstall 不下載語言資料；`eng`／`chi_tra` traineddata 會在首次建立 OCR worker 時依 runtime 設定取得並寫入 cache，因此完全 air-gapped 的部署必須在啟動 worker 前預先提供語言資料，並設定受控的 `langPath`／cache path。OCR、vision 與文件抽取各自保存 stage status：已成功的結果立即寫入並建立部分搜尋投影，後續只重試失敗階段，不因另一階段暫時失敗而丟掉可用證據。文字與程式碼檔直接抽取；PDF、DOCX、PPTX、XLSX、ODF、RTF、CSV、Markdown、HTML、EPUB 使用 `officeparser` 產生文字與內嵌圖片 OCR。`pdfjs-dist` 與 `qs` 透過 lockfile override 固定至已修補版本；升級 override 後必須在乾淨安裝上跑 PDF extraction fixture，且 production audit 必須為零漏洞。處理邊界包含下載大小、解壓 bytes、ZIP entry、spreadsheet cell 與 abort timeout；失敗會保留原因並依退避策略重試。
 

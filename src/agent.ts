@@ -520,7 +520,10 @@ function finalizeSessionBookkeeping(
   session.indexConversationWindow(requestStartIndex);
 
   try {
-    session.attachFilesToLastAssistant(peekAttachments());
+    // Everything queued this turn was produced by the model itself (image generation tool
+    // or inline output), so it is tagged as generated: the prompt that created it is already
+    // in the conversation and indexed, which makes a visual description of it redundant.
+    session.attachFilesToLastAssistant(peekAttachments(), "generated");
   } catch (err) {
     logger.error({ err, sessionId: session.id }, "assistant attachment reference persistence failed; reply delivery will continue");
   }

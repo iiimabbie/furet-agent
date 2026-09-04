@@ -277,6 +277,31 @@ export function registerInlineImageAttachments(
 }
 
 /** Build durable session references without touching the projection database. */
+/**
+ * Record image descriptions produced by the conversation turn that already had the images in
+ * context, so the background worker does not re-upload them for a second vision call. The
+ * worker skips any record already marked `complete`, which makes this a replacement rather
+ * than a race: anything not written here still gets described the usual way.
+ */
+export function applyInlineImageDescriptions(pairs: Array<{ id: string; description: string }>): number {
+  if (pairs.length === 0) return 0;
+  const db = getDb();
+  const update = db.prepare(`
+    UPDATE attachment_records SET visual_description = ?, vision_status = 'complete',
+      updated_at = datetime('now')
+    WHERE id = ? AND vision_status != 'complete'
+  `);
+  let applied = 0;
+  db.transaction(() => {
+    for (const pair of pairs) {
+      const description = pair.description.trim();
+      if (!description) continue;
+      applied += update.run(description, pair.id).changes;
+    }
+  })();
+  return applied;
+}
+
 export function prepareLocalAttachmentReferences(
   sessionId: string,
   parentId: string,
@@ -549,7 +574,13 @@ async function processOneAttachmentJob(): Promise<"completed" | "failed" | "none
 
       if (job.vision_status !== "complete" && job.vision_status !== "skipped") {
         const cfg = resolveVisionConfig();
-        if (!cfg.enabled || downloaded.size > cfg.maxImageBytes) {
+        // A model-generated image is skipped alongside the disabled/oversized cases: the prompt
+        // that produced it is already an indexed part of the conversation and states the intent
+        // better than a post-hoc reading of the result. OCR still runs — it is local and free.
+        const skipVision = job.relation === "generated"
+          || !cfg.enabled
+          || downloaded.size > cfg.maxImageBytes;
+        if (skipVision) {
           db.prepare("UPDATE attachment_records SET vision_status='skipped', updated_at=datetime('now') WHERE id=?").run(job.id);
         } else if (!reserveVisionDescription()) {
           refreshableFailure = new RefreshableAttachmentError("daily vision budget exhausted; retry after budget reset", false, 24 * 60 * 60 * 1000);

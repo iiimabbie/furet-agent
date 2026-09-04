@@ -15,6 +15,9 @@ import { handleDiscordButtonInteraction, initializeDiscordButtonStore } from "./
 import { fixMarkdownLinks } from "./utils/format.js";
 import { chunkMessage } from "./utils/chunk-message.js";
 import { extractMessageAttachments, extractMessageText, editPayload, interactionPayload, legacyComponentWebhookEditBody, messagePayload, webhookEditBody } from "./utils/discord-message.js";
+import type { ExtractedMessageAttachment } from "./utils/discord-message.js";
+import { boundedImageUrl } from "./utils/image-url.js";
+import { imageIndexInstruction, parseImageIndexBlock, stripImageIndexBlock } from "./utils/image-index-block.js";
 import { normalizeMentions, formatName } from "./utils/discord-mentions.js";
 import { stamp } from "./utils/time.js";
 import { isNoReplySentinel } from "./utils/no-reply.js";
@@ -45,7 +48,7 @@ import { getAuthClient, getAuthUrl, exchangeCode } from "./google/auth.js";
 import { google } from "googleapis";
 import { loadReminders } from "./tools/builtin/reminder.js";
 import type { AttachmentReference, TokenUsage, ProgressEvent } from "./types.js";
-import { prepareRemoteAttachmentReferences, type RemoteAttachmentInput } from "./attachment-index.js";
+import { prepareRemoteAttachmentReferences, type RemoteAttachmentInput, applyInlineImageDescriptions } from "./attachment-index.js";
 
 function buildChannelContext(channelId: string, sessionId: string, extra?: string): string {
   const lines = [
@@ -908,7 +911,11 @@ async function formatIncomingMessage(message: Message, sessionId: string): Promi
     attachment.contentType?.startsWith("image/")
     || imageExts.some(extension => (attachment.name || new URL(attachment.url).pathname).toLowerCase().endsWith(extension));
 
-  const images = attachments.filter(isImage).map(attachment => attachment.url);
+  // Bound the rendition here, where Discord's reported dimensions are still available:
+  // downstream only carries URLs, and image tokens scale with the pixels actually sent.
+  const toModelImageUrl = (attachment: ExtractedMessageAttachment): string =>
+    boundedImageUrl(attachment.url, attachment.width, attachment.height);
+  const images = attachments.filter(isImage).map(toModelImageUrl);
   const indexInputs: RemoteAttachmentInput[] = attachments.map(item => ({ ...item, relation: "upload" }));
 
   // reply 的訊息如果有圖片，也加進來；另保留 reference metadata，
@@ -917,7 +924,7 @@ async function formatIncomingMessage(message: Message, sessionId: string): Promi
     try {
       const replied = await message.channel.messages.fetch(message.reference.messageId);
       const replyAttachments = extractMessageAttachments(replied);
-      images.push(...replyAttachments.filter(isImage).map(attachment => attachment.url));
+      images.push(...replyAttachments.filter(isImage).map(toModelImageUrl));
       indexInputs.push(...replyAttachments.map(item => ({ ...item, relation: "reply_reference" as const })));
     } catch { /* replied message not available */ }
   }
@@ -968,6 +975,39 @@ export function renderProgress(lines: ProgressLine[]): string {
 // 這裡 re-export，讓既有的 import path（含測試）維持不變。
 export { isNoReplySentinel };
 
+/**
+ * Persist descriptions the reply produced for this turn's images.
+ *
+ * The image attachments of the newest user message are matched positionally against the
+ * numbered block, because that is the order they were uploaded in. Anything missing is left
+ * untouched so the background vision worker still picks it up.
+ */
+function storeInlineImageDescriptions(session: Session, text: string, imageCount: number): void {
+  try {
+    const descriptions = parseImageIndexBlock(text, imageCount);
+    if (descriptions.every(value => !value)) return;
+    const messages = session.getMessages();
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index];
+      if (message.role !== "user") continue;
+      const imageRefs = (message.attachments ?? []).filter(
+        reference => reference.contentType?.startsWith("image/"),
+      );
+      if (imageRefs.length === 0) return;
+      const applied = applyInlineImageDescriptions(
+        imageRefs.slice(0, descriptions.length).map((reference, position) => ({
+          id: reference.id,
+          description: descriptions[position] ?? "",
+        })),
+      );
+      if (applied > 0) logger.info({ sessionId: session.id, applied }, "inline image descriptions stored");
+      return;
+    }
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, "inline image description storage failed");
+  }
+}
+
 async function handleTrigger(message: Message, session: Session, images?: string[]): Promise<void> {
   logger.info({
     sessionId: session.id,
@@ -1016,7 +1056,8 @@ async function handleTrigger(message: Message, session: Session, images?: string
       const text = event.text.length > INTERIM_TEXT_LIMIT
         ? `${event.text.slice(0, INTERIM_TEXT_LIMIT)}…`
         : event.text;
-      progressLines.push({ kind: "text", text });
+      const visible = stripImageIndexBlock(text);
+      if (visible.trim()) progressLines.push({ kind: "text", text: visible });
     } else {
       const line = progressLines.find(l => l.kind === "tool" && l.id === event.toolCallId);
       if (line?.kind === "tool") line.status = event.isError ? "err" : "ok";
@@ -1026,9 +1067,19 @@ async function handleTrigger(message: Message, session: Session, images?: string
   };
 
   try {
-    const channelContext = buildChannelContext(message.channelId, session.id, getChannelTypeInfo(channel));
+    const baseContext = buildChannelContext(message.channelId, session.id, getChannelTypeInfo(channel));
+    // Describe images in the same turn that already uploaded them; the background vision
+    // worker stays as the fallback for anything this does not produce.
+    const imageCount = images?.length ?? 0;
+    const channelContext = imageCount > 0
+      ? `${baseContext}\n\n${imageIndexInstruction(imageCount)}`
+      : baseContext;
     const isOwner = message.author.id === loadConfig().discord.owner_id;
     const response = await ask(null, { session, systemPrompt: channelContext, images, onProgress, trigger: isOwner ? "discord-owner" : "discord-other", userId: message.author.id });
+    if (imageCount > 0 && response.text) {
+      storeInlineImageDescriptions(session, response.text, imageCount);
+      response.text = stripImageIndexBlock(response.text);
+    }
     await flushChain; // 確保進度訊息已發送完成
     logger.info({
       sessionId: session.id,
