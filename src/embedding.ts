@@ -3,11 +3,28 @@ import { getDb, SESSION_SUMMARY_VEC_TABLE, VEC_TABLE } from "./db.js";
 import { toSearchTokens } from "./utils/cjk.js";
 import { today } from "./utils/time.js";
 
+/**
+ * Model backing the legacy `memory_vectors` / session-summary projections. Vectors from
+ * different models are not comparable, so this stays pinned to whatever those stored
+ * vectors were built with; the unified search index passes its own model to `embed()`.
+ */
 const EMBED_MODEL = "gemini-embedding-001";
 
-function getApiKey(): string { return process.env.GOOGLE_API_KEY ?? ""; }
-function getEmbedUrl(): string {
-  return `https://generativelanguage.googleapis.com/v1beta/models/${EMBED_MODEL}:embedContent?key=${getApiKey()}`;
+function getApiKey(): string { return getEmbedKeys()[0] ?? ""; }
+function getEmbedUrl(model: string, apiKey: string): string {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${apiKey}`;
+}
+
+/**
+ * Embedding keys in priority order, read from `GOOGLE_API_KEY` then `GOOGLE_API_KEYS`.
+ * Both accept a comma-separated list, so either variable alone can hold the whole pool.
+ * Each key carries its own upstream quota, so the outbox worker runs one concurrent lane
+ * per key and keeps draining while individual keys sit out a cooldown.
+ */
+export function getEmbedKeys(): string[] {
+  const raw = [process.env.GOOGLE_API_KEY ?? "", process.env.GOOGLE_API_KEYS ?? ""]
+    .flatMap(value => value.split(","));
+  return [...new Set(raw.map(key => key.trim()).filter(Boolean))];
 }
 
 /** 刪除某個檔案的所有向量 */
@@ -28,14 +45,20 @@ export function removeVectorsByFile(file: string): void {
   }
 }
 
-/** 呼叫 Gemini embedding API */
-export async function embed(text: string): Promise<number[]> {
-  const res = await fetch(getEmbedUrl(), {
+/**
+ * 呼叫 Gemini embedding API。
+ *
+ * `model` must match the model whose vectors the caller stores and queries against: distances
+ * between vectors from different models are meaningless, so each index pins its own.
+ */
+export async function embed(text: string, apiKey?: string, model: string = EMBED_MODEL): Promise<number[]> {
+  const key = apiKey ?? getApiKey();
+  const res = await fetch(getEmbedUrl(model, key), {
     method: "POST",
     signal: AbortSignal.timeout(30_000),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: `models/${EMBED_MODEL}`,
+      model: `models/${model}`,
       content: { parts: [{ text }] },
     }),
   });

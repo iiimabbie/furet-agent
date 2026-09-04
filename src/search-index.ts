@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { getDb, SEARCH_DOCUMENT_VEC_TABLE } from "./db.js";
-import { embed } from "./embedding.js";
+import { embed, getEmbedKeys } from "./embedding.js";
 import { logger } from "./logger.js";
 import { toSearchTokens } from "./utils/cjk.js";
 import {
@@ -10,9 +10,43 @@ import {
   type FilterPlan,
 } from "./utils/search-filter-plan.js";
 
-export const SEARCH_EMBED_MODEL = "gemini-embedding-001";
+/**
+ * Model for the unified search index. Its vectors are only comparable with other vectors
+ * from the same model, so changing this requires discarding `search_document_embeddings`
+ * and the vec table and re-embedding; `search_document_embeddings.model` records which
+ * model produced each stored vector.
+ */
+export const SEARCH_EMBED_MODEL = "gemini-embedding-2";
 export const SEARCH_EMBED_DIMENSIONS = 3072;
 const MAX_EMBED_ATTEMPTS = 5;
+/**
+ * Source types deliberately kept out of the vector index. Upstream embedding quota is the
+ * scarce resource, so it is not spent on documents whose vectors nothing reads. Both kinds
+ * stay in FTS and remain findable by keyword.
+ *
+ * - `tool_result`: bulky raw tool output. The `tool_evidence_summary` companion document IS
+ *   embedded and carries a bounded head+tail excerpt of the same output.
+ * - `diary_note`: same-day annotations on a `YYYY-MM-DD.md` daily file. Auto recall excludes
+ *   daily files from the last two days, and the nightly journal replaces these notes with the
+ *   embedded `diary` prose, so a note's vector is unreadable for its entire lifetime. The
+ *   conversation it annotates is already embedded as session messages and windows.
+ */
+const NON_EMBEDDED_SOURCE_TYPES = new Set<SearchSourceType>(["tool_result", "diary_note"]);
+
+export function shouldEmbedSource(sourceType: SearchSourceType): boolean {
+  return !NON_EMBEDDED_SOURCE_TYPES.has(sourceType);
+}
+
+/**
+ * Quota exhaustion and upstream outages say nothing about the document being embedded, so
+ * they must not consume its `MAX_EMBED_ATTEMPTS` budget: one quota wall would otherwise
+ * bury the entire backlog past the limit and those documents would never be embedded again.
+ * Such failures roll the attempt back and retry indefinitely; only errors the document can
+ * never recover from (malformed request, wrong dimensions) count towards the budget.
+ */
+const QUOTA_COOLDOWN_MIN_MS = 60_000;
+const QUOTA_COOLDOWN_MAX_MS = 3_600_000;
+const TRANSIENT_RETRY_SECONDS = 300;
 /**
  * Conservative initial ceiling on cumulative nearest-neighbour rows scanned by the
  * progressive-k vector pass. It bounds worst-case local work while still allowing growth
@@ -64,6 +98,8 @@ export interface IngestResult {
 export interface EmbeddingWorkerResult {
   completed: number;
   failed: number;
+  /** Jobs deferred by quota or upstream outage. They keep their retry budget intact. */
+  throttled: number;
   remaining: number;
   exhausted: number;
 }
@@ -173,7 +209,19 @@ export function ingestSearchDocuments(
       status = 'pending', attempts = 0, next_retry_at = NULL, last_error = NULL,
       updated_at = datetime('now')
   `);
+  const markSkipped = db.prepare("UPDATE search_documents SET embedding_status = 'skipped' WHERE id = ?");
+  const dropJob = db.prepare("DELETE FROM embedding_jobs WHERE document_id = ?");
   const removeEmbeddingMeta = db.prepare("DELETE FROM search_document_embeddings WHERE document_id = ?");
+
+  /** Queue the document for embedding, or record that it is intentionally never embedded. */
+  const scheduleEmbedding = (id: string, sourceType: SearchSourceType, contentHash: string): void => {
+    if (shouldEmbedSource(sourceType)) {
+      enqueue.run(id, contentHash);
+      return;
+    }
+    dropJob.run(id);
+    markSkipped.run(id);
+  };
   const updateMetadata = db.prepare(`
     UPDATE search_documents SET source_type=?, source_id=?, parent_id=?, session_id=?, channel_id=?,
       visibility_scope=?, ordinal=?, role=?, occurred_at=?, updated_at=datetime('now') WHERE id=?
@@ -193,7 +241,7 @@ export function ingestSearchDocuments(
           doc.occurredAt ?? null,
         ).lastInsertRowid);
         insertFts.run(rowid, toSearchTokens(doc.text), doc.sourceType, doc.sourceId, doc.sessionId ?? "", doc.visibilityScope);
-        enqueue.run(doc.id, doc.contentHash);
+        scheduleEmbedding(doc.id, doc.sourceType, doc.contentHash);
         result.inserted++;
         continue;
       }
@@ -231,7 +279,7 @@ export function ingestSearchDocuments(
         doc.role ?? null, doc.text, doc.contentHash, doc.occurredAt ?? null, doc.id,
       );
       insertFts.run(existing.rowid, toSearchTokens(doc.text), doc.sourceType, doc.sourceId, doc.sessionId ?? "", doc.visibilityScope);
-      enqueue.run(doc.id, doc.contentHash);
+      scheduleEmbedding(doc.id, doc.sourceType, doc.contentHash);
       result.updated++;
     }
 
@@ -346,9 +394,198 @@ function retryAt(attempts: number): string {
   return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
+type EmbedFailureKind = "quota" | "credential" | "transient" | "permanent";
+
+/** Decide whether a failure is the document's fault, the key's, or the infrastructure's. */
+function classifyEmbedFailure(message: string): EmbedFailureKind {
+  if (message.startsWith("unexpected embedding dimensions")) return "permanent";
+  const status = Number(/^Embedding API (\d{3}):/.exec(message)?.[1]);
+  // fetch aborts and network resets carry no HTTP status; they are always retryable.
+  if (!Number.isFinite(status)) return "transient";
+  if (status === 429) return "quota";
+  // A rejected or unauthorised key says nothing about the document: bench the key and let
+  // the other lanes carry on, rather than spending the document's retry budget on it.
+  if (status === 401 || status === 403) return "credential";
+  if (status >= 500) return "transient";
+  return "permanent";
+}
+
+/**
+ * Per-key quota state. Each API key has its own upstream quota, so a key that hits 429 is
+ * benched on its own while the remaining keys keep draining the backlog; the worker only
+ * pauses once every key is cooling down.
+ */
+const keyCooldowns = new Map<string, { until: number; ms: number }>();
+
+function readyKeys(): string[] {
+  const now = Date.now();
+  return getEmbedKeys().filter(key => (keyCooldowns.get(key)?.until ?? 0) <= now);
+}
+
+function benchKey(key: string): number {
+  const state = keyCooldowns.get(key) ?? { until: 0, ms: QUOTA_COOLDOWN_MIN_MS };
+  const ms = state.ms;
+  keyCooldowns.set(key, { until: Date.now() + ms, ms: Math.min(QUOTA_COOLDOWN_MAX_MS, ms * 2) });
+  return ms;
+}
+
+function clearKeyCooldown(key: string): void {
+  keyCooldowns.set(key, { until: 0, ms: QUOTA_COOLDOWN_MIN_MS });
+}
+
+function countJobBacklog(db: ReturnType<typeof getDb>): { remaining: number; exhausted: number } {
+  const remaining = (db.prepare(`
+    SELECT count(*) AS c FROM embedding_jobs
+    WHERE status IN ('pending', 'processing') OR (status = 'failed' AND attempts < ?)
+  `).get(MAX_EMBED_ATTEMPTS) as { c: number }).c;
+  const exhausted = (db.prepare(`
+    SELECT count(*) AS c FROM embedding_jobs WHERE status = 'failed' AND attempts >= ?
+  `).get(MAX_EMBED_ATTEMPTS) as { c: number }).c;
+  return { remaining, exhausted };
+}
+
+/**
+ * Queue order for the embedding outbox. Upstream quota, not local work, is the binding
+ * constraint, so the budget is spent on the documents recall benefits from most: durable
+ * facts and diary first, conversation next, and bulky tool bookkeeping last. Plain FIFO
+ * would sink a workspace's memory and diary behind thousands of tool-call documents.
+ */
+const EMBED_PRIORITY_SQL = `CASE d.source_type
+  WHEN 'owner' THEN 0 WHEN 'memory' THEN 0 WHEN 'people' THEN 0
+  WHEN 'diary' THEN 1 WHEN 'diary_note' THEN 1
+  WHEN 'compact_summary' THEN 2
+  WHEN 'session_message' THEN 3 WHEN 'conversation_window' THEN 3
+  WHEN 'attachment' THEN 4
+  WHEN 'tool_evidence_summary' THEN 5
+  ELSE 6 END`;
+
+interface ClaimedJob {
+  document_id: string;
+  content_hash: string;
+  attempts: number;
+  rowid: number;
+  text: string;
+}
+
+/**
+ * Atomically take the next ready job. better-sqlite3 is synchronous, so this transaction
+ * cannot interleave with a concurrent lane's claim and no job is ever handed out twice.
+ */
+function claimJob(db: ReturnType<typeof getDb>): ClaimedJob | undefined {
+  return db.transaction(() => {
+    const row = db.prepare(`
+      SELECT j.document_id, j.content_hash, j.attempts, d.rowid, d.text
+      FROM embedding_jobs j
+      JOIN search_documents d ON d.id = j.document_id
+      WHERE j.attempts < ?
+        AND (j.status = 'pending' OR (j.status = 'failed' AND (j.next_retry_at IS NULL OR datetime(j.next_retry_at) <= datetime('now'))))
+      ORDER BY ${EMBED_PRIORITY_SQL}, j.created_at, j.document_id
+      LIMIT 1
+    `).get(MAX_EMBED_ATTEMPTS) as ClaimedJob | undefined;
+    if (!row) return undefined;
+    db.prepare(`
+      UPDATE embedding_jobs SET status = 'processing', attempts = attempts + 1,
+        updated_at = datetime('now') WHERE document_id = ?
+    `).run(row.document_id);
+    db.prepare("UPDATE search_documents SET embedding_status = 'processing' WHERE id = ?").run(row.document_id);
+    return { ...row, attempts: row.attempts + 1 };
+  })();
+}
+
+function storeEmbedding(db: ReturnType<typeof getDb>, job: ClaimedJob, vector: number[]): void {
+  const blob = vectorToBlob(vector);
+  db.transaction(() => {
+    const current = db.prepare("SELECT content_hash, rowid FROM search_documents WHERE id = ?").get(job.document_id) as { content_hash: string; rowid: number } | undefined;
+    if (!current || current.content_hash !== job.content_hash) {
+      db.prepare("UPDATE embedding_jobs SET status = 'pending', updated_at = datetime('now') WHERE document_id = ?").run(job.document_id);
+      return;
+    }
+    db.prepare(`DELETE FROM ${SEARCH_DOCUMENT_VEC_TABLE} WHERE rowid = ?`).run(BigInt(current.rowid));
+    db.prepare(`INSERT INTO ${SEARCH_DOCUMENT_VEC_TABLE} (rowid, embedding) VALUES (?, ?)`).run(BigInt(current.rowid), blob);
+    db.prepare(`
+      INSERT INTO search_document_embeddings
+        (document_id, document_rowid, model, dimensions, content_hash, embedded_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(document_id) DO UPDATE SET
+        document_rowid = excluded.document_rowid, model = excluded.model,
+        dimensions = excluded.dimensions, content_hash = excluded.content_hash,
+        embedded_at = datetime('now')
+    `).run(job.document_id, current.rowid, SEARCH_EMBED_MODEL, SEARCH_EMBED_DIMENSIONS, job.content_hash);
+    db.prepare("UPDATE embedding_jobs SET status = 'complete', next_retry_at = NULL, last_error = NULL, updated_at = datetime('now') WHERE document_id = ?").run(job.document_id);
+    db.prepare("UPDATE search_documents SET embedding_status = 'complete', updated_at = datetime('now') WHERE id = ?").run(job.document_id);
+  })();
+}
+
+interface LaneTally { completed: number; failed: number; throttled: number }
+
+/**
+ * Drain up to `budget` jobs using one API key. Returns as soon as the key is benched or the
+ * queue runs dry, so the other lanes are never blocked by this key's quota.
+ */
+async function runLane(db: ReturnType<typeof getDb>, apiKey: string, budget: number): Promise<LaneTally> {
+  const tally: LaneTally = { completed: 0, failed: 0, throttled: 0 };
+
+  for (let i = 0; i < budget; i++) {
+    const job = claimJob(db);
+    if (!job) break;
+
+    try {
+      const vector = await embed(redactSecrets(job.text), apiKey, SEARCH_EMBED_MODEL);
+      if (vector.length !== SEARCH_EMBED_DIMENSIONS) {
+        throw new Error(`unexpected embedding dimensions: ${vector.length}`);
+      }
+      storeEmbedding(db, job, vector);
+      tally.completed++;
+      clearKeyCooldown(apiKey);
+      continue;
+    } catch (error) {
+      const message = (error as Error).message.slice(0, 2000);
+      const kind = classifyEmbedFailure(message);
+
+      if (kind === "permanent") {
+        const exhausted = job.attempts >= MAX_EMBED_ATTEMPTS;
+        db.transaction(() => {
+          db.prepare(`
+            UPDATE embedding_jobs SET status = 'failed', next_retry_at = ?, last_error = ?, updated_at = datetime('now')
+            WHERE document_id = ?
+          `).run(exhausted ? null : retryAt(job.attempts), message, job.document_id);
+          db.prepare("UPDATE search_documents SET embedding_status = 'failed', updated_at = datetime('now') WHERE id = ?").run(job.document_id);
+        })();
+        logger.warn({ documentId: job.document_id, attempts: job.attempts, err: message }, "search embedding job failed");
+        tally.failed++;
+        continue;
+      }
+
+      // Give the attempt back: the claim already incremented it, but neither a quota wall
+      // nor an upstream outage is evidence that this document can never be embedded.
+      const benched = kind === "quota" || kind === "credential";
+      const cooldownMs = benched ? benchKey(apiKey) : 0;
+      const retrySeconds = benched ? Math.round(cooldownMs / 1000) : TRANSIENT_RETRY_SECONDS;
+      db.transaction(() => {
+        db.prepare(`
+          UPDATE embedding_jobs SET status = 'failed', attempts = MAX(0, attempts - 1),
+            next_retry_at = ?, last_error = ?, updated_at = datetime('now')
+          WHERE document_id = ?
+        `).run(new Date(Date.now() + retrySeconds * 1000).toISOString(), message, job.document_id);
+        db.prepare("UPDATE search_documents SET embedding_status = 'pending', updated_at = datetime('now') WHERE id = ?").run(job.document_id);
+      })();
+      tally.throttled++;
+
+      if (benched) {
+        logger.warn(
+          { documentId: job.document_id, cooldownMs, reason: kind },
+          kind === "quota" ? "embedding key quota exhausted, benching key" : "embedding key rejected, benching key",
+        );
+        break;
+      }
+    }
+  }
+
+  return tally;
+}
+
 /** Process durable embedding jobs. Safe to call repeatedly and after restart. */
 export async function processEmbeddingJobs(limit = 10): Promise<EmbeddingWorkerResult> {
-  const apiKey = process.env.GOOGLE_API_KEY ?? "";
   const db = getDb();
 
   // A previous process may have died after claiming a job. Recover it even when
@@ -360,92 +597,23 @@ export async function processEmbeddingJobs(limit = 10): Promise<EmbeddingWorkerR
     WHERE status = 'processing' AND updated_at < datetime('now', '-10 minutes')
   `).run();
 
-  if (!apiKey) {
-    const remaining = (db.prepare(`
-      SELECT count(*) AS c FROM embedding_jobs
-      WHERE status IN ('pending', 'processing') OR (status = 'failed' AND attempts < ?)
-    `).get(MAX_EMBED_ATTEMPTS) as { c: number }).c;
-    const exhausted = (db.prepare(`
-      SELECT count(*) AS c FROM embedding_jobs WHERE status = 'failed' AND attempts >= ?
-    `).get(MAX_EMBED_ATTEMPTS) as { c: number }).c;
-    return { completed: 0, failed: 0, remaining, exhausted };
+  const keys = readyKeys();
+  if (keys.length === 0 || limit <= 0) {
+    return { completed: 0, failed: 0, throttled: 0, ...countJobBacklog(db) };
   }
 
-  let completed = 0;
-  let failed = 0;
-  for (let i = 0; i < Math.max(0, limit); i++) {
-    const job = db.transaction(() => {
-      const row = db.prepare(`
-        SELECT j.document_id, j.content_hash, j.attempts, d.rowid, d.text
-        FROM embedding_jobs j
-        JOIN search_documents d ON d.id = j.document_id
-        WHERE j.attempts < ?
-          AND (j.status = 'pending' OR (j.status = 'failed' AND (j.next_retry_at IS NULL OR datetime(j.next_retry_at) <= datetime('now'))))
-        ORDER BY j.created_at, j.document_id
-        LIMIT 1
-      `).get(MAX_EMBED_ATTEMPTS) as {
-        document_id: string; content_hash: string; attempts: number; rowid: number; text: string;
-      } | undefined;
-      if (!row) return undefined;
-      db.prepare(`
-        UPDATE embedding_jobs SET status = 'processing', attempts = attempts + 1,
-          updated_at = datetime('now') WHERE document_id = ?
-      `).run(row.document_id);
-      db.prepare("UPDATE search_documents SET embedding_status = 'processing' WHERE id = ?").run(row.document_id);
-      return { ...row, attempts: row.attempts + 1 };
-    })();
-    if (!job) break;
+  // One lane per ready key. Lanes claim from the same queue, so an idle lane simply finds
+  // nothing left rather than stranding work reserved for it.
+  const perLane = Math.max(1, Math.ceil(limit / keys.length));
+  const tallies = await Promise.all(keys.map(key => runLane(db, key, perLane)));
 
-    try {
-      const vector = await embed(redactSecrets(job.text));
-      if (vector.length !== SEARCH_EMBED_DIMENSIONS) {
-        throw new Error(`unexpected embedding dimensions: ${vector.length}`);
-      }
-      const blob = vectorToBlob(vector);
-      db.transaction(() => {
-        const current = db.prepare("SELECT content_hash, rowid FROM search_documents WHERE id = ?").get(job.document_id) as { content_hash: string; rowid: number } | undefined;
-        if (!current || current.content_hash !== job.content_hash) {
-          db.prepare("UPDATE embedding_jobs SET status = 'pending', updated_at = datetime('now') WHERE document_id = ?").run(job.document_id);
-          return;
-        }
-        db.prepare(`DELETE FROM ${SEARCH_DOCUMENT_VEC_TABLE} WHERE rowid = ?`).run(BigInt(current.rowid));
-        db.prepare(`INSERT INTO ${SEARCH_DOCUMENT_VEC_TABLE} (rowid, embedding) VALUES (?, ?)`).run(BigInt(current.rowid), blob);
-        db.prepare(`
-          INSERT INTO search_document_embeddings
-            (document_id, document_rowid, model, dimensions, content_hash, embedded_at)
-          VALUES (?, ?, ?, ?, ?, datetime('now'))
-          ON CONFLICT(document_id) DO UPDATE SET
-            document_rowid = excluded.document_rowid, model = excluded.model,
-            dimensions = excluded.dimensions, content_hash = excluded.content_hash,
-            embedded_at = datetime('now')
-        `).run(job.document_id, current.rowid, SEARCH_EMBED_MODEL, SEARCH_EMBED_DIMENSIONS, job.content_hash);
-        db.prepare("UPDATE embedding_jobs SET status = 'complete', next_retry_at = NULL, last_error = NULL, updated_at = datetime('now') WHERE document_id = ?").run(job.document_id);
-        db.prepare("UPDATE search_documents SET embedding_status = 'complete', updated_at = datetime('now') WHERE id = ?").run(job.document_id);
-      })();
-      completed++;
-    } catch (error) {
-      const message = (error as Error).message.slice(0, 2000);
-      const exhausted = job.attempts >= MAX_EMBED_ATTEMPTS;
-      db.transaction(() => {
-        db.prepare(`
-          UPDATE embedding_jobs SET status = 'failed', next_retry_at = ?, last_error = ?, updated_at = datetime('now')
-          WHERE document_id = ?
-        `).run(exhausted ? null : retryAt(job.attempts), message, job.document_id);
-        db.prepare("UPDATE search_documents SET embedding_status = 'failed', updated_at = datetime('now') WHERE id = ?").run(job.document_id);
-      })();
-      logger.warn({ documentId: job.document_id, attempts: job.attempts, err: message }, "search embedding job failed");
-      failed++;
-    }
-  }
+  const totals = tallies.reduce<LaneTally>((acc, tally) => ({
+    completed: acc.completed + tally.completed,
+    failed: acc.failed + tally.failed,
+    throttled: acc.throttled + tally.throttled,
+  }), { completed: 0, failed: 0, throttled: 0 });
 
-  const remaining = (db.prepare(`
-    SELECT count(*) AS c FROM embedding_jobs
-    WHERE status IN ('pending', 'processing') OR (status = 'failed' AND attempts < ?)
-  `).get(MAX_EMBED_ATTEMPTS) as { c: number }).c;
-  const exhausted = (db.prepare(`
-    SELECT count(*) AS c FROM embedding_jobs WHERE status = 'failed' AND attempts >= ?
-  `).get(MAX_EMBED_ATTEMPTS) as { c: number }).c;
-  return { completed, failed, remaining, exhausted };
+  return { ...totals, ...countJobBacklog(db) };
 }
 
 let workerTimer: NodeJS.Timeout | undefined;
@@ -714,12 +882,15 @@ export async function searchUnified(query: string, options: UnifiedSearchOptions
     }
   }
 
-  if (process.env.GOOGLE_API_KEY) {
+  // Prefer a key that is not cooling down, so one benched key does not disable query-time
+  // vector recall while the others still have quota.
+  const queryKey = readyKeys()[0] ?? getEmbedKeys()[0];
+  if (queryKey) {
     try {
       const count = (db.prepare(`SELECT count(*) AS c FROM ${SEARCH_DOCUMENT_VEC_TABLE}`).get() as { c: number }).c;
       if (count > 0) {
         embeddingAvailable = true;
-        const vector = await embed(redactSecrets(normalizedQuery));
+        const vector = await embed(redactSecrets(normalizedQuery), queryKey, SEARCH_EMBED_MODEL);
         const blob = vectorToBlob(vector);
         const sqlFilters = planToSqlFilters(filterPlan);
         // sqlite-vec applies k (the KNN cut) BEFORE the joined visibility/source/

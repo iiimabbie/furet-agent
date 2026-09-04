@@ -860,14 +860,18 @@ interface PluginRuntimeContext {
 
 `src/search-index.ts` 是新搜尋投影的唯一寫入層：
 
-1. source adapter 先產生 `SearchDocumentInput`。
-2. `ingestSearchDocuments()` 正規化文字並先遮罩 secrets，再計算 deterministic ID／SHA-256 content hash，並在同一個 SQLite transaction 內 upsert document、FTS row 與 embedding job。未遮罩原文仍只存在 durable source。
+1. source adapter 先產生 `SearchDocumentInput`。workspace adapter 中，`OWNER.md`／`PEOPLE.md`／`MEMORY.md` 是常駐事實、沒有事件時間，其文件 `occurred_at` 為空；每日檔的檔名本身即日期，因此 diary 文件以該日期作為 `occurred_at`。`excludeRecentDays` 的近期日記排除是比對 `source_id` 檔名，與 `occurred_at` 無關。
+2. `ingestSearchDocuments()` 正規化文字並先遮罩 secrets，再計算 deterministic ID／SHA-256 content hash，並在同一個 SQLite transaction 內 upsert document、FTS row 與 embedding job。未遮罩原文仍只存在 durable source。`NON_EMBEDDED_SOURCE_TYPES` 列出不進向量索引的 source type（目前為 `tool_result` 與 `diary_note`）：這些文件照常寫入 FTS，但不建 embedding job，`embedding_status` 記為 `skipped`。原始工具輸出量大而語意檢索價值低，其語意入口由同一事件的 `tool_evidence_summary` 提供——該摘要取輸出的開頭 1,000 與結尾 500 字元，因此工具輸出結尾的錯誤與結論同樣涵蓋在內。`diary_note` 不建向量的理由不同：它的 source_id 是 `YYYY-MM-DD.md` 日期檔，而 auto recall 以 `excludeRecentDays` 排除兩天內的日期檔；補註又在當晚被 `reindexDiary` 刪除、由已建向量的 `diary` 散文取代，因此補註向量在其整個存活期間都讀不到。補註所註解的對話本身已由 session message 與 conversation window 建立向量。
 3. 寫入層只依 identity/hash 去重，不用 cosine 相似度刪資料；不同時間的相似事件都會保留。
 4. `processEmbeddingJobs()` 由 gateway 的單一背景 worker 分批處理。程序中斷後仍可重試的 pending/failed job 留在 SQLite，卡住的 processing job 超時後回到 retry 流程；達最大嘗試次數的 failed job 另列為 `exhausted`，不再混入 `remaining` 或讓 drain 永遠無法完成。
-5. FTS／recall 使用的 searchable projection 與外部 embedding payload 都使用遮罩後文字；本機 durable source 與權限 metadata 不因遮罩而失去可稽核性。查詢本身在送 embedding provider 前也會遮罩可能的 credential。
-6. vector rowid 與 FTS rowid 都使用 `search_documents.rowid`，deterministic text ID 則放在 unique `id`；這避開 sqlite-vec 只接受 integer rowid 的限制，同時保持 reconciliation 冪等。
-7. 同一 document 的文字 hash 未變時仍比較 metadata；visibility/channel/ordinal 等欄位變更會立即更新文件與 FTS metadata，但不重新排 embedding。Hybrid search 使用最低 cosine 門檻，auto recall 只採高可信 vector 命中；visibility、source/profile 與 exclusion 條件盡量下推 SQL，FTS 直接只排名合格列，sqlite-vec 則因 KNN 先取 `k` 的限制漸進擴大 `k`，再由 joined SQL filter 排除不合格列。相鄰 context 重新套用同一份完整 filter，不能讓被排除的 document/session/source 或近期日記從 context 回流。搜尋工具另有單筆與總輸出 budget，rank 分數不偽裝成絕對相關度百分比。
-8. Canonical workspace/session write 與可重建 projection 分離：canonical write 成功後即回報成功，projection 失敗則記錄為 reindex pending；session JSON 採 temp + rename，持久化失敗時回滾記憶體狀態且不得建立幽靈索引。所有 Discord 遠端附件及 provider／本機工具輸出的附件都先只建立純 `AttachmentReference`、寫入 session JSON，成功後才 upsert `attachment_records`、job 與搜尋文件。
+5. embedding 模型由 `SEARCH_EMBED_MODEL` 指定（`gemini-embedding-2`，3,072 維，輸入上限 8,192 tokens）。不同模型的向量沒有可比性，因此更換模型必須清空 `search_document_embeddings` 與向量表後整批重打；`search_document_embeddings.model` 記錄每筆向量由哪個模型產生。legacy `memory_vectors`／session summary 投影仍固定在其既有模型，`embed()` 因此由呼叫端指定模型，不共用單一常數。
+6. 佇列依召回價值排序而非 FIFO：owner／memory／people 最先，其次 diary，再來 compact summary、session message 與 conversation window，附件與 tool evidence 之後，tool 記帳類最後。上游配額才是瓶頸，先進先出會讓 workspace 的記憶與日記被數千筆工具文件壓在後面。
+7. embedding 金鑰池由 `getEmbedKeys()` 從 `GOOGLE_API_KEY` 與 `GOOGLE_API_KEYS` 讀取，兩個變數都接受逗號分隔，解析後去重。每把金鑰有各自的上游配額，因此 worker 對每把可用金鑰開一條並行 lane，各 lane 從同一個佇列 claim；claim 是同步 SQLite transaction，不會把同一筆 job 發給兩條 lane。
+8. 失敗分類決定「誰的錯」：`quota`（429）與 `credential`（401／403）是金鑰的問題，`transient`（5xx、無 HTTP status 的網路中斷）是基礎設施的問題，兩者都把 claim 時遞增的 attempt 回滾，文件因此不會被上游狀況耗盡重試預算；只有 `permanent`（其餘 4xx、維度不符）才計入 `MAX_EMBED_ATTEMPTS`。金鑰層級的失敗會把該把金鑰冷卻（60 秒起、倍增至上限 1 小時，成功後歸零）並中斷該 lane，其餘 lane 照常運作；全部金鑰都在冷卻時 worker 才整個暫停。查詢時的向量檢索優先取用未冷卻的金鑰。
+9. FTS／recall 使用的 searchable projection 與外部 embedding payload 都使用遮罩後文字；本機 durable source 與權限 metadata 不因遮罩而失去可稽核性。查詢本身在送 embedding provider 前也會遮罩可能的 credential。
+10. vector rowid 與 FTS rowid 都使用 `search_documents.rowid`，deterministic text ID 則放在 unique `id`；這避開 sqlite-vec 只接受 integer rowid 的限制，同時保持 reconciliation 冪等。
+11. 同一 document 的文字 hash 未變時仍比較 metadata；visibility/channel/ordinal 等欄位變更會立即更新文件與 FTS metadata，但不重新排 embedding。Hybrid search 使用最低 cosine 門檻，auto recall 只採高可信 vector 命中；visibility、source/profile 與 exclusion 條件盡量下推 SQL，FTS 直接只排名合格列，sqlite-vec 則因 KNN 先取 `k` 的限制漸進擴大 `k`，再由 joined SQL filter 排除不合格列。相鄰 context 重新套用同一份完整 filter，不能讓被排除的 document/session/source 或近期日記從 context 回流。搜尋工具另有單筆與總輸出 budget，rank 分數不偽裝成絕對相關度百分比。
+12. Canonical workspace/session write 與可重建 projection 分離：canonical write 成功後即回報成功，projection 失敗則記錄為 reindex pending；session JSON 採 temp + rename，持久化失敗時回滾記憶體狀態且不得建立幽靈索引。所有 Discord 遠端附件及 provider／本機工具輸出的附件都先只建立純 `AttachmentReference`、寫入 session JSON，成功後才 upsert `attachment_records`、job 與搜尋文件。
 
 部署觀察期採新舊資料表並行：讀取入口已統一到 hybrid search，但 legacy memory/session tables 暫不刪除，作為資料比對與程式 rollback 的安全網。回滾時還原上一版程式與 runtime AGENT.md/JOURNAL.md 備份；新表是可重建 projection，不影響 session JSON、archive、workspace 文件或附件原檔。
 

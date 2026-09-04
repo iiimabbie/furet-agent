@@ -99,6 +99,18 @@ function diarySections(text: string): WorkspaceChunk[] {
   });
 }
 
+const DAILY_FILE = /^(\d{4}-\d{2}-\d{2})\.md$/;
+
+/**
+ * Durable workspace files (OWNER/PEOPLE/MEMORY) carry no event time, so their documents
+ * stay untimed. A daily file is different: its name *is* the date, so recall results can
+ * report when the entry happened instead of returning an undefined timestamp.
+ */
+function sourceOccurredAt(sourceId: string): string | undefined {
+  const date = DAILY_FILE.exec(sourceId)?.[1];
+  return date ? `${date}T00:00:00` : undefined;
+}
+
 function replaceSource(
   sourceType: SearchSourceType,
   sourceId: string,
@@ -109,12 +121,14 @@ function replaceSource(
     removeSearchDocumentsForSource(sourceType, sourceId);
     return;
   }
+  const occurredAt = sourceOccurredAt(sourceId);
   const docs: SearchDocumentInput[] = chunks.map((chunk, ordinal) => ({
     id: createSearchDocumentId("workspace", sourceType, sourceId, chunk.identity),
     sourceType,
     sourceId,
     visibilityScope,
     ordinal,
+    occurredAt,
     text: chunk.text,
   }));
   ingestSearchDocuments(docs, { removeMissingForSource: true });

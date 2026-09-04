@@ -111,6 +111,20 @@ function messageDocument(sessionId: string, message: Message, ordinal: number): 
   };
 }
 
+const EXCERPT_HEAD = 1_000;
+const EXCERPT_TAIL = 500;
+
+/**
+ * Bounded excerpt of a tool result for the embedded evidence summary. The full output is
+ * never embedded (see NON_EMBEDDED_SOURCE_TYPES), so this excerpt is the only semantic
+ * handle on it — and a plain head slice would miss the tail, which is exactly where tool
+ * output puts its errors, totals, and exit status. Keep both ends.
+ */
+function excerpt(text: string): string {
+  if (text.length <= EXCERPT_HEAD + EXCERPT_TAIL) return text;
+  return `${text.slice(0, EXCERPT_HEAD)} […] ${text.slice(-EXCERPT_TAIL)}`;
+}
+
 function toolDocuments(sessionId: string, event: ToolHistoryEvent, ordinal: number): SearchDocumentInput[] {
   const common = {
     sourceId: sessionId,
@@ -147,7 +161,7 @@ function toolDocuments(sessionId: string, event: ToolHistoryEvent, ordinal: numb
     sourceType: "tool_evidence_summary",
     ordinal,
     role: "tool",
-    text: `Tool ${event.tool} ${event.isError ? "failed" : "succeeded"} at ${event.time}. ${bounded.slice(0, 1_500) || "No textual output."}`,
+    text: `Tool ${event.tool} ${event.isError ? "failed" : "succeeded"} at ${event.time}. ${excerpt(bounded) || "No textual output."}`,
   });
   return documents;
 }
