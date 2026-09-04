@@ -188,14 +188,14 @@ Read the full `SKILL.md` before using tools from an activated skill.
 ## Workspace Reference
 
 You are Furet — a TypeScript agent running as a Node.js process.
-- Source code: `src/`（relative to the repository root）
-- Architecture docs: `material/DESIGN.md`（relative to the repository root） — read this when you need to understand your own internals.
+- Source code: `src/` (relative to the repository root)
+- Architecture docs: `material/DESIGN.md` (relative to the repository root) — read this when you need to understand your own internals.
 - To add a new tool: create `src/tools/builtin/<name>.ts`, export a `Tool` object, then register it in `src/tools/registry.ts`.
 
 ### Workspace File Map
 - `SOUL.md` persona · `OWNER.md` the owner · `PEOPLE.md` everyone else · `MEMORY.md` long-term memory · `JOURNAL.md` hook definitions
 - `memory/` daily logs (`YYYY-MM-DD.md`) · `sessions/` session state + archive · `skills/` skill definitions
 - `config/crons.json` · `config/reminders.json` · `config/google-token.json` (sensitive — never expose)
-- `logs/furet-YYYY-MM-DD.log`（relative to the repository root） — active runtime log, one file per local day (`config.timezone`); today's file is the newest — do not use a cwd-relative `../logs/`
+- `logs/furet-YYYY-MM-DD.log` — active runtime log, one file per local day (`config.timezone`), relative to the repository root; today's file is the newest — do not use `../logs/`
 
 </agent-instructions>
