@@ -103,14 +103,21 @@ export interface FuretConfig {
   attachment_analysis: {
     /** Master switch for background visual description. OCR/document text still run when off. */
     enabled: boolean;
-    /** Vision API family. `anthropic` vs `openai` shape the request/response differently. */
-    provider: "anthropic" | "openai";
+    /**
+     * Vision API family. `anthropic` vs `openai` shape the request/response differently.
+     * Empty = derive from `llm.base_url`, so a workspace that never configures this block
+     * does not silently send Anthropic-shaped requests to an OpenAI-compatible endpoint.
+     */
+    provider: "" | "anthropic" | "openai";
     /**
      * How the request is sent. `messages` = Anthropic /v1/messages; `chat_completions` =
      * OpenAI-compatible /chat/completions. Empty = derived from `provider`.
      */
     transport: "" | "messages" | "chat_completions";
-    /** Vision model id. It is independent of `llm.currentModel` and the `/model` switch. */
+    /**
+     * Vision model id. It is independent of the `/model` switch so a conversation model
+     * without vision cannot disable attachment analysis. Empty = inherit `llm.currentModel`.
+     */
     model: string;
     /** Vision endpoint base URL. Empty = inherit `llm.base_url`. */
     base_url: string;
@@ -129,6 +136,11 @@ export interface FuretConfig {
     max_image_bytes: number;
     /** Cap on generated description length (provider max_tokens). */
     max_output_tokens: number;
+    /**
+     * Language the description is written in, e.g. "Traditional Chinese". Empty = no language
+     * directive, letting the model answer in the language the image and prompt imply.
+     */
+    language: string;
   };
   prompt: {
     /**
@@ -195,10 +207,12 @@ const DEFAULTS: FuretConfig = {
     identity_reference_path: "",
   },
   attachment_analysis: {
-    enabled: true,
-    provider: "anthropic",
+    // Off unless a workspace opts in: vision needs a model the configured endpoint actually
+    // serves, and a wrong guess fails silently inside a background job.
+    enabled: false,
+    provider: "",
     transport: "",
-    model: "claude-sonnet-4-20250514",
+    model: "",
     base_url: "",
     api_key_env: "",
     concurrency: 2,
@@ -206,6 +220,7 @@ const DEFAULTS: FuretConfig = {
     timeout_ms: 60_000,
     max_image_bytes: 20 * 1024 * 1024,
     max_output_tokens: 1200,
+    language: "",
   },
   prompt: {
     peopleInlineLimit: 1500,
@@ -360,6 +375,7 @@ function mergeAttachmentAnalysisConfig(resolved: unknown): FuretConfig["attachme
     timeout_ms: sanitizeInt(top.timeout_ms, d.timeout_ms, 5_000, 600_000),
     max_image_bytes: sanitizeInt(top.max_image_bytes, d.max_image_bytes, 64 * 1024, 64 * 1024 * 1024),
     max_output_tokens: sanitizeInt(top.max_output_tokens, d.max_output_tokens, 64, 8_000),
+    language: typeof top.language === "string" ? top.language.trim() : d.language,
   };
 }
 

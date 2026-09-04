@@ -82,6 +82,24 @@ image_generation:
                                         # workspace/attachments/; the agent sends it only
                                         # when image_gen uses use_identity_reference=true.
 
+# Background analysis of image/document attachments (OCR always runs; this block is the
+# visual-description half). Off by default: a vision model the configured endpoint does not
+# serve fails on every call, and because this runs in a background job the failure is silent.
+attachment_analysis:
+  enabled: false
+  # Request shape. Empty = derived from llm.base_url (anthropic.com -> anthropic, else openai).
+  provider: ""                            # "" | anthropic | openai
+  transport: ""                           # "" = derive from provider | messages | chat_completions
+  model: ""                               # "" = inherit llm.currentModel; must be vision-capable
+  base_url: ""                            # "" = inherit llm.base_url
+  api_key_env: ""                         # ENV VAR NAME holding the key; "" = inherit llm.api_key
+  language: ""                            # e.g. "Traditional Chinese"; "" = model decides
+  concurrency: 2                          # max simultaneous attachment jobs
+  daily_budget: 0                         # successful descriptions per day; 0 = unlimited
+  timeout_ms: 60000
+  max_image_bytes: 20971520               # larger images skip vision; OCR still runs
+  max_output_tokens: 1200
+
 skills: []                              # enabled skill names (must exist in workspace/skills/<name>/)
 
 plugins: []                             # plugin modules loaded from local paths. Managed entries are
