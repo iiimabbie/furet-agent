@@ -13,6 +13,7 @@ import { startBot } from "./bot.js";
 import { Session } from "./session.js";
 import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt, authoritativeNowBlock } from "./prompt.js";
 import { loadConfig } from "./config.js";
+import { journalLlmProfile, sessionLlmProfile } from "./llm/profile.js";
 import { fixMarkdownLinks } from "./utils/format.js";
 import { chunkMessage } from "./utils/chunk-message.js";
 import { assertDiscordV1Text, editTextMessageAsV1, messagePayload } from "./utils/discord-message.js";
@@ -104,6 +105,16 @@ async function resolveSessionIdForChannel(channelId: string): Promise<string | n
   }
 }
 
+/** Resolve a scheduled task against its destination session's model settings without
+ * replaying that session's conversation into the background task. */
+async function profileForScheduledChannel(channelId: string | undefined) {
+  if (!channelId) return undefined;
+  const sessionId = await resolveSessionIdForChannel(channelId);
+  if (!sessionId) return undefined;
+  const config = loadConfig();
+  return sessionLlmProfile(config, new Session(sessionId).getModelSettings());
+}
+
 /** 發訊息到 channel 並把 assistant 回覆 append 進對應 session（附 msgId） */
 async function sendAndPersist(channelId: string, text: string, label: string): Promise<void> {
   const sentIds = await sendToChannel(channelId, text);
@@ -117,8 +128,8 @@ async function sendAndPersist(channelId: string, text: string, label: string): P
     if (channelName) session.setChannelName(channelName);
   } catch { /* 取名失敗不影響推播 */ }
   const ts = stamp();
-  // session 是空的時候不能直接 append assistant——Anthropic API 要求第一則是 user，
-  // 否則這個頻道下次對話會直接 400。先補一則說明這是排程主動推播。
+  // Some OpenAI-compatible gateways reject history that begins with an assistant message.
+  // Add a durable user-side context marker before the first proactive push.
   if (session.length === 0) {
     session.append({
       role: "user",
@@ -155,7 +166,8 @@ function scheduleCron(job: CronJob): void {
         `Below is the instruction you left for your future self — carry it out now and write the actual message for the user. ` +
         `It is an instruction, not a message to repeat verbatim; anything in it that depends on "today" must be looked up or recomputed against the authoritative datetime above. ` +
         `Do NOT use discord_send_message — just reply with text. ${notifyInstruction}\n\n`;
-      const response = await ask(cronContext + job.prompt, { trigger: "cron" });
+      const llmProfile = await profileForScheduledChannel(job.channel_id);
+      const response = await ask(cronContext + job.prompt, { trigger: "cron", llmProfile });
       // 與一般 Discord 對話共用同一套哨符判定（utils/no-reply.ts）：
       // trim 後整則相等、大小寫不敏感，避免把夾帶正常內容的回覆整個誤吞。
       const isNoreply = isNoReplySentinel(response.text);
@@ -239,7 +251,8 @@ async function runReminder(r: Reminder): Promise<void> {
       `Any relative time in it (dates, days remaining) must be recomputed against the authoritative datetime above; ` +
       `this reminder was due at ${r.triggerAt} and may be firing late. ` +
       `Your text response is delivered to the user automatically — do NOT use discord_send_message, just reply with text.\n\n`;
-    const response = await ask(reminderContext + r.prompt, { trigger: "reminder" });
+    const llmProfile = await profileForScheduledChannel(r.channel_id);
+    const response = await ask(reminderContext + r.prompt, { trigger: "reminder", llmProfile });
     const isNoreply = isNoReplySentinel(response.text);
     logger.info({ id: r.id, noreply: isNoreply, result: response.text.slice(0, 200) }, "reminder result");
     if (r.channel_id && response.text && !isNoreply) {
@@ -259,7 +272,7 @@ function removeReminder(id: string): void {
 // --- Journal ---
 
 /** 總結並歸檔所有 active session */
-async function summarizeAndArchiveAll(): Promise<void> {
+async function summarizeAndArchiveAll(journalProfile = journalLlmProfile(loadConfig())): Promise<void> {
   const ids = Session.listActive();
   if (ids.length === 0) return;
 
@@ -271,7 +284,7 @@ async function summarizeAndArchiveAll(): Promise<void> {
     try {
       const flushContext = `[System] ${SESSION_SUMMARIZE_PROMPT}`;
       session.append({ role: "user", content: "[System] Session ending — flush memory now.", time: ts });
-      await ask(null, { session, systemPrompt: flushContext, trigger: "journal" });
+      await ask(null, { session, systemPrompt: flushContext, trigger: "journal", llmProfile: journalProfile });
       session.archive();
       logger.info({ sessionId: id }, "memory flushed and archived (journal)");
     } catch (err) {
@@ -292,13 +305,16 @@ function scheduleJournal(): void {
     // 先鎖定今天的日期，避免 summarize 耗時跨日導致日期錯誤
     const date = today();
 
+    // Journal has its own configured model. It does not inherit per-session model settings.
+    const journalProfile = journalLlmProfile(loadConfig());
+
     // 總結+歸檔所有 active session
-    await summarizeAndArchiveAll();
+    await summarizeAndArchiveAll(journalProfile);
 
     // 再整理日記 + 更新 MEMORY.md。只有內建日記成功後才發出事件；
     // 外掛 handler 失敗由 plugin-loader 隔離，不會反過來把日記標成失敗。
     const prompt = buildJournalPrompt(date);
-    void ask(prompt, { trigger: "journal" })
+    void ask(prompt, { trigger: "journal", llmProfile: journalProfile })
       .then(async response => {
         logger.info({ date, result: response.text.slice(0, 200) }, "journal done");
         await emitPluginEvent({ event: "journal:completed", date, result: response.text });

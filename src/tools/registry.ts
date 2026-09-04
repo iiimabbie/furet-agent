@@ -2,11 +2,11 @@ import type { Tool } from "../types.js";
 import { logger } from "../logger.js";
 import { loadConfig } from "../config.js";
 export { setTrigger, getTrigger } from "./context.js";
-import { getTrigger, getUserId, getRequestModel } from "./context.js";
+import { getTrigger, getUserId, getRequestProfile } from "./context.js";
 import { isTrustedForOwnerActions } from "./authz.js";
 import type { ToolRegistration, ExposureLevel } from "./metadata.js";
 import {
-  GROUP_LABELS, isGptModel, normalizeForMatch, detectSignals, matchTools,
+  GROUP_LABELS, normalizeForMatch, detectSignals, matchTools,
 } from "./metadata.js";
 import { createToolCatalog } from "./builtin/tool-catalog.js";
 import type { PluginToolRegistration } from "./plugin-types.js";
@@ -64,13 +64,18 @@ import { discordBotMentionToggle } from "./builtin/bot-config.js";
 import { sessionSearch, sessionsByDate, journalTranscriptByDate } from "./builtin/session-search.js";
 import { usageDashboard } from "./builtin/dashboard.js";
 import { imageGen } from "./builtin/image-gen.js";
+import { webFetch } from "./builtin/web-fetch.js";
+import { codeExecutionUnavailable } from "./builtin/provider-capability.js";
+import { webSearch } from "./builtin/web-search.js";
+import type { LlmFunctionTool, LlmProfile } from "../llm/types.js";
+import { activeLlmProfile, supportsCapability } from "../llm/profile.js";
 
 /** Small helper to build a registration with defaults. */
 function reg(
   tool: Tool,
   exposure: ExposureLevel,
   group: string,
-  extra: Partial<Pick<ToolRegistration, "keywords" | "aliases" | "signals" | "modelPredicate">> = {},
+  extra: Partial<Pick<ToolRegistration, "keywords" | "aliases" | "signals" | "capability" | "modelPredicate">> = {},
 ): ToolRegistration {
   return { tool, exposure, group, ...extra };
 }
@@ -91,6 +96,9 @@ const baseRegistrations: ToolRegistration[] = [
   reg(peopleUpdate, "native", "memory-people"),
   reg(discordReact, "native", "discord-messages"),
   reg(discordAttachToReply, "native", "discord-messages"),
+  reg(webFetch, "native", "web"),
+  reg(webSearch, "native", "web", { capability: "hosted_web_search" }),
+  reg(codeExecutionUnavailable, "native", "code-execution", { capability: "hosted_code_execution" }),
 
   // ── match: general & memory ──
   reg(weather, "match", "weather", { keywords: ["天氣", "氣溫", "下雨", "weather", "forecast", "溫度"] }),
@@ -145,7 +153,7 @@ const baseRegistrations: ToolRegistration[] = [
 
   // ── match: other explicit-intent ──
   reg(selfEvolve, "match", "self-development", { keywords: ["改 code", "改程式", "修程式", "實作", "self evolve", "source code", "自我修改", "改原始碼"], aliases: ["s-e", "self_evolve"] }),
-  reg(imageGen, "match", "image-generation", { keywords: ["生成圖片", "生圖", "畫一張", "幫我畫", "繪圖", "插圖", "照片", "自拍", "image", "圖片", "去背", "移除背景"], signals: ["hasImageEditRequest"], modelPredicate: isGptModel }),
+  reg(imageGen, "match", "image-generation", { capability: "hosted_image_generation", keywords: ["生成圖片", "生圖", "畫一張", "幫我畫", "繪圖", "插圖", "照片", "自拍", "image", "圖片", "去背", "移除背景"], signals: ["hasImageEditRequest"] }),
   reg(sessionSearch, "match", "history-journal", { keywords: ["搜尋對話", "歷史對話", "session search", "找對話", "以前說過"] }),
   reg(skillList, "match", "skills", { keywords: ["技能", "skill", "skill list", "列出技能"] }),
   reg(usageDashboard, "match", "usage", { keywords: ["用量", "usage", "儀表板", "dashboard", "統計", "花費"] }),
@@ -243,6 +251,7 @@ export function registerPluginTools(
       keywords: r.keywords,
       aliases: r.aliases,
       signals: r.signals,
+      capability: r.capability,
       modelPredicate: r.modelPredicate,
     };
     pluginRegistrations.push(registration);
@@ -285,16 +294,8 @@ export function setPluginToolsActive(names: string[], active: boolean): void {
 const executorMap = new Map(registrations.map(r => [r.tool.name, r.tool.execute]));
 const registrationMap = new Map(registrations.map(r => [r.tool.name, r]));
 
-/** Anthropic server-side tools — provider-owned, cannot be proxied by tool_catalog.
- *  First version keeps them directly exposed (native-provider). */
-const SERVER_TOOLS = [
-  { type: "web_search_20250305", name: "web_search", max_uses: 5 },
-  { type: "web_fetch_20250910", name: "web_fetch", max_uses: 5 },
-  { type: "code_execution_20250825", name: "code_execution" },
-];
-
-function toAnthropicTool(t: Tool) {
-  return { name: t.name, description: t.description, input_schema: t.parameters };
+function toLlmFunctionTool(t: Tool): LlmFunctionTool {
+  return { name: t.name, description: t.description, parameters: t.parameters };
 }
 
 /**
@@ -303,16 +304,15 @@ function toAnthropicTool(t: Tool) {
  * load time would omit them. baseRegistrations excludes the exposure-only tool_catalog by
  * construction; plugin tools are folded in so the OFF path still exposes them.
  */
-export function getAnthropicTools(): AnthropicToolDefinition[] {
+export function getLlmTools(): LlmFunctionTool[] {
   return [
-    ...baseRegistrations.map(r => toAnthropicTool(r.tool)),
-    ...activePluginRegistrations().map(r => toAnthropicTool(r.tool)),
-    ...SERVER_TOOLS,
+    ...baseRegistrations.map(r => toLlmFunctionTool(r.tool)),
+    ...activePluginRegistrations().map(r => toLlmFunctionTool(r.tool)),
   ];
 }
 
 export interface ToolSelectionContext {
-  model: string;
+  profile: LlmProfile;
   /** Raw prompt/trigger text used for matching (may be empty). */
   prompt: string;
   trigger: string;
@@ -326,39 +326,30 @@ export interface ToolSelectionContext {
   enabledTools?: Set<string>;
 }
 
-interface AnthropicToolDefinition {
-  name?: string;
-  description?: string;
-  input_schema?: Record<string, unknown>;
-  type?: string;
-  max_uses?: number;
-}
-
-function passesModelGate(r: ToolRegistration, model: string): boolean {
-  return r.modelPredicate ? r.modelPredicate(model) : true;
+function passesProfileGate(r: ToolRegistration, profile: LlmProfile): boolean {
+  if (r.capability && !supportsCapability(profile, r.capability)) return false;
+  return r.modelPredicate ? r.modelPredicate(profile.model) : true;
 }
 
 /**
  * Compute the tool definitions to send this turn.
  *
- * Feature flag OFF → identical to legacy: every local tool (minus GPT-only image_gen
- * for non-GPT) plus the 3 server tools.
+ * Feature flag OFF → every registered local function tool (minus model-gated tools).
  *
  * Feature flag ON:
  * - native always included (minus failed model gate);
  * - match included when the deterministic matcher hits this turn (or already enabled);
  * - index / on-demand omitted — reached through tool_catalog;
- * - server tools always included (native-provider).
  */
-export function getToolDefinitions(ctx: ToolSelectionContext): AnthropicToolDefinition[] {
+export function getToolDefinitions(ctx: ToolSelectionContext): LlmFunctionTool[] {
   if (!ctx.exposureEnabled) {
     const localTools = [...baseRegistrations, ...activePluginRegistrations()]
-      .filter(r => passesModelGate(r, ctx.model))
-      .map(r => toAnthropicTool(r.tool));
-    return [...localTools, ...SERVER_TOOLS];
+      .filter(r => passesProfileGate(r, ctx.profile))
+      .map(r => toLlmFunctionTool(r.tool));
+    return localTools;
   }
 
-  const out: AnthropicToolDefinition[] = [];
+  const out: LlmFunctionTool[] = [];
   const normalized = normalizeForMatch(ctx.prompt);
   const signals = detectSignals(ctx.prompt, ctx.hasAttachment ?? false);
   const all = allRegistrations();
@@ -371,7 +362,7 @@ export function getToolDefinitions(ctx: ToolSelectionContext): AnthropicToolDefi
   const matchedNames: string[] = [];
   for (const r of all) {
     const name = r.tool.name;
-    if (!passesModelGate(r, ctx.model)) continue;
+    if (!passesProfileGate(r, ctx.profile)) continue;
 
     let include = false;
     if (r.exposure === "native") include = true;
@@ -384,19 +375,19 @@ export function getToolDefinitions(ctx: ToolSelectionContext): AnthropicToolDefi
     }
 
     if (include) {
-      out.push(toAnthropicTool(r.tool));
+      out.push(toLlmFunctionTool(r.tool));
       included.push(name);
     }
   }
 
-  for (const s of SERVER_TOOLS) out.push(s);
 
   const jsonBytes = Buffer.byteLength(JSON.stringify(out), "utf8");
   logger.info(
     {
       exposure: "on",
-      model: ctx.model,
-      nativeCount: all.filter(r => r.exposure === "native" && passesModelGate(r, ctx.model)).length,
+      profile: ctx.profile.name,
+      model: ctx.profile.model,
+      nativeCount: all.filter(r => r.exposure === "native" && passesProfileGate(r, ctx.profile)).length,
       matchedNames,
       toolCount: out.length,
       jsonBytes,
@@ -450,25 +441,17 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
     logger.warn({ tool: name, trigger: getTrigger() }, "tool permission denied");
     return "⚠️ PERMISSION DENIED: This tool is owner-only. You are not running under a trusted owner context. Do NOT attempt to use this tool again for this request.";
   }
-  // Model-capability gate on the UNIFIED execution path. A tool's modelPredicate is a
-  // real capability guard, not just schema visibility: without this check, tool_catalog
-  // .call could proxy-execute a model-gated tool (e.g. GPT-only image_gen) on a model
-  // that should not have it, since catalog bypasses the getToolDefinitions schema layer.
-  // Enforcing it here covers both direct schema calls and catalog-proxied calls, and
-  // does not break GPT's normal use (the predicate passes for GPT).
+  // Profile-capability gates apply on the unified execution path so tool_catalog cannot bypass them.
   const reg = registrationMap.get(name);
   if (pluginAvailability.has(name) && pluginAvailability.get(name) !== true) {
     logger.warn({ tool: name }, "plugin tool unavailable because startup did not complete");
     return `⚠️ TOOL UNAVAILABLE: ${name} is registered but its plugin did not start successfully.`;
   }
-  if (reg?.modelPredicate) {
-    // Use the request-scoped model (options.model ?? currentModel), bound in the ALS
-    // request context by ask(). This reflects the model the request is actually running
-    // on — not a global that a concurrent request could race — so tool_catalog.call
-    // cannot bypass a per-request gate. Outside an ALS scope (e.g. a direct CLI tool
-    // call) getRequestModel() is undefined; fall back to currentModel.
-    const model = getRequestModel() ?? loadConfig().llm.currentModel;
-    if (!reg.modelPredicate(model)) {
+  if (reg?.capability || reg?.modelPredicate) {
+    // Use the immutable request profile. Outside ask(), resolve the configured active profile.
+    const profile = getRequestProfile() ?? activeLlmProfile(loadConfig());
+    const model = profile.model;
+    if ((reg.capability && !supportsCapability(profile, reg.capability)) || (reg.modelPredicate && !reg.modelPredicate(model))) {
       logger.warn({ tool: name, model }, "tool model-capability denied");
       return `⚠️ CAPABILITY UNAVAILABLE: ${name} is not available with the active model (${model}). Do NOT retry via tool_catalog; this is a model limitation, not a permission you can escalate.`;
     }

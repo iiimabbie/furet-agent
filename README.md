@@ -1,6 +1,6 @@
 # Furet
 
-A self-hosted personal AI assistant for Discord and the terminal. Furet runs an agent loop against the Anthropic Messages API, gives it a local workspace and tools, and keeps the assistant useful across conversations without giving up control of where its data lives.
+A self-hosted personal AI assistant for Discord and the terminal. Furet runs a protocol-neutral agent loop through configurable LLM connection profiles, gives it a local workspace and tools, and keeps the assistant useful across conversations without giving up control of where its data lives.
 
 > **Early-stage project.** Furet can execute shell commands and access connected services. Run it only on infrastructure and Discord servers you trust, and review its configuration before enabling it for other people.
 
@@ -10,7 +10,7 @@ A self-hosted personal AI assistant for Discord and the terminal. Furet runs an 
 - Keeps per-channel sessions, archives prior conversations, and maintains daily plus long-term memory.
 - Uses a workspace-first model: persona, operating instructions, people records, skills, memories, sessions, and generated files are stored locally under `workspace/`.
 - Provides tools for files, shell commands, Discord moderation and messaging, scheduled jobs, reminders, Google Calendar/Gmail/Drive/Tasks, and weather.
-- Supports installable workspace skills, local private plugins, and an owner-only `self_evolve` tool for proposing source changes through a stronger coding model.
+- Supports installable workspace skills, local private plugins, and an owner-only `self_evolve` tool for proposing source changes through the active conversation model.
 - Protects configured workspace files with Soul Guardian integrity monitoring.
 - Writes readable local logs, rotated into one file per local day (`logs/furet-YYYY-MM-DD.log`), with timestamps such as `[2026-08-21 09:04:52] INFO: gateway start`.
 
@@ -20,7 +20,7 @@ For the detailed architecture and data flow, see [material/DESIGN.md](material/D
 
 - Node.js 24 or newer
 - npm
-- An Anthropic API key, or a compatible endpoint implementing the Anthropic `POST /v1/messages` API
+- An OpenAI API key, or a compatible endpoint implementing `POST /v1/chat/completions` with function calling
 - A Discord application token if you want to use Discord
 - Linux with systemd is optional, but recommended for running the gateway as a service
 
@@ -57,7 +57,7 @@ Copying `.env.example` creates the available variables:
 ```dotenv
 # Required for model access
 LLM_API_KEY=
-# Empty uses https://api.anthropic.com/v1; otherwise use the API base URL.
+# Empty uses https://api.openai.com/v1; otherwise use an OpenAI-compatible `/v1` base URL.
 LLM_BASE_URL=
 
 # Required only when Discord is enabled
@@ -82,31 +82,30 @@ Start from `config.example.yaml`. The settings most worth reviewing before the f
 timezone: "Asia/Taipei"
 
 llm:
-  api_key: "${LLM_API_KEY}"
-  base_url: "${LLM_BASE_URL}"
-  currentModel: "claude-sonnet-4-6"
-  codingModel: "claude-opus-4-6"
-
-discord:
-  enabled: true
-  token: "${DISCORD_TOKEN}"
-  owner_id: "your-discord-user-id"
-  allowed_guilds: []       # Empty means all guilds.
-  allowed_channels: []     # Empty means all channels.
-  ambient_channels: []     # Reply without @mention in these exact channel IDs.
-  respond_to_bots: false
-
-journal:
-  enabled: true
-  hour: 22
-  minute: 0
-
-tools:
-  bash_owner_only: true
-  bash_allowed_users: []
+  active_profile: "local-gateway"
+  maxContextTokens: 150000
+  memoryCharLimit: 3000
+  profiles:
+    local-gateway:
+      protocol: "openai_chat_completions"
+      baseUrl: "${LLM_BASE_URL}"
+      apiKey: "${LLM_API_KEY}"
+      auth: "bearer"
+      model: "claude-sonnet-4-6"
+      reasoningEffort: "default"
+      tokenLimitField: "max_completion_tokens"
+      capabilities:
+        vision: true
+        function_tools: true
+        responses: true
+        hosted_web_search: true
+        hosted_image_generation: true
+        hosted_code_execution: false
 ```
 
 `timezone` affects timestamps, memory filenames, and journal dates. Leaving it empty uses the host system timezone.
+
+The active connection profile selects the wire protocol, gateway URL, authentication, default model ID, token-limit field, and hosted capabilities independently. Each session snapshots that profile's model and reasoning effort when it is created. `/model` changes only the current Discord session; other channels, threads, DMs, CLI sessions, and background sessions keep their own selection. Autocomplete discovers model IDs from that session's gateway through the OpenAI-compatible `GET /models` endpoint; model lists are not duplicated in config, and manually entered IDs remain allowed for gateways that omit aliases from discovery. The first supported interactive adapter is `openai_chat_completions`, suitable for CPA, OpenRouter-style gateways, GCLI proxies, Ollama, and other compatible endpoints. Hosted Responses capabilities are exposed only when the same active profile declares them; Furet never silently switches profile or model.
 
 ## Running Furet
 
@@ -176,7 +175,7 @@ Available slash commands:
 - `/status` — show model, session, and token information.
 - `/compact` — summarize older context while retaining recent messages.
 - `/task` — list Google Tasks.
-- `/model` — switch models; owner only.
+- `/model` — switch the current session’s model and reasoning effort; owner only.
 - `/google-auth` — finish Google OAuth authorization; owner only.
 - `/restart` — exit the gateway so its process manager can restart it; owner only.
 - `/plugin 動作:<安裝|更新|卸載> [目標:<GitHub URL or installed plugin>]` — owner-only plugin management; update without a target updates all managed plugins.

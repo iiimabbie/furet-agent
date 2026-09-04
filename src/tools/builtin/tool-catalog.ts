@@ -163,7 +163,7 @@ export function createToolCatalog(deps: CatalogDeps): Tool {
             group: reg.group,
             exposure: reg.exposure,
             description: reg.tool.description,
-            input_schema: reg.tool.parameters,
+            parameters: reg.tool.parameters,
           },
           null,
           2,

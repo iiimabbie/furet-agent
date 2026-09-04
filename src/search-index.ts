@@ -21,17 +21,27 @@ export const SEARCH_EMBED_DIMENSIONS = 3072;
 const MAX_EMBED_ATTEMPTS = 5;
 /**
  * Source types deliberately kept out of the vector index. Upstream embedding quota is the
- * scarce resource, so it is not spent on documents whose vectors nothing reads. Both kinds
+ * scarce resource, so it is not spent on documents whose vectors nothing reads. All of them
  * stay in FTS and remain findable by keyword.
  *
- * - `tool_result`: bulky raw tool output. The `tool_evidence_summary` companion document IS
- *   embedded and carries a bounded head+tail excerpt of the same output.
+ * Tool activity is excluded in all three of its forms. Nobody searches by meaning for which
+ * tool ran; they search for a command, a path or an error, which is keyword work. Whatever
+ * mattered in a tool's output is restated in the reply that followed it, and that reply is
+ * an embedded session message — so a tool vector is a second, worse copy of something the
+ * conversation already carries, competing with it for the same result slots.
+ *
+ * - `tool_call`: the arguments a tool was invoked with — shell scripts, code and JSON, whose
+ *   vectors cluster by syntax rather than by intent.
+ * - `tool_result`: bulky raw output, chunked when long.
+ * - `tool_evidence_summary`: a bounded excerpt of that output, one per tool event.
  * - `diary_note`: same-day annotations on a `YYYY-MM-DD.md` daily file. Auto recall excludes
  *   daily files from the last two days, and the nightly journal replaces these notes with the
  *   embedded `diary` prose, so a note's vector is unreadable for its entire lifetime. The
  *   conversation it annotates is already embedded as session messages and windows.
  */
-const NON_EMBEDDED_SOURCE_TYPES = new Set<SearchSourceType>(["tool_result", "diary_note"]);
+const NON_EMBEDDED_SOURCE_TYPES = new Set<SearchSourceType>([
+  "tool_call", "tool_result", "tool_evidence_summary", "diary_note",
+]);
 
 export function shouldEmbedSource(sourceType: SearchSourceType): boolean {
   return !NON_EMBEDDED_SOURCE_TYPES.has(sourceType);

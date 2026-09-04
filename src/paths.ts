@@ -4,7 +4,7 @@ export const ROOT = resolve(import.meta.dirname ?? process.cwd(), "..");
 
 export const WORKSPACE_DIR = resolve(ROOT, "workspace");
 export const LOGS_DIR = resolve(ROOT, "logs");
-export const CONFIG_PATH = resolve(ROOT, "config.yaml");
+export const CONFIG_PATH = resolve(ROOT, process.env.FURET_CONFIG_PATH ?? "config.yaml");
 export const SESSIONS_DIR = resolve(WORKSPACE_DIR, "sessions");
 export const ARCHIVE_DIR = resolve(SESSIONS_DIR, "archive");
 export const MEMORY_DIR = resolve(WORKSPACE_DIR, "memory");
@@ -14,7 +14,6 @@ export const OWNER_FILE = resolve(WORKSPACE_DIR, "OWNER.md");
 export const WORKSPACE_CONFIG_DIR = resolve(WORKSPACE_DIR, "config");
 export const CRONS_FILE = resolve(WORKSPACE_CONFIG_DIR, "crons.json");
 export const REMINDERS_FILE = resolve(WORKSPACE_CONFIG_DIR, "reminders.json");
-export const DISCORD_BUTTONS_FILE = resolve(WORKSPACE_CONFIG_DIR, "discord-buttons.json");
 export const GOOGLE_TOKEN_PATH = resolve(WORKSPACE_CONFIG_DIR, "google-token.json");
 export const SKILLS_DIR = resolve(WORKSPACE_DIR, "skills");
 export const PLUGINS_DIR = resolve(WORKSPACE_DIR, "plugins");

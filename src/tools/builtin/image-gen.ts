@@ -4,8 +4,10 @@ import { basename, extname, isAbsolute, join, relative, resolve } from "node:pat
 import type { Tool } from "../../types.js";
 import { loadConfig } from "../../config.js";
 import { ATTACHMENTS_DIR, ROOT } from "../../paths.js";
-import { queueAttachment } from "../context.js";
+import { getRequestProfile, queueAttachment } from "../context.js";
 import { logger } from "../../logger.js";
+import { llmHeaders } from "../../llm/http.js";
+import { activeLlmProfile, supportsCapability } from "../../llm/profile.js";
 
 type ImageFormat = "png" | "jpeg" | "webp";
 type ImageQuality = "low" | "medium" | "high" | "auto";
@@ -77,9 +79,6 @@ interface ImageGenerationCall {
   output_format?: string;
 }
 
-function isGptModel(model: string): boolean {
-  return /^gpt(?:-|$)/i.test(model);
-}
 
 export const imageGen: Tool = {
   name: "image_gen",
@@ -130,11 +129,11 @@ export const imageGen: Tool = {
     required: ["prompt"],
   },
   execute: async (args) => {
-    const { llm, image_generation: imageGenerationConfig } = loadConfig();
-    const model = llm.currentModel;
-    if (!isGptModel(model)) {
-      return `Error: image_gen is only available with a GPT model; active model is ${model}`;
-    }
+    const config = loadConfig();
+    const imageGenerationConfig = config.image_generation;
+    const profile = getRequestProfile() ?? activeLlmProfile(config);
+    const model = profile.model;
+    if (!supportsCapability(profile, "hosted_image_generation")) return "Error: hosted image generation is disabled for the active LLM profile";
 
     const prompt = String(args.prompt ?? "").trim();
     if (!prompt) return "Error: prompt is required";
@@ -163,7 +162,7 @@ export const imageGen: Tool = {
       return `Error: at most ${MAX_REFERENCE_IMAGES} reference images are supported`;
     }
     const references = uniqueReferences.map(referenceDataUrl);
-    const baseUrl = (llm.base_url || "https://api.openai.com/v1").replace(/\/$/, "");
+    const baseUrl = profile.baseUrl.replace(/\/$/, "");
     const inputContent: Array<Record<string, unknown>> = [{
       type: "input_text",
       text: `Generate the requested image. Return the image and a very brief confirmation.\n\n${prompt}`,
@@ -185,10 +184,7 @@ export const imageGen: Tool = {
 
     const res = await fetch(`${baseUrl}/responses`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${llm.api_key}`,
-      },
+      headers: llmHeaders(profile),
       body: JSON.stringify({
         model,
         input: [{ role: "user", content: inputContent }],

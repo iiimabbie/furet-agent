@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename } from "node:fs/promises";
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -15,7 +14,6 @@ import {
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { getDb } from "./db.js";
-import { DISCORD_BUTTONS_FILE, TRASH_DIR } from "./paths.js";
 import { resolveEmojiMarkup } from "./emoji.js";
 import { editPayload, editTextMessageAsV1, interactionPayload, messagePayload } from "./utils/discord-message.js";
 
@@ -206,30 +204,7 @@ function writeRecord(record: DiscordButtonMessageRecord): void {
 }
 
 async function ensureButtonStoreReady(): Promise<void> {
-  buttonStoreReady ??= (async () => {
-    getDb();
-    try {
-      const parsed = JSON.parse(await readFile(DISCORD_BUTTONS_FILE, "utf8")) as { version?: number; messages?: DiscordButtonMessageRecord[] };
-      if (parsed.version !== 1 || !Array.isArray(parsed.messages)) {
-        throw new Error(`invalid legacy Discord button store: ${DISCORD_BUTTONS_FILE}`);
-      }
-      const records = parsed.messages.map(record => normalizeRecord(record));
-      getDb().transaction(() => {
-        for (const record of records) {
-          const exists = getDb().prepare("SELECT 1 FROM discord_button_messages WHERE id = ?").get(record.id);
-          if (!exists) writeRecord(record);
-        }
-      })();
-      await mkdir(TRASH_DIR, { recursive: true });
-      const archivedPath = `${TRASH_DIR}/discord-buttons.${Date.now()}.${randomUUID()}.json`;
-      await rename(DISCORD_BUTTONS_FILE, archivedPath);
-      logger.info({ count: records.length, archivedPath }, "legacy Discord button store migrated to SQLite");
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
-      logger.error({ err }, "failed to migrate legacy Discord button store");
-      throw err;
-    }
-  })();
+  buttonStoreReady ??= (async () => { getDb(); })();
   await buttonStoreReady;
 }
 

@@ -4,17 +4,42 @@
 timezone: ""
 
 llm:
-  api_key: "${LLM_API_KEY}"             # required
-  base_url: "${LLM_BASE_URL}"           # required (OpenAI-compatible endpoint)
-  currentModel: "claude-sonnet-4-6"
-  reasoningEffort: "default"            # default | none | auto | minimal | low | medium | high | xhigh
-  codingModel: "claude-opus-4-6"        # model used by self_evolve tool
-  maxContextTokens: 150000              # token budget for conversation context
-  memoryCharLimit: 3000                 # MEMORY.md character limit
-  modelList:
-    - claude-opus-4-6
-    - claude-sonnet-4-6
-    - claude-haiku-4-5-20251001
+  active_profile: "local-gateway"
+  maxContextTokens: 150000
+  memoryCharLimit: 3000
+  profiles:
+    local-gateway:
+      protocol: "openai_chat_completions" # openai_chat_completions | openai_responses
+      baseUrl: "${LLM_BASE_URL}"          # e.g. http://localhost:8317/v1 or http://localhost:11434/v1
+      apiKey: "${LLM_API_KEY}"            # ignored when auth is none
+      auth: "bearer"                       # bearer | none
+      model: "claude-sonnet-4-6"           # any model ID exposed by the configured gateway
+      reasoningEffort: "default"           # default | none | auto | minimal | low | medium | high | xhigh
+      tokenLimitField: "max_completion_tokens" # max_completion_tokens | max_tokens
+      capabilities:
+        vision: true
+        function_tools: true
+        responses: true
+        hosted_web_search: true
+        hosted_image_generation: true
+        hosted_code_execution: false
+
+    # Example local gateway without authentication. Enable only on a trusted endpoint.
+    # ollama:
+    #   protocol: "openai_chat_completions"
+    #   baseUrl: "http://localhost:11434/v1"
+    #   apiKey: ""
+    #   auth: "none"
+    #   model: "qwen3:8b"
+    #   reasoningEffort: "default"
+    #   tokenLimitField: "max_tokens"
+    #   capabilities:
+    #     vision: false
+    #     function_tools: true
+    #     responses: false
+    #     hosted_web_search: false
+    #     hosted_image_generation: false
+    #     hosted_code_execution: false
 
 discord:
   enabled: false                        # set true to run discord bot
@@ -32,6 +57,7 @@ journal:
   enabled: false                        # auto-write a daily journal at scheduled time
   hour: 22                              # 0-23
   minute: 0                             # 0-59
+  model: ""                              # dedicated journal model; empty = active profile default
 
 soul_guardian:                           # file integrity monitor
   enabled: false                        # enable the gateway's built-in integrity scheduler.
@@ -87,12 +113,9 @@ image_generation:
 # serve fails on every call, and because this runs in a background job the failure is silent.
 attachment_analysis:
   enabled: false
-  # Request shape. Empty = derived from llm.base_url (anthropic.com -> anthropic, else openai).
-  provider: ""                            # "" | anthropic | openai
-  transport: ""                           # "" = derive from provider | messages | chat_completions
-  model: ""                               # "" = inherit llm.currentModel; must be vision-capable
-  base_url: ""                            # "" = inherit llm.base_url
-  api_key_env: ""                         # ENV VAR NAME holding the key; "" = inherit llm.api_key
+  # Uses the active profile protocol and model; there is no separate model override.
+  base_url: ""                            # "" = inherit active profile baseUrl
+  api_key_env: ""                         # ENV VAR NAME holding the key; "" = inherit active profile apiKey
   language: ""                            # e.g. "Traditional Chinese"; "" = model decides
   concurrency: 2                          # max simultaneous attachment jobs
   daily_budget: 0                         # successful descriptions per day; 0 = unlimited

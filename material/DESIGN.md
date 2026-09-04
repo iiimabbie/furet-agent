@@ -2,7 +2,7 @@
 
 ## 概述
 
-Furet（法語：雪貂）是一個個人 AI 助手，使用自建 agent loop 直接呼叫 Anthropic Messages API。
+Furet（法語：雪貂）是一個個人 AI 助手，使用自建 agent loop 與可設定的 LLM connection profile。
 介面：CLI + Discord bot，透過 Gateway 常駐程式統一管理。
 
 ## 技術選型
@@ -10,9 +10,9 @@ Furet（法語：雪貂）是一個個人 AI 助手，使用自建 agent loop �
 | 項目 | 選擇 | 原因 |
 |------|------|------|
 | 語言 | TypeScript | 強型別 |
-| AI 引擎 | 自建 agent loop + Anthropic Messages API | 完全掌控，不依賴任何 SDK |
-| API 路由 | router-for.me (localhost:8317) | base_url 指向 local router |
-| Server-side Tools | web_search / web_fetch / code_execution | Anthropic 提供，不用自己接 |
+| AI 引擎 | 自建 protocol-neutral agent loop + adapter | 完全掌控，不依賴任何 SDK |
+| API 路由 | 使用者設定的 connection profile | protocol、base URL、auth、model 與 capabilities 分離 |
+| Web / code capabilities | 本地安全 web_fetch；active-model hosted web_search；code_execution 顯式 unavailable | hosted 能力不跨模型 fallback，也不把 provider sandbox 偷換成 host shell |
 | Discord | discord.js | 社群最大、文件最齊 |
 | 排程 | node-cron | 輕量，cron 語法 |
 | Google API | googleapis | 官方全家桶（Calendar / Gmail / Drive / Tasks） |
@@ -25,14 +25,14 @@ Furet（法語：雪貂）是一個個人 AI 助手，使用自建 agent loop �
 使用者輸入（CLI / Discord）
     │
     ▼
-Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317) ──► 上游
+Agent (agent.ts) ── normalized LLM client ──► profile adapter ──► 使用者設定的 gateway / upstream
     │
     ├── System Prompt = prompt.ts（AGENT.md + 日期時間 + SOUL.md + MEMORY.md + skills）
     │
-    ├── Server-side Tools（Anthropic 提供，API 直接處理）
-    │   ├── web_search（web_search_20250305，max_uses: 5）
-    │   ├── web_fetch（web_fetch_20250910，max_uses: 5）
-    │   └── code_execution（code_execution_20250825）
+    ├── Web / code capability tools
+    │   ├── web_fetch（本地 SSRF-safe HTTP fetch）
+    │   ├── web_search（只使用 request-scoped active model 的 Responses hosted 能力；不跨模型 fallback）
+    │   └── code_execution（未設定 provider sandbox 時明確 unavailable；不以 host bash 冒充）
     │
     ├── Custom Tools（本地執行，透過 tools/registry.ts 統一管理；exposure 分級見 Tool 系統）
     │   ├── tool_catalog # 探索／代理入口，exposure 開啟時走它取用未直接暴露的工具
@@ -52,17 +52,21 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
 
 ## Agent Loop
 
-`src/agent.ts` — 核心循環，直接用 fetch 呼叫 Anthropic Messages API。
+`src/agent.ts` — 核心循環，只使用 `src/llm/types.ts` 的 normalized request/response；`src/llm/client.ts` 依 active profile 選擇 adapter。第一個正式 adapter 是 `openai_chat_completions`。
 
-### 模型與思考等級
+### Connection profile、模型與思考等級
 
-`config.llm.currentModel` 保存基礎模型名稱，`config.llm.reasoningEffort` 保存思考等級；兩者不混寫，避免模型清單驗證、工具 model gate 與價格估算把 router transport suffix 誤認成模型名稱。思考等級可為 `default`、`none`、`auto`、`minimal`、`low`、`medium`、`high`、`xhigh`：`default` 不加後綴，其餘只在 `callAnthropic()` 送出請求時組成 `<model>(<effort>)`。`/model` 會原子地更新兩個欄位；省略 `effort` 時重設為 `default`，避免切到不支援既有思考等級的模型後直接失敗。`/status` 分開顯示基礎模型與思考等級。
+`config.llm.active_profile` 選出目前 connection profile。每個 profile 分別保存 `protocol`、`baseUrl`、`auth`、`apiKey`、`model`、`reasoningEffort`、token-limit field、capabilities 與 model list；不得依 model ID 前綴猜測協議或能力。
+
+每個 session 建立時會從 active connection profile 快照 `profile + model + reasoning effort`，並持久化於 session source of truth。每次 `ask()` 開始時，`sessionLlmProfile()` 將 session 選擇與 connection profile 合成 immutable request profile，再綁進 AsyncLocalStorage。同一請求的主對話、compaction、attachment vision、self-evolve 子請求，以及 hosted web/image/code capability 都沿用這份 profile。`/model` 只更新目前 Discord session 的 model 與 reasoning effort，不改 connection profile 的 protocol、endpoint、auth、capability 或其他 session。
+
+OpenAI Chat adapter 依 profile 的 `tokenLimitField` 選擇 `max_completion_tokens` 或 `max_tokens`。`reasoningEffort: default` 不送 reasoning 欄位，其餘值以 `reasoning_effort` 傳給相容 gateway。Hosted capability 由 profile 明確宣告；不支援時工具不曝光，也不能跨 profile 或跨模型 fallback。
 
 ### API 錯誤可觀測性與暫時性重試
 
-`callAnthropic()` 的 transport-level `fetch()` 失敗會包成帶 `cause` 的 Error，保留請求 endpoint 與底層錯誤鏈。`src/logger.ts` 對 `err` 欄位使用遞迴 serializer，記錄 Error 的 `type`、`message`、`stack`、自有屬性（如 `code`）與 `cause`；呼叫端應傳入原始 Error（`{ err }`），不要只留下 `err.message`，否則會遺失 `ECONNREFUSED`、`ECONNRESET`、DNS 等真正原因。
+`postLlmJson()` 的 transport-level `fetch()` 失敗會包成帶 `cause` 的 Error，保留請求 endpoint 與底層錯誤鏈。`src/logger.ts` 對 `err` 欄位使用遞迴 serializer，記錄 Error 的 `type`、`message`、`stack`、自有屬性（如 `code`）與 `cause`；呼叫端應傳入原始 Error（`{ err }`），不要只留下 `err.message`，否則會遺失 `ECONNREFUSED`、`ECONNRESET`、DNS 等真正原因。
 
-短暫的網路錯誤，以及 HTTP `408`、`429`、`500`、`502`、`503`、`504`、`529`，會在 `callAnthropic()` 內最多嘗試 3 次。等待時間優先採用標準 `Retry-After`，否則使用約 1 秒、2 秒的 exponential backoff 加少量 jitter；其他 4xx 等明確請求錯誤不重試。重試邊界刻意放在單次 Messages API 呼叫內：若前一個 agent turn 已經成功執行本地工具，下一次模型整理回覆時遇到 502，只會重送同一份 messages 給模型，**不會重新進入已完成的本地工具執行迴圈**，避免寄信、寫檔或 Discord 操作等副作用重複發生。provider-side 的 web search／fetch／code execution 屬該 API request 內部能力，遇到 transport-level 不確定結果時仍可能由上游重做，但不會重跑 Furet 本地工具。
+短暫的網路錯誤，以及 HTTP `408`、`429`、`500`、`502`、`503`、`504`、`529`，會在共用 LLM HTTP boundary 內最多嘗試 3 次。等待時間優先採用標準 `Retry-After`，否則使用約 1 秒、2 秒的 exponential backoff 加少量 jitter；其他 4xx 等明確請求錯誤不重試。重試邊界刻意放在單次 Chat Completions API 呼叫內：若前一個 agent turn 已經成功執行本地工具，下一次模型整理回覆時遇到 502，只會重送同一份 messages 給模型，**不會重新進入已完成的本地工具執行迴圈**，避免寄信、寫檔或 Discord 操作等副作用重複發生。provider-side 的 web search／fetch／code execution 屬該 API request 內部能力，遇到 transport-level 不確定結果時仍可能由上游重做，但不會重跑 Furet 本地工具。
 
 整個 `ask()` 跑在獨立的 request context（AsyncLocalStorage）裡，見「Request Context」一節。
 
@@ -91,19 +95,19 @@ Agent (agent.ts) ── Anthropic Messages API ──► router (localhost:8317)
    `[msg:id 時間] <@id>(帳號名｜暱稱):` 這類中繼資料前綴，避免稀釋語意訊號
 3. 從 session 載入歷史 messages（標準 multi-turn 格式），用 `trimToTokenBudget()` 控制 context 上限，
    再經 `ensureUserFirst()` 確保第一則是 user role
-4. 送 API，收到回應 → 解析 content blocks（text / thinking / image / tool_use / server-side tool results）
+4. 送 API，收到回應 → 正規化 `message.content`、`tool_calls`、`finish_reason` 與 usage
 5. 若 provider 回傳 base64 `image` block，立即寫入 `workspace/attachments/` 並排入 request-scoped 附件佇列；session 只留文字佔位，不保存大型 base64
-6. 有 tool_use → 本地執行 → tool_result 送回 → 回到 4
-7. 沒有 tool_use → 最後一輪，回傳文字與附件路徑
+6. 有 `tool_calls` → 本地執行 → 以 `role: tool` + `tool_call_id` 回送 → 回到 4
+7. 沒有 `tool_calls` → 最後一輪，回傳文字與附件路徑
 
 ### Session 與 API 的訊息流
 
 - Session 存：對話 messages、完整 local `toolHistory`（工具 input / output / 成敗），以及用量；不存 thinking，見下；不把 live `tool_result` 或 provider-owned server-tool protocol blocks 混入對話 messages。使用者訊息無法持久化時不啟動模型，Discord trigger 會明確回報；assistant message 是交付前必須成功的 durable boundary。回答已生成並保存後，usage、conversation-window、attachment reference 與 Discord message ID 等 bookkeeping 改採 best-effort，失敗只記錄待修復狀態，不能吞掉已完成的文字或附件。工具執行後若 audit ledger 寫入失敗也繼續整理回覆，避免重試造成外部副作用重複。
-- 送 API 時：從 session 展開成標準 multi-turn messages，過濾掉沒有配對 `tool_result` 的歷史 local tool_use blocks，也過濾已完成舊回合的 `server_tool_use` 與 web/fetch/code execution result blocks；另外在 system prompt 注入最近 8 筆工具工作的有界摘要。server-side tool 的 ID 可能是 router/upstream 專用格式（例如 `ws_...`），跨模型重播會被 Anthropic 的 `srvtoolu_...` schema 拒絕，因此歷史只保留工具完成後的文字結論。同一個 live request 內若收到 `pause_turn`，則依 Messages API 規則重播仍有效的 server-tool blocks 繼續該回合；不符合 Anthropic ID schema 的 router-specific blocks 會先剝除，避免下一次請求直接 400。
+- 送 API 時：從 session 展開成標準 OpenAI multi-turn messages。舊 session 的 thinking、local tool protocol 與 provider-owned server-tool blocks 只作唯讀相容，不跨回合重播；歷史只保留可攜的 user／assistant 文字與圖片，另外在 system prompt 注入最近 8 筆本地工具工作的有界摘要。當次 live request 的 function calls 則以 assistant `tool_calls` 和對應的 `role: tool` 訊息維持到模型完成最終回答。
 
 - `trimToTokenBudget()`：從最新往回取，粗估 token（JSON 長度 / 4），確保 tool_use/tool_result 配對不被拆散。
   單則訊息本身就超過預算時，至少保留最後一則（否則會送出空 messages）
-- `ensureUserFirst()`：Anthropic API 要求第一則必須是 user role。session 開頭可能是 assistant
+- `ensureUserFirst()`：部分 OpenAI-compatible router 對 assistant-first 歷史相容性不一致。session 開頭可能是 assistant
   （cron/reminder 主動推播、或 trim 從中間切開），此時在最前面補一則 user 說明，
   而不是把那些 assistant 訊息丟掉——它們是真的推播過的紀錄，砍掉會失去上下文
 - Memory hook（JOURNAL.md 的 Memory Hook section）每 5 則 user message 才附加一次（定期 nudge）
@@ -139,12 +143,12 @@ thinking block 的 `signature` 不是 `thinking` 欄位的校驗碼 —— **它
 ### 關鍵函式
 
 - `ask(prompt, options)` — 主入口。prompt 為 null 時從 session 尾部取（Discord 用）
-- `callAnthropic(system, messages)` — 封裝 API 呼叫
-- `sanitizeContent(blocks)` — 清除 API 回傳的多餘欄位，保留 text / thinking / image / tool_use / tool_result
-- `extractAndSaveImages(blocks)` — 將 provider 回傳的 base64 圖片落地到 attachments 並排入 Discord 回覆附件
+- `generateLlmResponse(request, profile)` — normalized client；依 profile protocol 選 adapter
+- `OpenAIChatAdapter.generate(...)` — Chat Completions wire mapping、tool arguments 與 usage 正規化
+- `postLlmJson(...)` — auth、timeout、retry 與 HTTP error boundary
 - `estimateTokens(msg)` — 粗估 token 數
 - `trimToTokenBudget(messages, maxTokens)` — token-based 歷史裁切
-- `ensureUserFirst(messages)` — 確保送 API 的第一則是 user role
+- `ensureUserFirst(messages)` — 對 assistant-first 不相容的 router 補上 synthetic user context
 
 ## Request Context
 
@@ -154,14 +158,14 @@ cron / reminder / journal 跟使用者對話是並行跑的，trigger 與待送�
 放在模組級全域變數會互相覆蓋：cron 觸發時把 trigger 蓋成 `"cron"`，正在執行 tool call 的
 非 owner 請求就繞過了 `registry.ts` 的 owner-only 檢查；附件也會串到別人的回覆去。
 
-- `runWithContext(trigger, userId, model, fn, { sessionId, channelId })` — `ask()` 用它包住整個執行流程，並把搜尋權限所需的 request identity 綁在同一個 ALS scope
+- `runWithContext(trigger, userId, profile, fn, { sessionId, channelId })` — `ask()` 用它包住整個執行流程，並把搜尋權限所需的 request identity 綁在同一個 ALS scope
 - `getTrigger()` / `setTrigger()` / `getUserId()` / `getSessionId()` / `getChannelId()` — 工具權限與搜尋 visibility 判定用的 request identity
 - `queueAttachment()` / `drainAttachments()` — 工具排隊的檔案附件
 - ALS 範圍外呼叫時退回 `{ trigger: "unknown", pendingFiles: [] }`
 
-附件由 `ask()` 在結束時收集，透過 `AgentResponse.attachments` 回傳給呼叫端。這同時涵蓋本地工具用 `discord_attach_to_reply` 排入的檔案、GPT-only `image_gen` 經 Responses API 生成的圖片，以及 provider 直接回傳之 base64 `image` block。`image_gen` 可把 `workspace/attachments/` 內的圖片轉成 data URL，作為 Responses API 的 `input_image`；生成人格本人時以 `use_identity_reference=true` 掛上 `config.image_generation.identity_reference_path`，其他服裝／場景參考則用 `reference_images`。有參考圖時 tool 會用 edit action；不傳 `input_fidelity`，避免實際 image backend 與父層模型不同時拒絕不支援的參數。讀檔失敗或 canonical path 未設定會直接報錯，不得宣稱已鎖臉。
+附件由 `ask()` 在結束時收集，透過 `AgentResponse.attachments` 回傳給呼叫端。這同時涵蓋本地工具用 `discord_attach_to_reply` 排入的檔案、profile-gated `image_gen` 經 Responses API 生成的圖片，以及 provider 直接回傳之 base64 `image` block。`image_gen` 可把 `workspace/attachments/` 內的圖片轉成 data URL，作為 Responses API 的 `input_image`；生成人格本人時以 `use_identity_reference=true` 掛上 `config.image_generation.identity_reference_path`，其他服裝／場景參考則用 `reference_images`。有參考圖時 tool 會用 edit action；不傳 `input_fidelity`，避免實際 image backend 與父層模型不同時拒絕不支援的參數。讀檔失敗或 canonical path 未設定會直接報錯，不得宣稱已鎖臉。
 
-生成檔不落在 `workspace/attachments/` 根目錄：呼叫端應先列出（`ls`）`workspace/attachments/` 的現有目錄，再透過 `output_directory` 優先指定語意合適的既有相對子目錄；未指定時由工具直接存入通用的 `generated-images/`。`filename_hint` 會清理成安全、可辨識的檔名 stem，再加時間戳與隨機尾碼避免碰撞。輸出目錄同時做 lexical path 與 `realpath` 邊界檢查，拒絕絕對路徑、`..` 逃逸與 symlink 逃逸。工具從一開始就寫入最終路徑並只把該路徑排入附件佇列，不再依賴生成後移動／改名，因此不會留下失效的 queued path。`drainAttachments()` 會去重並丟棄已被移動／改名而不存在的舊路徑，避免單一 stale path 讓 Discord 拒絕整批附件；Discord 最終進度訊息若在附檔 edit 時失敗，會記錄原始 Error 並退回發送一則新的完整回覆，而不是靜默留下工具進度。`callAnthropic()` 只在 GPT 模型的工具清單中暴露 `image_gen`；Claude 不會看到或呼叫此工具。
+生成檔不落在 `workspace/attachments/` 根目錄：呼叫端應先列出（`ls`）`workspace/attachments/` 的現有目錄，再透過 `output_directory` 優先指定語意合適的既有相對子目錄；未指定時由工具直接存入通用的 `generated-images/`。`filename_hint` 會清理成安全、可辨識的檔名 stem，再加時間戳與隨機尾碼避免碰撞。輸出目錄同時做 lexical path 與 `realpath` 邊界檢查，拒絕絕對路徑、`..` 逃逸與 symlink 逃逸。工具從一開始就寫入最終路徑並只把該路徑排入附件佇列，不再依賴生成後移動／改名，因此不會留下失效的 queued path。`drainAttachments()` 會去重並丟棄已被移動／改名而不存在的舊路徑，避免單一 stale path 讓 Discord 拒絕整批附件；Discord 最終進度訊息若在附檔 edit 時失敗，會記錄原始 Error 並退回發送一則新的完整回覆，而不是靜默留下工具進度。`image_gen` 使用 request-scoped active model 呼叫 Responses；目前 registry 只對 GPT route 暴露，非支援模型不會看到或呼叫此工具，且不會改用另一個模型代跑。
 
 ## Prompt 架構
 
@@ -491,7 +495,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 - `/new` — silent memory flush + 歸檔 session + AI 重新打招呼
 - `/status` — 顯示 model / tokens / sessions / crons / reminders / plugin jobs / plugins / skills
 - `/restart` — 重啟 gateway（spawn detached child）
-- `/model` — 切換 AI 模型與思考等級（模型名稱 autocomplete from modelList；effort 省略時為 default）
+- `/model` — 切換目前 session 的 AI 模型與思考等級（模型名稱 autocomplete from that session profile’s `GET /models` discovery；effort 省略時為 default）
 - `/google-auth` — Google OAuth 授權流程
 - `/task` — 列出 Google Tasks
 - `/plugin` — owner-only 外掛管理入口；必填 `動作` 選安裝／更新／卸載，共用 `目標` string：安裝時自由輸入 GitHub URL，更新／卸載時依 `動作` autocomplete 已安裝外掛，更新省略目標代表全部
@@ -524,7 +528,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 |------|------|
 | Cron 排程 | 每 1 小時重新載入 crons.json，執行到期任務 |
 | Reminder | 一次性提醒，每 15 秒輪詢 reminders.json 掃到期的，觸發後自動刪除 |
-| Journal | 每天固定時間：silent flush 所有 active session → 歸檔 → 重寫日記 → 更新 MEMORY.md |
+| Journal | 每天固定時間：使用 `journal.model` 指定的獨立模型 silent flush 所有 active session → 歸檔 → 重寫日記 → 更新 MEMORY.md |
 | Soul Guardian | 可選的 deterministic 內建排程，直接執行完整性檢查並把 drift 送到指定 Discord 頻道；不經 LLM，重複未處理 drift 以 fingerprint 去重 |
 | Discord Bot | 有 token 且 enabled 時啟動 |
 | Plugins | 背景服務接流量前先 `loadPlugins()`；Discord 啟用時待 client ready 後才 `startPlugins()`，再註冊含外掛在內的 slash commands。Discord 停用或登入失敗時仍啟動非 Discord 能力，message transport 會明確拒絕。shutdown 時 `stopPlugins()`（見 Plugin 系統） |
@@ -533,6 +537,13 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日檔的 diary_note 補註只當輔助。transcript 是完整的對話紀錄；diary_note 僅補充明確背景、有證據的當下反思、跨日關聯與附件／工具脈絡，不重複記錄事件，也不把未確認的情緒推測寫成事實。
 
 `diary_note` 是補充性的日記註記，不是事件記錄，因此不能成為日記骨架。它只保存 transcript 無法保留的明確背景、有證據的當下反思、跨日關聯，以及附件或工具結果的必要脈絡；不得把推測的心理狀態寫成事實。Daily Journal prompt 以 transcript 為唯一事實來源，找出整天的主線，把相關的起因、行動、反應與結果融合成有脈絡的第一人稱段落；diary_note 只作為輔助色彩織入。正文以連續散文為主，只有真正的清單才用 bullet；實作命令、檔名與中間步驟只保留足以理解事件意義的部分，避免成品退化成 changelog、工作報告或分類後的流水帳。這項規則必須同時維護 runtime `workspace/JOURNAL.md` 與 `templates/JOURNAL.md`。部署時使用 `scripts/migrate-diary-note.ts` 做精確、可重跑的段落遷移與舊名稱掃描，不得整份 template 覆蓋客製 workspace。Apply 前必須完成 projected-state preflight 並指定 backup directory；兩個 runtime 檔先寫 temp，再逐一 rename，任何失敗都從備份回滾整組檔案，避免半套切換。
+
+### 背景工作的模型路由
+
+- Cron 與 Reminder 有 `channel_id` 時，執行端會載入該 Discord channel／thread／DM 對應 session 的 `modelSettings`，只借用它解析 request-scoped LLM profile；排程 prompt 不重播聊天歷史，產生的推播仍由 `sendAndPersist()` 寫回目標 session。沒有 `channel_id` 或無法解析 Discord session 時，使用 active connection profile 的預設模型。
+- Journal 不跟隨任何 conversation session。`journal.model` 是整條日記流程的獨立模型設定，涵蓋每日 silent memory flush、session archive 前整理與最終日記重寫；留空才使用 active connection profile 的預設模型。
+- 上述 profile 都在每次背景工作開始時解析成 immutable request profile，同一輪不受並行 `/model` 變更影響。
+- 每次 Agent request 的 system prompt 都會注入非敏感的 `<llm-context>`，包含該輪已固定的 profile name、protocol、model 與 reasoning effort。模型因此能準確回答自己當下使用的路由，不需從模型名稱或全域 config 猜測；base URL、auth、API key 與 capability 細節不注入。Profile/model 文字以 JSON string escaping 維持單行，不能偽造 prompt 區塊邊界。
 
 ### Reminder 用輪詢而不是 setTimeout
 
@@ -592,7 +603,7 @@ exposure 合法、`match` 至少有 keyword/alias/signal。
 `executeTool(name, args)` 是**唯一執行入口**：owner-only 判定、bash allowlist、`read_file`
 路徑 guard 都在這裡。`executorMap` 與 owner-only 權限跟分級共用同一份註冊資料。
 `getToolDefinitions(ctx)` 每輪算出要送 API 的工具清單、`renderToolIndex()` 產生 `<tool-index>`、
-`getRegistration(name)` 供進度顯示查目標工具，全部由 registry 對外導出，`agent.ts` 不自行 filter。
+`getRegistration(name)` 供進度顯示查目標工具，全部由 registry 對外導出，`agent.ts` 不自行 filter。Registry 輸出 protocol-neutral function definition；adapter 才轉成 provider wire schema。
 
 ### Tool 列表
 
@@ -623,9 +634,9 @@ exposure 合法、`match` 至少有 keyword/alias/signal。
 | `discord_edit_message/delete_message` | 編輯/刪除 bot 訊息 |
 | `discord_attach_to_reply` | 附件到回覆 |
 | `image_gen` | GPT-only：Responses API 原生 `image_generation`；支援 canonical identity、最多 4 張 attachments 參考圖，以及有路徑邊界檢查的分類目錄／描述性檔名，直接以最終路徑存檔並排入回覆附件（owner-only） |
-| `web_search` | Anthropic server-side 網路搜尋 |
-| `web_fetch` | Anthropic server-side 讀取 URL |
-| `code_execution` | Anthropic server-side Python 執行 |
+| `web_search` | 只透過 request-scoped active model 使用 Responses hosted web search；不跨模型 fallback |
+| `web_fetch` | 本地 SSRF-safe HTTP(S) 讀取與 bounded text extraction |
+| `code_execution` | 顯式 capability tool；未設定 provider sandbox 時回報 unavailable，不以 host bash 代替 |
 | `google_calendar_*` | Google Calendar CRUD |
 | `google_gmail_*` | Gmail 搜尋/讀取/寄信/草稿 |
 | `google_drive_*` | Drive 搜尋/讀取/上傳 |
@@ -638,7 +649,7 @@ exposure 合法、`match` 至少有 keyword/alias/signal。
 | `usage_dashboard` | 用量／成本儀表板，輸出 PNG 到 attachments/ |
 | `discord_bot_mention_toggle` | 切換是否回應其他 bot |
 | `tool_catalog` | native 探索／代理入口：list_groups / search / describe / call，`call` 委派回 `executeTool()`（見 Tool Exposure） |
-| `self_evolve` | 用強模型（codingModel）修改自身代碼，sub-ask 模式 |
+| `self_evolve` | 使用 request-scoped active model 修改自身代碼，sub-ask 模式；不另切 coding model |
 
 ### Tool Exposure（分級曝光）
 
@@ -647,7 +658,7 @@ trigger + 各工具確認規則負責。隱藏工具不等於降權，surface �
 
 由 `config.tools.exposure.enabled`（feature flag，預設 `false`）控制：
 
-- **關閉** → 行為與分級前完全一致：所有 local tool + 3 個 server tool 都送，GPT-only
+- **關閉** → 行為與分級前完全一致：所有符合 model gate 的本地 function tool 都送，GPT-only
   `image_gen` 對非 GPT 仍過濾。一鍵 rollback 就是把 flag 設回 `false`。
 - **開啟** → 每輪只送必要工具的 schema，其餘走 `tool_catalog`。
 
@@ -655,8 +666,7 @@ trigger + 各工具確認規則負責。隱藏工具不等於降權，surface �
 
 - `native`：每輪都送完整 schema（`tool_catalog` / `bash` / `read_file` / `write_file` /
   `diary_note` / `memory_search` / `people_add` / `people_update` / `discord_react` /
-  `discord_attach_to_reply`）。3 個 server tool 視為 `native-provider`，因為不能被本地
-  `tool_catalog.call` 代理，第一版維持直接暴露。
+  `discord_attach_to_reply`）。`web_fetch` 與顯式 web/code capability tools 同樣由 registry 管理。
 - `match`：由 `matchTools()` 這個 **deterministic** matcher（不另呼叫 LLM）依當輪 prompt 的
   中英文 keyword、alias、名稱，或工具明確宣告的日期時間／圖片附件 signal 命中才送。命中有上限
   `config.tools.exposure.max_matched_tools`（預設 12，clamp 1–50，native 不計入），
@@ -677,10 +687,10 @@ trigger + 各工具確認規則負責。隱藏工具不等於降權，surface �
 - 避免循環 import：registry 建 catalog 時**注入** `executeTool` 與註冊清單，catalog 不 import
   registry。
 
-`agent.ts` 端：`getToolDefinitions()` 每輪算清單傳給 `callAnthropic()`；`withTools=false` 的
+`agent.ts` 端：`getToolDefinitions()` 每輪算清單傳給 `callOpenAIChat()`；`withTools=false` 的
 compact 流程仍完全不送工具。模型透過 `tool_catalog` `describe`/`call` 點到的工具會被加進
 request-scoped `enabledTools`，後續回合可直接暴露其 schema；進度顯示標成
-`tool_catalog → <target>`，tool history 照常留稽核證據。`image_gen` 的 GPT-only 由
+`tool_catalog → <target>`，tool history 照常留稽核證據。`image_gen` 的 hosted-image capability gate 由
 `modelPredicate` 在 `getToolDefinitions` 與 legacy 清單兩處都套用，catalog 不繞過。
 
 ## Plugin 系統（私有外掛）
@@ -861,7 +871,7 @@ interface PluginRuntimeContext {
 `src/search-index.ts` 是新搜尋投影的唯一寫入層：
 
 1. source adapter 先產生 `SearchDocumentInput`。workspace adapter 中，`OWNER.md`／`PEOPLE.md`／`MEMORY.md` 是常駐事實、沒有事件時間，其文件 `occurred_at` 為空；每日檔的檔名本身即日期，因此 diary 文件以該日期作為 `occurred_at`。`excludeRecentDays` 的近期日記排除是比對 `source_id` 檔名，與 `occurred_at` 無關。
-2. `ingestSearchDocuments()` 正規化文字並先遮罩 secrets，再計算 deterministic ID／SHA-256 content hash，並在同一個 SQLite transaction 內 upsert document、FTS row 與 embedding job。未遮罩原文仍只存在 durable source。`NON_EMBEDDED_SOURCE_TYPES` 列出不進向量索引的 source type（目前為 `tool_result` 與 `diary_note`）：這些文件照常寫入 FTS，但不建 embedding job，`embedding_status` 記為 `skipped`。原始工具輸出量大而語意檢索價值低，其語意入口由同一事件的 `tool_evidence_summary` 提供——該摘要取輸出的開頭 1,000 與結尾 500 字元，因此工具輸出結尾的錯誤與結論同樣涵蓋在內。`diary_note` 不建向量的理由不同：它的 source_id 是 `YYYY-MM-DD.md` 日期檔，而 auto recall 以 `excludeRecentDays` 排除兩天內的日期檔；補註又在當晚被 `reindexDiary` 刪除、由已建向量的 `diary` 散文取代，因此補註向量在其整個存活期間都讀不到。補註所註解的對話本身已由 session message 與 conversation window 建立向量。
+2. `ingestSearchDocuments()` 正規化文字並先遮罩 secrets，再計算 deterministic ID／SHA-256 content hash，並在同一個 SQLite transaction 內 upsert document、FTS row 與 embedding job。未遮罩原文仍只存在 durable source。`NON_EMBEDDED_SOURCE_TYPES` 列出不進向量索引的 source type（目前為 `tool_result`、`tool_call` 與 `diary_note`）：這些文件照常寫入 FTS，但不建 embedding job，`embedding_status` 記為 `skipped`。原始工具輸出量大而語意檢索價值低，其語意入口由同一事件的 `tool_evidence_summary` 提供——該摘要取輸出的開頭 1,000 與結尾 500 字元，因此工具輸出結尾的錯誤與結論同樣涵蓋在內。`tool_call` 存的是工具的呼叫參數——shell script、程式碼與 JSON；這類文字的向量依語法聚類而非依意圖，語意檢索價值極低，而真正用來找指令的關鍵字搜尋由 FTS 提供。與它 1:1 的 `tool_evidence_summary` 仍記錄哪個工具、何時執行、輸出為何。上游配額以「請求次數」計價，因此筆數而非長度決定成本，而 `tool_call` 與 `tool_evidence_summary` 各佔待嵌入總量的近四成。`diary_note` 不建向量的理由不同：它的 source_id 是 `YYYY-MM-DD.md` 日期檔，而 auto recall 以 `excludeRecentDays` 排除兩天內的日期檔；補註又在當晚被 `reindexDiary` 刪除、由已建向量的 `diary` 散文取代，因此補註向量在其整個存活期間都讀不到。補註所註解的對話本身已由 session message 與 conversation window 建立向量。
 3. 寫入層只依 identity/hash 去重，不用 cosine 相似度刪資料；不同時間的相似事件都會保留。
 4. `processEmbeddingJobs()` 由 gateway 的單一背景 worker 分批處理。程序中斷後仍可重試的 pending/failed job 留在 SQLite，卡住的 processing job 超時後回到 retry 流程；達最大嘗試次數的 failed job 另列為 `exhausted`，不再混入 `remaining` 或讓 drain 永遠無法完成。
 5. embedding 模型由 `SEARCH_EMBED_MODEL` 指定（`gemini-embedding-2`，3,072 維，輸入上限 8,192 tokens）。不同模型的向量沒有可比性，因此更換模型必須清空 `search_document_embeddings` 與向量表後整批重打；`search_document_embeddings.model` 記錄每筆向量由哪個模型產生。legacy `memory_vectors`／session summary 投影仍固定在其既有模型，`embed()` 因此由呼叫端指定模型，不共用單一常數。
@@ -883,7 +893,7 @@ Discord uploads、Embed image/thumbnail、回覆引用與 Forum starter 附件�
 
 帶圖片的對話輪次會在同一次請求裡產生描述：該輪本來就已上傳圖片，追加一個 `<image-index>` 區塊只花 output token，省下第二次重新上傳圖片的視覺呼叫。區塊在送往 Discord 前（含進度訊息）剝除，並依序寫入該訊息的圖片附件記錄，標記 `vision_status='complete'`。背景 vision worker 會跳過已完成的記錄，因此它是取代而非競爭；區塊缺漏、格式錯誤、編號超界或非對話來源的附件（工具輸出、生成圖、歷史回填）仍由 worker 照常描述。
 
-附件視覺描述的 provider／transport／model／endpoint／語言都由 `attachment_analysis` 決定，與 `/model` 切換無關，避免對話模型換成無視覺能力時靜默失去圖片描述。該區塊預設 `enabled: false`：視覺呼叫跑在背景 job，端點不支援的模型會每次失敗且不易察覺，因此必須由部署明確開啟。`provider` 留空時依 `llm.base_url` 推導（anthropic.com 走 messages，其餘走 chat_completions），`model` 留空時沿用 `llm.currentModel`，`base_url`／`api_key_env` 留空時沿用 `llm`。描述語言由 `language` 設定，留空即不下語言指示；prompt 本身不寫死任何語言。
+附件視覺描述固定使用工作所屬 request/session 的模型；`attachment_analysis` 只控制 endpoint credentials、語言、預算與 worker 限制，不允許另設模型，因此不會暗中由其他模型代跑。wire format 固定為 OpenAI-compatible `/chat/completions`，使用 Bearer auth 與 `image_url` data URI。該區塊預設 `enabled: false`；端點不支援目前模型的 vision 時會明確失敗。`base_url`／`api_key_env` 留空時沿用 `llm`。
 
 模型自己產生的圖片（生圖工具與內嵌輸出）標記為 `relation='generated'`，不跑視覺描述：產生它的 prompt 已經是對話的一部分並建立索引，比事後再看圖產生的描述更能表達意圖。OCR 仍照跑（本機、免費）。
 
@@ -1014,7 +1024,7 @@ furet/
 ## 待辦
 
 ### Streaming 回覆
-目前 agent loop 是等整包回應才顯示。改成 SSE streaming 後 Discord 端可以邊生成邊更新訊息，CLI 端邊打邊顯示。需改 `callAnthropic` 為 stream mode，解析 SSE event，加 `onText` callback。
+目前 agent loop 是等整包回應才顯示。改成 SSE streaming 後 Discord 端可以邊生成邊更新訊息，CLI 端邊打邊顯示。需改 OpenAI Chat adapter 為 stream mode，解析 SSE event，加 `onText` callback。
 
 ### Intent Analysis（實驗中）
 在 agent loop 前做一輪意圖分析，顯示在 Discord 進度訊息，並注入 system prompt 讓主 agent 參考。目前在 `feat/intent-analysis` branch，效果不穩定（模型容易被 session 歷史汙染，回覆風格偏離）。

@@ -2,6 +2,8 @@ import { logger } from "../../logger.js";
 import { loadConfig } from "../../config.js";
 import { ask } from "../../agent.js";
 import { ROOT } from "../../paths.js";
+import { getRequestProfile } from "../context.js";
+import { activeLlmProfile } from "../../llm/profile.js";
 import type { Tool } from "../../types.js";
 
 const CODING_SYSTEM_PROMPT = `You are modifying the Furet agent's own source code. Furet is a TypeScript project at ${ROOT}/.
@@ -23,7 +25,7 @@ To add a new tool:
 
 export const selfEvolve: Tool = {
   name: "self_evolve",
-  description: "Modify Furet's own source code using a stronger AI model. Use this when you need to add features, fix bugs, or improve yourself. Describe what you want to change clearly.",
+  description: "Modify Furet's own source code using the active conversation model. Use this when you need to add features, fix bugs, or improve yourself. Describe what you want to change clearly.",
   parameters: {
     type: "object",
     properties: {
@@ -34,7 +36,7 @@ export const selfEvolve: Tool = {
   execute: async (args) => {
     const { task } = args as { task: string };
     const config = loadConfig();
-    const model = config.llm.codingModel || config.llm.currentModel;
+    const model = (getRequestProfile() ?? activeLlmProfile(config)).model;
 
     logger.info({ task: task.slice(0, 200), model }, "self_evolve triggered");
 

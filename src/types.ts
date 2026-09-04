@@ -7,7 +7,7 @@ export interface Tool {
   execute: (args: Record<string, unknown>) => Promise<string>;
 }
 
-// --- Anthropic API ---
+// --- Durable conversation content ---
 
 export interface AttachmentReference {
   id: string;
@@ -32,6 +32,8 @@ export interface AttachmentReference {
 }
 
 
+/** New sessions write only text/image blocks. Remaining variants are read-only compatibility
+ * for sessions containing provider-specific blocks written by earlier releases. */
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; thinking: string; signature?: string }
@@ -61,9 +63,19 @@ export type Message = {
 
 // --- Token Usage ---
 
+export interface SessionModelSettings {
+  profile: string;
+  model: string;
+  reasoningEffort: import("./config.js").ReasoningEffort;
+  /** Monotonic session-local revision used to detect concurrent setting changes. */
+  revision: number;
+}
+
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
+  /** Reasoning tokens are a subset/detail of outputTokens and must not be added again to totals. */
+  reasoningTokens: number;
 }
 
 /** Immutable record of a locally executed tool call. Full input/output remain in the
@@ -109,6 +121,8 @@ export interface AgentOptions {
   systemPrompt?: string;
   maxTurns?: number;
   model?: string;
+  /** Fully resolved internal profile override for background work such as journal. */
+  llmProfile?: import("./llm/types.js").LlmProfile;
   session?: import("./session.js").Session;
   onToolUse?: (tool: string, input: Record<string, unknown>) => void;
   onProgress?: (event: ProgressEvent) => void;

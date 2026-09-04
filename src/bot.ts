@@ -7,7 +7,9 @@ import { ask, compactSession } from "./agent.js";
 import { Session } from "./session.js";
 import { SESSION_SUMMARIZE_PROMPT } from "./prompt.js";
 import { logger } from "./logger.js";
-import { loadConfig, REASONING_EFFORTS, setModelConfig, type ReasoningEffort } from "./config.js";
+import { loadConfig, REASONING_EFFORTS, type ReasoningEffort } from "./config.js";
+import { activeLlmProfile, sessionLlmProfile } from "./llm/profile.js";
+import { listConversationModels } from "./llm/models.js";
 import { setDiscordClient } from "./tools/builtin/discord.js";
 import { executeTool } from "./tools/registry.js";
 import { runWithContext } from "./tools/context.js";
@@ -403,7 +405,7 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
           return runWithContext(
             trigger,
             interaction.user.id,
-            loadConfig().llm.currentModel,
+            activeLlmProfile(loadConfig()),
             () => executeTool(toolName, args),
           );
         },
@@ -420,9 +422,16 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
     if (interaction.isAutocomplete()) {
       if (interaction.commandName === "model") {
         const focused = interaction.options.getFocused();
-        const { llm } = loadConfig();
-        const filtered = llm.modelList
-          .filter(m => m.includes(focused))
+        const config = loadConfig();
+        const sessionId = interaction.guild
+          ? `discord-channel-${interaction.channelId}`
+          : `discord-dm-${interaction.user.id}`;
+        const session = new Session(sessionId);
+        const profile = sessionLlmProfile(config, session.getModelSettings());
+        const models = await listConversationModels(profile);
+        const needle = focused.toLowerCase();
+        const filtered = models
+          .filter(model => model.toLowerCase().includes(needle))
           .slice(0, 25);
         await interaction.respond(filtered.map(m => ({ name: m, value: m })));
         return;
@@ -558,6 +567,7 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
         : `discord-dm-${interaction.user.id}`;
       const session = new Session(sessionId);
       const usage = session.getUsage();
+      const sessionProfile = sessionLlmProfile(config, session.getModelSettings());
       const crons = loadCrons();
       const reminders = loadReminders();
       const activeSessions = Session.listActive();
@@ -569,8 +579,8 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
         .setTitle("Furet Status")
         .setColor(0x5865f2)
         .addFields(
-          { name: "Model", value: `\`${config.llm.currentModel}\``, inline: true },
-          { name: "Reasoning", value: `\`${config.llm.reasoningEffort}\``, inline: true },
+          { name: "Model", value: `\`${sessionProfile.model}\``, inline: true },
+          { name: "Reasoning", value: `\`${sessionProfile.reasoningEffort}\``, inline: true },
           { name: "Tokens", value: `${totalTokens.toLocaleString()} (in: ${usage.inputTokens.toLocaleString()} / out: ${usage.outputTokens.toLocaleString()})`, inline: false },
           { name: "Active Sessions", value: `${activeSessions.length}`, inline: true },
           { name: "Crons", value: `${crons.filter(c => c.enabled).length} active / ${crons.length} total`, inline: true },
@@ -610,20 +620,24 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
         await interaction.reply(interactionPayload(OWNER_ONLY_MSG, { ephemeral: true }));
         return;
       }
+      const sessionId = interaction.guild
+        ? `discord-channel-${interaction.channelId}`
+        : `discord-dm-${interaction.user.id}`;
       const name = interaction.options.getString("name", true);
-      if (config.llm.modelList.length > 0 && !config.llm.modelList.includes(name)) {
-        await interaction.reply(interactionPayload(`不在 modelList 裡：\`${name}\``, { ephemeral: true }));
-        return;
-      }
       const effort = (interaction.options.getString("effort") ?? "default") as ReasoningEffort;
-      const prev = config.llm.currentModel;
-      const prevEffort = config.llm.reasoningEffort;
-      setModelConfig(name, effort);
-      logger.info({ prev, next: name, prevEffort, effort, user: interaction.user.id }, "/model switched");
-      await interaction.reply(interactionPayload(
-        `模型已切換：\`${prev} (${prevEffort})\` → \`${name} (${effort})\``,
-        { ephemeral: true },
-      ));
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await discordSessionQueue.enqueue(sessionId, async () => {
+        const session = new Session(sessionId);
+        const previous = session.getModelSettings();
+        session.setModelSettings(name, effort);
+        logger.info({ sessionId, profile: previous.profile, prev: previous.model, next: name, prevEffort: previous.reasoningEffort, effort, user: interaction.user.id }, "/model switched for session");
+        await interaction.editReply(editPayload(
+          `這個 session 的模型已切換：\`${previous.model} (${previous.reasoningEffort})\` → \`${name} (${effort})\``,
+        ));
+      }).catch(async err => {
+        logger.error({ err, sessionId }, "queued /model handling failed");
+        await interaction.editReply(editPayload("模型切換失敗，請查看日誌。")).catch(() => {});
+      });
     }
 
     if (interaction.commandName === "google-auth") {
