@@ -26,12 +26,17 @@ const MAX_EMBED_ATTEMPTS = 5;
  *
  * - `tool_result`: bulky raw tool output. The `tool_evidence_summary` companion document IS
  *   embedded and carries a bounded head+tail excerpt of the same output.
+ * - `tool_call`: the arguments a tool was invoked with, which are shell scripts, code and
+ *   JSON. Vectors of those cluster by syntax rather than by intent, so semantic recall over
+ *   them is near-worthless, while the keyword search people actually use to find a command
+ *   is served by FTS. Its 1:1 `tool_evidence_summary` still records which tool ran, when,
+ *   and what came out.
  * - `diary_note`: same-day annotations on a `YYYY-MM-DD.md` daily file. Auto recall excludes
  *   daily files from the last two days, and the nightly journal replaces these notes with the
  *   embedded `diary` prose, so a note's vector is unreadable for its entire lifetime. The
  *   conversation it annotates is already embedded as session messages and windows.
  */
-const NON_EMBEDDED_SOURCE_TYPES = new Set<SearchSourceType>(["tool_result", "diary_note"]);
+const NON_EMBEDDED_SOURCE_TYPES = new Set<SearchSourceType>(["tool_result", "tool_call", "diary_note"]);
 
 export function shouldEmbedSource(sourceType: SearchSourceType): boolean {
   return !NON_EMBEDDED_SOURCE_TYPES.has(sourceType);
