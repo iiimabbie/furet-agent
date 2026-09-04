@@ -5,7 +5,7 @@ dist/
 config.yaml
 workspace/
 logs/
-furet.pid
+umiro.pid
 CLAUDE.md
 .codegraph/
 .claude/

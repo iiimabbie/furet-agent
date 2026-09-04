@@ -1,8 +1,8 @@
-# Furet - 設計文件
+# Umiro - 設計文件
 
 ## 概述
 
-Furet（法語：雪貂）是一個個人 AI 助手，使用自建 agent loop 與可設定的 LLM connection profile。
+Umiro（法語：雪貂）是一個個人 AI 助手，使用自建 agent loop 與可設定的 LLM connection profile。
 介面：CLI + Discord bot，透過 Gateway 常駐程式統一管理。
 
 ## 技術選型
@@ -66,13 +66,13 @@ OpenAI Chat adapter 依 profile 的 `tokenLimitField` 選擇 `max_completion_tok
 
 `postLlmJson()` 的 transport-level `fetch()` 失敗會包成帶 `cause` 的 Error，保留請求 endpoint 與底層錯誤鏈。`src/logger.ts` 對 `err` 欄位使用遞迴 serializer，記錄 Error 的 `type`、`message`、`stack`、自有屬性（如 `code`）與 `cause`；呼叫端應傳入原始 Error（`{ err }`），不要只留下 `err.message`，否則會遺失 `ECONNREFUSED`、`ECONNRESET`、DNS 等真正原因。
 
-短暫的網路錯誤，以及 HTTP `408`、`429`、`500`、`502`、`503`、`504`、`529`，會在共用 LLM HTTP boundary 內最多嘗試 3 次。等待時間優先採用標準 `Retry-After`，否則使用約 1 秒、2 秒的 exponential backoff 加少量 jitter；其他 4xx 等明確請求錯誤不重試。重試邊界刻意放在單次 Chat Completions API 呼叫內：若前一個 agent turn 已經成功執行本地工具，下一次模型整理回覆時遇到 502，只會重送同一份 messages 給模型，**不會重新進入已完成的本地工具執行迴圈**，避免寄信、寫檔或 Discord 操作等副作用重複發生。provider-side 的 web search／fetch／code execution 屬該 API request 內部能力，遇到 transport-level 不確定結果時仍可能由上游重做，但不會重跑 Furet 本地工具。
+短暫的網路錯誤，以及 HTTP `408`、`429`、`500`、`502`、`503`、`504`、`529`，會在共用 LLM HTTP boundary 內最多嘗試 3 次。等待時間優先採用標準 `Retry-After`，否則使用約 1 秒、2 秒的 exponential backoff 加少量 jitter；其他 4xx 等明確請求錯誤不重試。重試邊界刻意放在單次 Chat Completions API 呼叫內：若前一個 agent turn 已經成功執行本地工具，下一次模型整理回覆時遇到 502，只會重送同一份 messages 給模型，**不會重新進入已完成的本地工具執行迴圈**，避免寄信、寫檔或 Discord 操作等副作用重複發生。provider-side 的 web search／fetch／code execution 屬該 API request 內部能力，遇到 transport-level 不確定結果時仍可能由上游重做，但不會重跑 Umiro 本地工具。
 
 整個 `ask()` 跑在獨立的 request context（AsyncLocalStorage）裡，見「Request Context」一節。
 
 ### Logging：依本地日期每天分檔
 
-`src/logger.ts` 用 pino + pino-pretty，把 log 以人類可讀的 `[YYYY-MM-DD HH:mm:ss] LEVEL: msg {json}` 單行格式寫入 `logs/`。日誌**依本地日期每天分檔**，檔名為 `logs/furet-YYYY-MM-DD.log`。
+`src/logger.ts` 用 pino + pino-pretty，把 log 以人類可讀的 `[YYYY-MM-DD HH:mm:ss] LEVEL: msg {json}` 單行格式寫入 `logs/`。日誌**依本地日期每天分檔**，檔名為 `logs/umiro-YYYY-MM-DD.log`。
 
 `src/dailyFileStream.ts` 的 `createDailyFileStream()` 提供這個行為：pino-pretty 在主執行緒把每筆 log 格式化後寫進一個自訂 Writable，該 Writable 在每次寫入前用 `Intl.DateTimeFormat("en-CA", { timeZone })` 取當下本地日期挑檔名。跨午夜時會無縫關掉舊 stream、開新日期檔，**不需重啟程序**；檔案一律以 `flags: "a"`（append）開啟，啟動時不會覆蓋既有的當日 log。
 
@@ -427,7 +427,7 @@ Discord V1 的 `content` 單則上限為 2,000 字元。一般回覆、slash com
 
 ### Discord 訊息模型
 
-Furet 的 Discord 輸出統一使用標準 V1 訊息 payload：
+Umiro 的 Discord 輸出統一使用標準 V1 訊息 payload：
 
 - `src/utils/discord-message.ts` 統一建立一般訊息、interaction reply、message edit 與重啟後 raw webhook PATCH 的 `content`、附件、legacy action-row buttons 與 allowed mentions payload；文字一律放在標準 `content`，不採用 component-only message payload。
 - Slash command 的一般文字回覆、`/new`、聊天、工具進度、cron、reminder、Forum starter、Discord send/edit tool、外掛 text transport 與按鈕訊息共用這個 V1 輸出層。`deferReply()` 只負責 interaction acknowledgement，內容由後續的回覆 payload 提供。
@@ -487,7 +487,7 @@ session 照常記錄該回合。
 - **`edit`**：開啟 Discord Modal，修改指定 `execute` 按鈕之 action args 內一個 top-level string 欄位，修改後按鈕組保持可操作。可選擇把該欄位設為動態 preview，讓原訊息同步更新。
 - **`close`**：關閉整組按鈕，不執行外部 action。顯示文字由呼叫端提供，不預設代表拒絕或取消。
 
-按鈕狀態持久化在 `workspace/config/furet.db` 的 `discord_button_messages` 表，因此訊息建立後即使 Gateway 重啟，既有按鈕仍能找到對應 action。生命週期與 Discord message ID 是可索引欄位；按鈕定義、action args、允許使用者與逐顆結果保留為 JSON 欄位，兼顧查詢／原子狀態轉移與 payload 彈性。Gateway 啟動時會把舊版 `workspace/config/discord-buttons.json` 以單一 transaction 匯入 SQLite，確認成功後才把舊檔移到 `workspace/.trash/`；匯入失敗則停止接受 Discord 流量，不會靜默遺失尚未操作的按鈕。每組按鈕有到期時間，並支援兩種互動模式：預設 `group` 在第一個 execute／close 後結束整組；`independent` 則讓每顆 execute 各自執行，完成後只停用該顆並保留其他按鈕，全部處理完才把整組標成完成。每組按鈕可指定 `allowed_user_ids`；省略時只允許 `config.discord.owner_id`。未列入者只收到 ephemeral 拒絕訊息。允許非 owner 點擊時，action 會以 `discord-other` request context 執行，因此仍不能繞過 owner-only tool 權限。
+按鈕狀態持久化在 `workspace/config/umiro.db` 的 `discord_button_messages` 表，因此訊息建立後即使 Gateway 重啟，既有按鈕仍能找到對應 action。生命週期與 Discord message ID 是可索引欄位；按鈕定義、action args、允許使用者與逐顆結果保留為 JSON 欄位，兼顧查詢／原子狀態轉移與 payload 彈性。Gateway 啟動時會把舊版 `workspace/config/discord-buttons.json` 以單一 transaction 匯入 SQLite，確認成功後才把舊檔移到 `workspace/.trash/`；匯入失敗則停止接受 Discord 流量，不會靜默遺失尚未操作的按鈕。每組按鈕有到期時間，並支援兩種互動模式：預設 `group` 在第一個 execute／close 後結束整組；`independent` 則讓每顆 execute 各自執行，完成後只停用該顆並保留其他按鈕，全部處理完才把整組標成完成。每組按鈕可指定 `allowed_user_ids`；省略時只允許 `config.discord.owner_id`。未列入者只收到 ephemeral 拒絕訊息。允許非 owner 點擊時，action 會以 `discord-other` request context 執行，因此仍不能繞過 owner-only tool 權限。
 
 Button message 會停用 allowed mentions，避免外部文字或草稿意外 ping 使用者。`group` 模式執行 action 前，會在 SQLite transaction 內確認目前仍為 `pending` 才原子轉成 `processing` 並移除按鈕；`independent` 模式用 process-local execution set 鎖住單顆按鈕，顯示暫時的處理中狀態，成功或失敗後再以 transaction 持久化該顆結果。快速重複點擊不會讓同一組 group action 重複取得執行權，並行更新也不再靠整份 JSON 的 read-modify-rename。Modal 目前只修改一個字串欄位。
 
@@ -532,7 +532,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 | Soul Guardian | 可選的 deterministic 內建排程，直接執行完整性檢查並把 drift 送到指定 Discord 頻道；不經 LLM，重複未處理 drift 以 fingerprint 去重 |
 | Discord Bot | 有 token 且 enabled 時啟動 |
 | Plugins | 背景服務接流量前先 `loadPlugins()`；Discord 啟用時待 client ready 後才 `startPlugins()`，再註冊含外掛在內的 slash commands。Discord 停用或登入失敗時仍啟動非 Discord 能力，message transport 會明確拒絕。shutdown 時 `stopPlugins()`（見 Plugin 系統） |
-| PID file | `furet.pid`，啟動時殺掉舊進程確保單實例 |
+| PID file | `umiro.pid`，啟動時殺掉舊進程確保單實例 |
 
 日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**，每日檔的 diary_note 補註只當輔助。transcript 是完整的對話紀錄；diary_note 僅補充明確背景、有證據的當下反思、跨日關聯與附件／工具脈絡，不重複記錄事件，也不把未確認的情緒推測寫成事實。
 
@@ -704,11 +704,11 @@ request-scoped `enabledTools`，後續回合可直接暴露其 schema；進度�
 `src/plugin-manager.ts` 是 CLI 與 Discord 共用的 managed plugin service；`src/plugin-cli.ts` 提供 host-side 入口，`src/bot.ts` 的 owner-only `/plugin` 提供日常 Discord 入口：
 
 ```bash
-furet plugin install <git-url-or-local-path> [--workspace <package-name-or-path>]
-furet plugin list
-furet plugin enable|disable <name>
-furet plugin update [name]
-furet plugin remove <name>
+umiro plugin install <git-url-or-local-path> [--workspace <package-name-or-path>]
+umiro plugin list
+umiro plugin enable|disable <name>
+umiro plugin update [name]
+umiro plugin remove <name>
 
 /plugin 動作:安裝 目標:https://github.com/owner/repository/tree/main/packages/example-plugin
 /plugin 動作:更新 [目標:<autocomplete from installed plugins>]
@@ -719,7 +719,7 @@ furet plugin remove <name>
 - CLI 保留 list／enable／disable／update，以及本機目錄、SSH 或其他 Git URL 等維運功能；Discord UX 不暴露 list／enable／disable 這些低頻操作，也不提供 auth 流程。私有 repository 由主機既有 Git 認證或 SSH 設定處理。
 - CLI 與 Discord 只負責解析輸入、授權與呈現結果，install/update/remove 都委派同一組 `plugin-manager.ts` 函式，避免兩套管理邏輯分岔。
 - Managed checkout 固定放在 `workspace/plugins/`，安裝來源、package 對應與啟用狀態都記在 mode `0600` 的 `workspace/config/plugins.json`；runtime loader 會把 managed registry 與 `config.yaml` 的手動外掛合併，重複路徑以手動設定為準。這讓容器可維持唯讀掛載 `config.yaml`，Discord 安裝仍只需寫入 workspace。
-- plugin package 必須在 `package.json` 宣告 `furet.plugin`（package 內的相對 entry path）；可選 `furet.name`，否則用去掉 npm scope 的 package name。安裝器拒絕絕對路徑與 `..` 逃逸。
+- plugin package 必須在 `package.json` 宣告 `umiro.plugin`（package 內的相對 entry path）；可選 `umiro.name`，否則用去掉 npm scope 的 package name。安裝器拒絕絕對路徑與 `..` 逃逸。
 - Git 來源 shallow clone；本機目錄則複製進 managed area。安裝／更新會執行 `npm install`，並在 package 有 `build` script 時執行；npm workspace monorepo 可用 package name 或相對路徑選定。這些 scripts 等同執行受信任程式碼，不能把 installer 當 sandbox。
 - 每次安裝擁有一份獨立 checkout，即使多個 plugin 來自同一個 monorepo 也不共用。這讓 uninstall 可以把該次安裝建立的 package、`node_modules`、lockfile 與原始碼整份移除，不必猜哪些 artifact 仍被別的 plugin 共用。`update` 會建立新的 staged checkout、重裝 dependencies、重建該 plugin，驗證 identity／entry 後原子替換；local copy 不做 in-place update。
 - enable／disable／install／remove 只改持久設定，**不自動重啟 gateway**。remove 會在同一次操作中移除 registry record，並把該 plugin 的專屬 checkout 與 `workspace/config/plugins/<name>.yaml` 一起移到 `workspace/.trash/`；registry 寫入失敗時兩者都回復。若讀到舊版共用 checkout，單顆卸載會完整失敗且不修改任何資料，不會假裝成功卻留下 package、`node_modules` 或 lockfile；應先一起移除該來源的舊 plugins，再按需重新安裝。
@@ -729,7 +729,7 @@ furet plugin remove <name>
 
 `config.plugins`（預設空陣列）每筆 `{ path, enabled }`：
 
-- `path`：外掛模組路徑，**絕對**或**相對 Furet root**（`src/paths.ts` 的 `ROOT`）。相對路徑一律對 `ROOT` 解析，不依當下工作目錄——CWD 會漂移。
+- `path`：外掛模組路徑，**絕對**或**相對 Umiro root**（`src/paths.ts` 的 `ROOT`）。相對路徑一律對 `ROOT` 解析，不依當下工作目錄——CWD 會漂移。
 - `enabled`：`false` 直接跳過。省略 `enabled` 視為 `true`。
 - 正規化在 `config.ts` 的 `mergePluginsConfig()`：非物件、`path` 非字串或空的條目直接丟棄，畸形設定不會讓 config load 崩潰。
 
@@ -786,7 +786,7 @@ interface PluginRuntimeContext {
 ```
 
 - **Tool 名稱全域唯一**：跟 builtin 或其他外掛撞名的工具會被拒，整個外掛不載入（不 silent shadow）。
-- **Slash command 名稱全域唯一**：外掛之間撞名會拒絕後載入的外掛；與 Furet 內建指令撞名時主架構不註冊該外掛指令，內建行為保持權威。command 預設 owner-only、ephemeral，handler 回傳字串由主架構送出。
+- **Slash command 名稱全域唯一**：外掛之間撞名會拒絕後載入的外掛；與 Umiro 內建指令撞名時主架構不註冊該外掛指令，內建行為保持權威。command 預設 owner-only、ephemeral，handler 回傳字串由主架構送出。
 - **Plugin manifest 名稱全域唯一**：它是 schedules／events 的 namespace，重名外掛整體跳過。
 - **`ownerOnly` 預設 true**：私有外掛工具預設鎖 owner；明確 `false` 才放給 `discord-other`。外掛背景 callback 本身是受信任的 in-process code，呼叫 `context.ask()` 時使用獨立的 `plugin` trigger，不冒充 Discord 使用者。
 - **Agent API 受限**：背景工作只拿到 `prompt`、`systemPrompt`、`maxTurns`、`model`；不能自行偽造 trigger、user ID、Discord session 或進度 callback。回傳完整 `AgentResponse`。
@@ -828,7 +828,7 @@ interface PluginRuntimeContext {
 
 ### 儲存層
 
-`workspace/config/furet.db`（SQLite，better-sqlite3 + sqlite-vec + FTS5）：
+`workspace/config/umiro.db`（SQLite，better-sqlite3 + sqlite-vec + FTS5）：
 
 | 表 | 用途 |
 |----|------|
@@ -973,7 +973,7 @@ diary_note / memory_replace / memory_remove 保存資訊。內容是 `JOURNAL.md
 而 `ls` 永遠是對的。要知道有哪些 tool 看 `src/tools/registry.ts`。
 
 ```
-furet/
+umiro/
 ├── src/
 │   ├── agent.ts              # agent loop（API call + 執行循環），系統核心
 │   ├── gateway.ts            # 常駐程式（cron + reminder + journal + Discord + PID）
@@ -996,7 +996,7 @@ furet/
 │       └── builtin/          # 每個 tool 一個檔
 ├── workspace/                # agent 工作空間（不進 git，由 templates/ 初始化）
 │   ├── *.md                  # AGENT / SOUL / MEMORY / PEOPLE / JOURNAL
-│   ├── config/               # crons.json, reminders.json, google-token.json, furet.db
+│   ├── config/               # crons.json, reminders.json, google-token.json, umiro.db
 │   ├── memory/               # 每日記憶
 │   ├── sessions/             # session 持久化 + archive/
 │   ├── skills/               # 技能（每個有 SKILL.md）
@@ -1058,7 +1058,7 @@ daily memory，skill 也只給路徑不給內容（`prompt.ts` 的 `loadSkills`�
 時生效，拒絕：
 
 - `WORKSPACE_DIR` 以外的一切 → 擋掉 `config.yaml`（含 Discord token）與整個 `src/`
-- `workspace/config/` → `google-token.json`、`furet.db`
+- `workspace/config/` → `google-token.json`、`umiro.db`
 - `workspace/sessions/` → 其他人的對話紀錄
 
 比對前先 `resolve()` 正規化 `..`，再 `realpathSync()` 解 symlink——只比字面

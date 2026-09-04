@@ -1,12 +1,12 @@
-# Furet Plugin Guide
+# Umiro Plugin Guide
 
-Furet plugins are trusted local ECMAScript modules that can contribute private tools, recurring background jobs, Discord slash commands, and lifecycle event handlers without modifying the public core registry. They are intended for deployment-specific integrations such as home automation, private APIs, game helpers, internal databases, and personal workflows.
+Umiro plugins are trusted local ECMAScript modules that can contribute private tools, recurring background jobs, Discord slash commands, and lifecycle event handlers without modifying the public core registry. They are intended for deployment-specific integrations such as home automation, private APIs, game helpers, internal databases, and personal workflows.
 
-> Plugins run inside the Furet process with the same operating-system privileges as Furet. They are not sandboxed. Only load code you trust.
+> Plugins run inside the Umiro process with the same operating-system privileges as Umiro. They are not sandboxed. Only load code you trust.
 
 ## Installation
 
-Furet exposes the same managed plugin operations through the host CLI and an owner-only Discord slash command. Both paths call the same plugin manager; neither path restarts the gateway automatically.
+Umiro exposes the same managed plugin operations through the host CLI and an owner-only Discord slash command. Both paths call the same plugin manager; neither path restarts the gateway automatically.
 
 ### Host CLI
 
@@ -16,33 +16,33 @@ A plugin package declares its runtime entry in `package.json`:
 {
   "name": "@example/private-hello",
   "type": "module",
-  "furet": {
+  "umiro": {
     "name": "private-hello",
     "plugin": "./dist/index.js"
   }
 }
 ```
 
-`furet.name` is optional and defaults to the unscoped npm package name. `furet.plugin` is required and must point to a file inside the package. The installer runs `npm install`, runs the selected package's `build` script when present, verifies that the entry exists, records the checkout under `workspace/plugins/`, and registers the entry in `workspace/config/plugins.json`. It never restarts the gateway automatically.
+`umiro.name` is optional and defaults to the unscoped npm package name. `umiro.plugin` is required and must point to a file inside the package. The installer runs `npm install`, runs the selected package's `build` script when present, verifies that the entry exists, records the checkout under `workspace/plugins/`, and registers the entry in `workspace/config/plugins.json`. It never restarts the gateway automatically.
 
 ```bash
 # Single-package repository
-furet plugin install ssh://git@example.invalid/owner/private-hello.git
+umiro plugin install ssh://git@example.invalid/owner/private-hello.git
 
 # npm workspace monorepo; accepts a package name or relative package path
-furet plugin install ssh://git@example.invalid/owner/furet-plugins.git \
+umiro plugin install ssh://git@example.invalid/owner/umiro-plugins.git \
   --workspace private-hello
 
-furet plugin list
-furet plugin disable private-hello
-furet plugin enable private-hello
-furet plugin update private-hello   # omit the name to update every managed source
-furet plugin remove private-hello
+umiro plugin list
+umiro plugin disable private-hello
+umiro plugin enable private-hello
+umiro plugin update private-hello   # omit the name to update every managed source
+umiro plugin remove private-hello
 ```
 
 Managed source metadata and activation state are stored in `workspace/config/plugins.json`. The runtime loader merges these managed entries with manually configured `config.yaml` plugins, so managed installation works even when `config.yaml` is mounted read-only. Removing the final plugin that uses a checkout moves that checkout to `workspace/.trash/` rather than deleting it permanently. Local-directory installs are copied into the managed area and cannot be updated in place; remove and reinstall them to refresh the copy.
 
-The installer executes trusted package scripts and the loaded plugin later runs inside the Furet process. Review third-party code before installing it. A restart is required after install, enable, disable, update, or remove.
+The installer executes trusted package scripts and the loaded plugin later runs inside the Umiro process. Review third-party code before installing it. A restart is required after install, enable, disable, update, or remove.
 
 ### Discord slash command
 
@@ -58,14 +58,14 @@ The required `動作` option selects installation, update, or removal. The share
 
 Every `/plugin` invocation compares the caller directly with `discord.owner_id`; no guild role or channel permission can substitute for that identity check. Replies are ephemeral, and installation defers the interaction before cloning, installing dependencies, or building. Discord installation accepts public HTTPS `github.com` links only and rejects embedded credentials. Private sources, local directories, SSH URLs, list, enable, and disable remain host-side CLI operations.
 
-A restart is still required after installation, update, or removal. The command reports the completed persistent change but does not restart Furet automatically.
+A restart is still required after installation, update, or removal. The command reports the completed persistent change but does not restart Umiro automatically.
 
 ## Write your first plugin
 
-A plugin does not need a Furet source checkout or a special SDK. The smallest installable plugin is an ordinary ECMAScript package with two files:
+A plugin does not need a Umiro source checkout or a special SDK. The smallest installable plugin is an ordinary ECMAScript package with two files:
 
 ```text
-hello-furet-plugin/
+hello-umiro-plugin/
 ├── package.json
 └── index.mjs
 ```
@@ -76,18 +76,18 @@ Create `package.json`:
 
 ```json
 {
-  "name": "hello-furet-plugin",
+  "name": "hello-umiro-plugin",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "furet": {
-    "name": "hello-furet",
+  "umiro": {
+    "name": "hello-umiro",
     "plugin": "./index.mjs"
   }
 }
 ```
 
-The installer reads `furet.plugin`; npm's `main` or `exports` field does not replace it. The path must stay inside this package. `furet.name` is the stable name shown by plugin management and defaults to the unscoped npm package name when omitted.
+The installer reads `umiro.plugin`; npm's `main` or `exports` field does not replace it. The path must stay inside this package. `umiro.name` is the stable name shown by plugin management and defaults to the unscoped npm package name when omitted.
 
 ### 2. Export a plugin module
 
@@ -117,7 +117,7 @@ const greetTool = {
 
 export default {
   manifest: {
-    name: "hello-furet",
+    name: "hello-umiro",
   },
   tools: [
     {
@@ -138,32 +138,32 @@ A plugin must export:
 - At least one item in `tools`, `schedules`, `commands`, or `events`.
 - Tool `execute()` functions that always resolve to a string, including recoverable errors.
 
-This example uses `exposure: "match"`, so Furet offers the tool schema only when the request matches its keywords or aliases. Use `on-demand` for catalog-only tools and reserve `native` for small tools needed on nearly every turn.
+This example uses `exposure: "match"`, so Umiro offers the tool schema only when the request matches its keywords or aliases. Use `on-demand` for catalog-only tools and reserve `native` for small tools needed on nearly every turn.
 
 ### 3. Publish and install it
 
 Push the two files to the root of a public GitHub repository, then install it from Discord:
 
 ```text
-/plugin 動作:安裝 目標:https://github.com/owner/hello-furet-plugin
+/plugin 動作:安裝 目標:https://github.com/owner/hello-umiro-plugin
 ```
 
 Or install it from the host:
 
 ```bash
-furet plugin install https://github.com/owner/hello-furet-plugin.git
+umiro plugin install https://github.com/owner/hello-umiro-plugin.git
 ```
 
-Restart Furet after installation. Then ask the assistant to use the greeting tool and inspect the gateway log if it is not selected or loaded.
+Restart Umiro after installation. Then ask the assistant to use the greeting tool and inspect the gateway log if it is not selected or loaded.
 
 ### 4. Add dependencies or a build step
 
-A plugin is a normal npm package. Declare runtime libraries in `dependencies`. If `package.json` contains a `build` script, the installer runs it after `npm install` and before checking `furet.plugin`.
+A plugin is a normal npm package. Declare runtime libraries in `dependencies`. If `package.json` contains a `build` script, the installer runs it after `npm install` and before checking `umiro.plugin`.
 
 A typical TypeScript package looks like this:
 
 ```text
-hello-furet-plugin/
+hello-umiro-plugin/
 ├── package.json
 ├── tsconfig.json
 └── src/
@@ -172,7 +172,7 @@ hello-furet-plugin/
 
 ```json
 {
-  "name": "hello-furet-plugin",
+  "name": "hello-umiro-plugin",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -183,8 +183,8 @@ hello-furet-plugin/
     "@types/node": "^25.0.0",
     "typescript": "^6.0.0"
   },
-  "furet": {
-    "name": "hello-furet",
+  "umiro": {
+    "name": "hello-umiro",
     "plugin": "./dist/index.js"
   }
 }
@@ -204,14 +204,14 @@ hello-furet-plugin/
 }
 ```
 
-Furet does not currently publish a separate plugin SDK package. Authors can use the contracts documented below, write plain JavaScript, or copy the relevant TypeScript interfaces from `src/tools/plugin-types.ts` into their own project for compile-time checking. The runtime contract is structural; the plugin must not import Furet's private source files at runtime.
+Umiro does not currently publish a separate plugin SDK package. Authors can use the contracts documented below, write plain JavaScript, or copy the relevant TypeScript interfaces from `src/tools/plugin-types.ts` into their own project for compile-time checking. The runtime contract is structural; the plugin must not import Umiro's private source files at runtime.
 
 ### 5. Choose the capability you need
 
 - **Tool:** the model invokes an operation in response to a conversation or another agent task.
-- **Schedule:** Furet runs a recurring background callback declared by the plugin.
-- **Slash command:** Furet registers a Discord command declared by the plugin and routes executions back to it.
-- **Event:** Furet runs the plugin after a supported core event, currently `journal:completed`.
+- **Schedule:** Umiro runs a recurring background callback declared by the plugin.
+- **Slash command:** Umiro registers a Discord command declared by the plugin and routes executions back to it.
+- **Event:** Umiro runs the plugin after a supported core event, currently `journal:completed`.
 - **Lifecycle:** `manifest.start(context)` opens clients or validates configuration; `manifest.stop(context)` performs graceful cleanup.
 
 A plugin may combine these capabilities. The complete example in the next section shows one tool, one schedule, and one event together; the reference sections explain every field and failure rule.
@@ -220,16 +220,16 @@ A plugin may combine these capabilities. The complete example in the next sectio
 
 1. Keep the plugin in its own repository or npm-workspaces monorepo.
 2. Run its own lint, typecheck, and tests before installing it.
-3. Install it into a non-production Furet deployment first.
-4. Restart Furet and check for the plugin's `started` state and capability counts in logs or `/status`.
+3. Install it into a non-production Umiro deployment first.
+4. Restart Umiro and check for the plugin's `started` state and capability counts in logs or `/status`.
 5. Exercise every tool, schedule, and event with unavailable credentials and failing upstream services as well as the successful path.
-6. Push plugin changes, run `furet plugin update <name>`, and restart to load the new module.
+6. Push plugin changes, run `umiro plugin update <name>`, and restart to load the new module.
 
 Do not develop by editing files under `workspace/plugins/`; that directory is a managed checkout and may be replaced by update or reinstall operations.
 
 ## Manual quick start
 
-For development, or for a module that is not packaged for the installer, create it outside the repository and register it manually. For example `~/furet-plugins/hello/index.mjs`:
+For development, or for a module that is not packaged for the installer, create it outside the repository and register it manually. For example `~/umiro-plugins/hello/index.mjs`:
 
 ```javascript
 const helloTool = {
@@ -296,13 +296,13 @@ Add the module to the root `config.yaml`:
 
 ```yaml
 plugins:
-  - path: ../furet-plugins/hello/index.mjs
+  - path: ../umiro-plugins/hello/index.mjs
     enabled: true
 ```
 
-A relative path is resolved from the Furet repository root, not from the current working directory. Absolute paths are also accepted.
+A relative path is resolved from the Umiro repository root, not from the current working directory. Absolute paths are also accepted.
 
-Restart Furet. A successful load logs the tool, schedule, and event counts. Plugin schedules start automatically after the plugin lifecycle succeeds; they are not copied into `workspace/config/crons.json`.
+Restart Umiro. A successful load logs the tool, schedule, and event counts. Plugin schedules start automatically after the plugin lifecycle succeeds; they are not copied into `workspace/config/crons.json`.
 
 ## Module contract
 
@@ -418,7 +418,7 @@ interface PluginScheduleRegistration {
 
 ## Discord slash commands
 
-Plugins may declare top-level Discord slash commands. Furet validates them during plugin loading, combines commands from every started plugin with the built-in command list, and registers the complete list when the Discord gateway becomes ready. Installing or updating a command therefore requires a gateway restart.
+Plugins may declare top-level Discord slash commands. Umiro validates them during plugin loading, combines commands from every started plugin with the built-in command list, and registers the complete list when the Discord gateway becomes ready. Installing or updating a command therefore requires a gateway restart.
 
 ```typescript
 interface PluginSlashCommandRegistration {
@@ -445,9 +445,9 @@ interface PluginSlashCommandRegistration {
 }
 ```
 
-- Command names are globally unique across plugins. A name that conflicts with a built-in Furet command is not registered.
+- Command names are globally unique across plugins. A name that conflicts with a built-in Umiro command is not registered.
 - `ownerOnly` defaults to `true`; `ephemeral` defaults to `true`.
-- Handlers return the text Furet sends as the interaction result. Non-string results become recoverable command errors.
+- Handlers return the text Umiro sends as the interaction result. Non-string results become recoverable command errors.
 - Options use Discord-native string, integer, boolean, and channel inputs. Static choices are supported for string and integer options.
 - Commands are suitable for plugin settings and explicit operations. They do not expose the agent tool registry or bypass tool authorization.
 
@@ -573,24 +573,24 @@ Plugin loading is fail-soft and all-or-nothing:
 A private npm-workspaces repository can expose several independently installable plugins:
 
 ```text
-furet-plugins/
+umiro-plugins/
 ├── package.json
 ├── package-lock.json
 └── packages/
     ├── dream-journal/
-    │   ├── package.json   # contains furet.plugin
+    │   ├── package.json   # contains umiro.plugin
     │   └── src/
     └── private-service/
-        ├── package.json   # contains furet.plugin
+        ├── package.json   # contains umiro.plugin
         └── src/
 ```
 
-Install each package with the same repository URL and a different `--workspace`. Furet reuses one managed checkout and removes it only after the final installed plugin from that source is removed.
+Install each package with the same repository URL and a different `--workspace`. Umiro reuses one managed checkout and removes it only after the final installed plugin from that source is removed.
 
 ## Recommended plugin structure
 
 ```text
-furet-plugins/
+umiro-plugins/
 └── private-service/
     ├── index.mjs
     ├── client.mjs
@@ -615,13 +615,13 @@ Before enabling a plugin:
 - Startup and shutdown hooks tolerate partial initialization and abrupt `/restart` termination.
 - Event handlers do not assume the event payload contains full file contents.
 - Secrets stay in environment variables or private ignored configuration.
-- Furet starts successfully when the plugin's external dependency is unavailable.
+- Umiro starts successfully when the plugin's external dependency is unavailable.
 
 ## Troubleshooting
 
 ### `plugin path does not exist; skipping`
 
-Check the resolved path in the log. Relative paths start at the Furet root.
+Check the resolved path in the log. Relative paths start at the Umiro root.
 
 ### `plugin module does not export a valid manifest/capability shape`
 

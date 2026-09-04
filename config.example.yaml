@@ -44,11 +44,11 @@ llm:
 discord:
   enabled: false                        # set true to run discord bot
   token: "${DISCORD_TOKEN}"             # bot token from Discord Developer Portal
-  allowed_channels: []                  # `furet onbord` can set the first allowed channel
+  allowed_channels: []                  # `umiro onbord` can set the first allowed channel
   ambient_channels: []                  # channel IDs where the bot replies without being @mentioned (threads do not inherit)
   ignored_channels: []                  # channel/thread IDs to fully ignore: no trigger and no recording, even on mention/reply/DM/ambient (threads do not inherit)
   allowed_guilds: []                    # Empty means all guilds; set IDs manually if needed
-  owner_id: ""                          # set locally by `furet onbord`
+  owner_id: ""                          # set locally by `umiro onbord`
   respond_to_bots: false                # whether to process messages from other bots
   status: "online"                      # online | idle | dnd | invisible
   activity: "Burrowing around…🦦✨"    # custom activity text
@@ -126,7 +126,7 @@ attachment_analysis:
 skills: []                              # enabled skill names (must exist in workspace/skills/<name>/)
 
 plugins: []                             # plugin modules loaded from local paths. Managed entries are
-                                        # written here by `furet plugin install`; manual entries also work.
+                                        # written here by `umiro plugin install`; manual entries also work.
                                         # Each entry: { path: <abs or relative-to-root>, enabled: true }.
                                         # A plugin exports a manifest plus optional tools, schedules, and
                                         # event handlers. Schedules follow plugin startup/shutdown and are
@@ -135,5 +135,5 @@ plugins: []                             # plugin modules loaded from local paths
                                         # Do NOT put private connection data here — the plugin
                                         # module reads its own secrets from .env / its own config.
                                         # Example:
-                                        #   - path: ../furet-plugins/example-plugin/index.ts
+                                        #   - path: ../umiro-plugins/example-plugin/index.ts
                                         #     enabled: true
