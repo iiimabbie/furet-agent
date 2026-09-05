@@ -34,11 +34,6 @@ const MAX_EMBED_ATTEMPTS = 5;
  *   vectors cluster by syntax rather than by intent.
  * - `tool_result`: bulky raw output, chunked when long.
  * - `tool_evidence_summary`: a bounded excerpt of that output, one per tool event.
- * - `diary_note`: same-day annotations on a `YYYY-MM-DD.md` daily file. Auto recall excludes
- *   daily files from the last two days, and the nightly journal replaces these notes with the
- *   embedded `diary` prose, so a note's vector is unreadable for its entire lifetime. The
- *   conversation it annotates is already embedded as session messages and windows.
- *
  * `owner` and `memory` are excluded for the opposite reason: `OWNER.md` and `MEMORY.md` are
  * inlined into the system prompt unconditionally on every turn, so a vector can only return
  * what the reader is already holding. Auto recall excludes them by source type as well, and
@@ -49,7 +44,7 @@ const MAX_EMBED_ATTEMPTS = 5;
  * an index rather than the text, and `memory_search` is a real reader of its vectors.
  */
 const NON_EMBEDDED_SOURCE_TYPES = new Set<SearchSourceType>([
-  "tool_call", "tool_result", "tool_evidence_summary", "diary_note",
+  "tool_call", "tool_result", "tool_evidence_summary",
   "owner", "memory",
 ]);
 
@@ -83,7 +78,6 @@ export type SearchSourceType =
   | "tool_result"
   | "tool_evidence_summary"
   | "diary"
-  | "diary_note"
   | "people"
   | "memory"
   | "owner"
@@ -472,7 +466,7 @@ function countJobBacklog(db: ReturnType<typeof getDb>): { remaining: number; exh
  */
 const EMBED_PRIORITY_SQL = `CASE d.source_type
   WHEN 'owner' THEN 0 WHEN 'memory' THEN 0 WHEN 'people' THEN 0
-  WHEN 'diary' THEN 1 WHEN 'diary_note' THEN 1
+  WHEN 'diary' THEN 1
   WHEN 'compact_summary' THEN 2
   WHEN 'session_message' THEN 3 WHEN 'conversation_window' THEN 3
   WHEN 'attachment' THEN 4
@@ -753,7 +747,7 @@ const SESSION_SOURCE_TYPES = new Set<SearchSourceType>([
   "tool_call", "tool_result", "tool_evidence_summary", "attachment",
 ]);
 const DURABLE_SOURCE_TYPES = new Set<SearchSourceType>([
-  "diary", "diary_note", "people", "memory", "owner",
+  "diary", "people", "memory", "owner",
 ]);
 
 /**
@@ -784,7 +778,7 @@ function sourceWeight(sourceType: SearchSourceType, profile: UnifiedSearchProfil
   }
   if (profile === "memory") {
     if (sourceType === "people" || sourceType === "memory" || sourceType === "owner") return 1.25;
-    if (sourceType === "diary" || sourceType === "diary_note") return 1.15;
+    if (sourceType === "diary") return 1.15;
     if (sourceType === "tool_evidence_summary" || sourceType === "compact_summary") return 1.05;
     if (sourceType === "conversation_window") return 0.95;
     return 0.9;

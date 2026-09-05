@@ -6,47 +6,12 @@ import { MEMORY_DIR, MEMORY_INDEX } from "../../paths.js";
 import { searchUnified } from "../../search-index.js";
 import { getChannelId, getSessionId, getTrigger, getUserId } from "../context.js";
 import { hasOwnerSearchVisibility } from "../authz.js";
-import { indexDiaryNote, reindexMemory } from "../../workspace-index.js";
-import { today, clockTime } from "../../utils/time.js";
+import { reindexMemory } from "../../workspace-index.js";
 import { appendInsideTag, stripTag } from "../../utils/tagged-file.js";
 import type { Tool } from "../../types.js";
 import { updateSearchProjection, withProjectionNotice } from "../../utils/search-projection.js";
 import { renderSearchOutput, truncateSearchText } from "../../utils/search-output.js";
 
-
-export const diaryNote: Tool = {
-  name: "diary_note",
-  description: "Append a diary annotation to today's file (workspace/memory/yyyy-MM-dd.md). Use it for what the transcript cannot preserve: your own reactions, feelings, opinions, doubts and second thoughts; background nobody said out loud; cross-day connections; attachment or tool context needed to understand the day later. Do NOT re-log events or dialogue the transcript already holds. When writing about another person's inner state, do not assert it as fact — quote what they said or did, or mark it as your impression. Your own inner state is yours to state plainly.",
-  parameters: {
-    type: "object",
-    properties: {
-      content: { type: "string", description: "Diary context the transcript cannot preserve: your own perspective on the day, unspoken background, or cross-day links" },
-    },
-    required: ["content"],
-  },
-  execute: async (args) => {
-    const { content } = args as { content: string };
-    const date = today();
-    const filePath = resolve(MEMORY_DIR, `${date}.md`);
-    logger.info({ date, content: content.slice(0, 100) }, "diary note");
-
-    try {
-      mkdirSync(MEMORY_DIR, { recursive: true });
-      let existing = "";
-      try { existing = readFileSync(filePath, "utf-8"); } catch { /* new file */ }
-
-      const timestamp = clockTime();
-      const entry = `\n- [${timestamp}] ${content}`;
-      writeFileSync(filePath, existing + entry + "\n");
-
-      const projectionError = updateSearchProjection("diary note", () => indexDiaryNote(date, timestamp, content));
-      return withProjectionNotice(`Note saved to ${date}.md.`, projectionError);
-    } catch (err) {
-      logger.error({ err }, "diary note failed");
-      return `Error: ${(err as Error).message}`;
-    }
-  },
-};
 
 export const memorySearch: Tool = {
   name: "memory_search",

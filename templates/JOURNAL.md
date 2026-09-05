@@ -2,8 +2,7 @@
 
 Check if anything from this turn is worth saving. If yes, save it — do not skip.
 
-First classify the information by its canonical destination. A daily note may record the exchange,
-but it does not replace updating the canonical file.
+First classify the information by its canonical destination. Archived transcripts preserve the exchange; update the canonical profile separately when needed.
 
 **OWNER.md — who the owner is** — update directly if:
 - You learned or corrected a durable personal fact about the owner: identity, form of address,
@@ -21,18 +20,6 @@ but it does not replace updating the canonical file.
 PEOPLE.md stores other people's profiles. Daily memory may still describe conversations or events
 involving them; it must not be used as the authoritative copy of their profile.
 
-**diary_note** (append annotation to daily file) — the session transcript already captures what
-happened, so this is where everything the transcript cannot hold goes:
-- Your own reactions, feelings, opinions, doubts and second thoughts. These are yours; they need no
-  external evidence and no one else has to have confirmed them.
-- Background nobody said out loud
-- Cross-day context links ("this connects to what happened on YYYY-MM-DD")
-- Attachment or tool-result context needed to understand the diary later
-
-Do NOT use `diary_note` to re-log events, conversations, or who said what — the transcript has all
-of that. When you write about ANOTHER person's inner state, do not assert it as fact: quote what
-they said or did, or mark it as your own impression. Your own inner state is not subject to that —
-write it plainly.
 
 **memory_add / memory_replace / memory_remove** (update MEMORY.md) — use only for long-lived
 operating context that is not an owner or other-person profile:
@@ -51,10 +38,7 @@ Atomic fact constraint: every saved fact must be self-contained.
 **Do NOT save to MEMORY.md**: owner profile facts, other people's profiles, issue/PR numbers, news
 events, one-time links, or anything that will not matter in 30 days.
 
-Skip bare greetings and things already recorded today. The transcript already preserves ordinary
-conversation and community interaction, so a diary annotation is for what it cannot: your own
-perspective on the day, or context that was never said out loud. Proceed without acknowledging this
-check in your reply.
+Skip bare greetings and facts already recorded. Ordinary exchanges remain in the transcript. Proceed without acknowledging this check in your reply.
 
 ## Session Summarize
 
@@ -67,7 +51,6 @@ You already have the full session in context — do not read files.
 Use the appropriate destination:
 - update `OWNER.md` directly — new or corrected durable facts about the owner; preserve its wrapper
   and replace stale values instead of appending correction history
-- `diary_note` — explicit context or evidence-based reflection the transcript cannot capture
 - `memory_add` / `memory_replace` / `memory_remove` — long-lived operating context in MEMORY.md,
   excluding owner and other-person profiles
 - `people_add` — anyone except the owner who appeared with no PEOPLE.md entry
@@ -75,10 +58,7 @@ Use the appropriate destination:
 
 Check the participants of this session against PEOPLE.md before finishing.
 
-Two different bars — do not use the long-term bar to judge the daily file:
-- `diary_note` (today's daily file): only annotations the transcript cannot capture — explicit
-  background, evidence-based reflections, cross-day links, and attachment/tool context. Do not
-  duplicate ordinary conversation or infer an unconfirmed emotional state.
+Apply the appropriate persistence criteria:
 - `OWNER.md`: durable owner profile facts go here regardless of whether they were learned today.
 - `memory_add` / `memory_replace` / `memory_remove` (MEMORY.md = long-term): only non-profile
   context still relevant in 30+ days.
@@ -88,9 +68,7 @@ Atomic fact constraint: no pronouns, absolute dates, self-contained sentences.
 Do NOT write owner profile facts, other-person profiles, issue/PR numbers, version-specific notes,
 one-time links, or news events to MEMORY.md. Only non-profile context still relevant in 30+ days belongs there.
 
-Skip if the transcript already preserves everything that matters. A chat about games, news, or
-community activity remains available in the transcript and does not need a `diary_note` unless
-there is meaningful context outside the transcript.
+Skip if the transcript already preserves everything that matters.
 
 ## Daily Journal
 
@@ -98,18 +76,11 @@ Write the daily journal for {{DATE}}. This task has three steps — all are requ
 
 ### Step 1 — Rewrite diary
 
-The daily file `workspace/memory/{{DATE}}.md` is only a set of assistant notes — it is
-lossy and may be missing whole conversations. The **archived sessions are the ground truth**.
+The **archived sessions are the ground truth** for the daily journal. The existing daily file may be a prior generated draft and must not be treated as an additional factual source.
 
 1. Get the day's clean conversation transcript with `journal_transcript_by_date` for `{{DATE}}`.
    It keeps the dialogue while removing tool calls, harness bookkeeping, and transport metadata.
-   Then read the notes in `workspace/memory/{{DATE}}.md` with `read_file` as a supplement.
-2. Rewrite the entire daily file as a clean personal diary, reconstructed from the clean
-   conversation transcript rather than shaped by the notes:
-   - Treat `diary_note` annotations as **supplementary colour**: explicit background,
-     evidence-based reflections, cross-day links, and attachment/tool context that the transcript
-     alone would not convey. They are not an outline or event log — do not let them shape the
-     diary's structure or sequence.
+2. Rewrite the entire daily file as a clean personal diary reconstructed from that transcript:
    - Before writing, identify the day's few main threads and the emotional or narrative arc
      within each one. Merge related causes, actions, reactions, corrections, and outcomes into
      coherent passages instead of replaying them as separate events.
@@ -122,7 +93,7 @@ lossy and may be missing whole conversations. The **archived sessions are the gr
      Do not turn filenames, commands, build steps, parameters, or every intermediate action into
      diary entries unless that exact detail was itself important that day.
    - The result must not read like a changelog, meeting minutes, work report, categorized event
-     log, or a polished rewrite of `diary_note` annotations.
+     log, or a replay of the transcript.
    - This is **your own diary, written first-person from your perspective** — record not
      only what the user did, talked about, cared about, and felt, but also what you did,
      noticed, thought, and reacted to. It is a diary, not a neutral incident report. The

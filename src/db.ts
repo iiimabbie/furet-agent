@@ -53,6 +53,29 @@ function migrateAttachmentStageStatus(database: Database.Database): void {
   })();
 }
 
+
+/** Remove obsolete transient diary-note projections after the runtime writer is removed. */
+export function migrateRemovedDiaryNotes(database: Database.Database): void {
+  const SCHEMA_REMOVE_DIARY_NOTES = 2;
+  if (hasSchemaVersion(database, SCHEMA_REMOVE_DIARY_NOTES)) return;
+  database.transaction(() => {
+    const rows = database.prepare("SELECT rowid, id FROM search_documents WHERE source_type = 'diary_note'").all() as Array<{ rowid: number; id: string }>;
+    const removeVector = database.prepare(`DELETE FROM ${SEARCH_DOCUMENT_VEC_TABLE} WHERE rowid = ?`);
+    const removeFts = database.prepare("DELETE FROM search_documents_fts WHERE rowid = ?");
+    const removeJob = database.prepare("DELETE FROM embedding_jobs WHERE document_id = ?");
+    const removeEmbedding = database.prepare("DELETE FROM search_document_embeddings WHERE document_id = ?");
+    const removeDocument = database.prepare("DELETE FROM search_documents WHERE id = ?");
+    for (const row of rows) {
+      removeVector.run(BigInt(row.rowid));
+      removeFts.run(row.rowid);
+      removeJob.run(row.id);
+      removeEmbedding.run(row.id);
+      removeDocument.run(row.id);
+    }
+    markSchemaVersion(database, SCHEMA_REMOVE_DIARY_NOTES);
+  })();
+}
+
 export function getDb(): Database.Database {
   if (db) return db;
 
@@ -246,6 +269,7 @@ export function getDb(): Database.Database {
   // One-time backfill of the per-stage status columns, gated by schema version so it
   // stops touching every attachment row on subsequent process starts.
   migrateAttachmentStageStatus(db);
+  migrateRemovedDiaryNotes(db);
 
   rebuildFtsIfNeeded(db);
 

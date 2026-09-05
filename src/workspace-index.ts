@@ -152,25 +152,9 @@ export function reindexOwner(content?: string): void {
 export function reindexDiary(filePath: string, content?: string): void {
   const sourceId = basename(filePath);
   const text = content ?? readFileSync(filePath, "utf-8");
-  // Once the finished diary replaces the working note file, its prose is canonical;
-  // remove transient annotations for that date so they cannot be recalled twice.
-  removeSearchDocumentsForSource("diary_note", sourceId);
   replaceSource("diary", sourceId, diarySections(text));
 }
 
-export function indexDiaryNote(date: string, timestamp: string, content: string): void {
-  const sourceId = `${date}.md`;
-  const text = normalize(content);
-  if (!text) return;
-  ingestSearchDocuments([{
-    id: createSearchDocumentId("workspace", "diary_note", sourceId, timestamp, text),
-    sourceType: "diary_note",
-    sourceId,
-    visibilityScope: "owner_private",
-    occurredAt: `${date}T${timestamp}:00`,
-    text,
-  }]);
-}
 
 /**
  * Bring the search index back in line with the workspace profile files on disk.
