@@ -49,7 +49,7 @@ Agent (agent.ts) ── normalized LLM client ──► profile adapter ──�
     │   ├── tool_catalog # 探索／代理入口
     │   ├── bash / read_file / write_file / get_weather
     │   ├── image_gen     # GPT-only，Responses API 生圖／參考圖 edit
-    │   ├── diary_note / memory_* / people_*
+    │   ├── memory_* / people_*
     │   ├── cron_* / reminder_*
     │   ├── discord_*   # 訊息、按鈕、討論串、reaction、pin
     │   ├── google_*    # Calendar / Gmail / Drive / Tasks
@@ -826,17 +826,9 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 日記重寫（Daily Journal Step 1）讀的是 `journal_transcript_by_date` 產生的**當天乾淨對話投影**。
 transcript 是完整的對話紀錄，也是唯一的事實來源。
 
-`diary_note` 是**補充性**的日記註記，不是事件記錄，因此不能成為日記骨架。
-它只保存 transcript 無法保留的明確背景、有證據的當下反思、跨日關聯，
-以及附件或工具結果的必要脈絡；不得把推測的心理狀態寫成事實。
+Daily Journal 只以 `journal_transcript_by_date` 產生的 archived transcript 作為事實來源；一般對話不直接寫入每日檔。Journal 依完整逐字稿重建第一人稱日記，完成後覆寫 `workspace/memory/YYYY-MM-DD.md`。
 
-Daily Journal prompt 找出整天的主線，把相關的起因、行動、反應與結果融合成有脈絡的第一人稱段落；
-diary_note 只作為輔助色彩織入。正文以連續散文為主，只有真正的清單才用 bullet；
-實作命令、檔名與中間步驟只保留足以理解事件意義的部分，
-避免成品退化成 changelog、工作報告或分類後的流水帳。
-
-每日補註檔可能相當稀疏，這是預期行為，不代表當天沒有事件。
-這項規則必須同時維護 runtime `workspace/JOURNAL.md` 與 `templates/JOURNAL.md`。
+每日檔是生成後的日記成品，不是 runtime 補註暫存區。日記正文以連續散文為主，只有真正的清單才用 bullet；實作命令、檔名與中間步驟只保留足以理解事件意義的部分，避免成品退化成 changelog、工作報告或分類後的流水帳。
 
 ### 背景工作的模型路由
 
@@ -928,7 +920,6 @@ Registry 輸出 protocol-neutral function definition；adapter 才轉成 provide
 | `bash` | 執行 shell 指令 |
 | `read_file` / `write_file` | 讀檔 / 寫檔 |
 | `get_weather` | OpenWeatherMap；先以 Direct Geocoding 解析地點，再用經緯度取得天氣與預報 |
-| `diary_note` | 追加 transcript 無法保留的日記補註；不做事件流水帳 |
 | `memory_search` | Permission-aware 統一 hybrid search；偏重人物、長期記憶、日記與重要對話證據 |
 | `memory_list` | 列出所有記憶檔 |
 | `memory_add` / `memory_replace` / `memory_remove` | 操作 MEMORY.md（substring match；有字數上限） |
@@ -1031,7 +1022,7 @@ owner 稍後在同頻道觸發時 trigger 是 `discord-owner`、權限全開，�
 四個等級（`tools/metadata.ts` 的 `ExposureLevel`）：
 
 - **`native`** — 每輪都送完整 schema（`tool_catalog` / `bash` / `read_file` / `write_file` /
-  `diary_note` / `memory_search` / `people_add` / `people_update` / `discord_react` /
+  `memory_search` / `people_add` / `people_update` / `discord_react` /
   `discord_attach_to_reply`）。`web_fetch` 與顯式 web/code capability tools 同樣由 registry 管理
 - **`match`** — 由 `matchTools()` 這個 **deterministic** matcher（不另呼叫 LLM）
   依當輪 prompt 的中英文 keyword、alias、名稱，或工具明確宣告的日期時間／圖片附件 signal 命中才送。
@@ -1241,8 +1232,6 @@ SQLite 全部都是**可重建的 projection**。
 
 ### 記憶工具
 
-- `diary_note` — 追加 transcript 無法保存的明確背景、有證據反思、跨日關聯或附件／工具脈絡；
-  寫入每日檔後立即接入統一索引，不做事件記錄
 - `memory_search` — 呼叫 permission-aware `searchUnified()`，
   偏重 durable memory、people、diary 與重要 conversation evidence
 - `memory_add` / `replace` / `remove` — 操作 MEMORY.md，並透過 workspace adapter 重建搜尋 documents
@@ -1279,7 +1268,7 @@ SQLite 全部都是**可重建的 projection**。
 
 3. **哪些來源不進向量索引。**
    `NON_EMBEDDED_SOURCE_TYPES` 目前是 `tool_call`、`tool_result`、`tool_evidence_summary`
-   與 `diary_note` 四種：這些文件照常寫入 FTS，但不建 embedding job，
+   三種：這些文件照常寫入 FTS，但不建 embedding job，
    `embedding_status` 記為 `skipped`。
 
    **工具活動整條不進向量索引。** `tool_result` 量大而語意檢索價值低；
@@ -1289,11 +1278,6 @@ SQLite 全部都是**可重建的 projection**。
    工具活動的檢索入口因此完全交給 FTS 關鍵字搜尋，
    而 `tool_evidence_summary` 仍記錄哪個工具、何時執行、輸出為何，只是不再產生向量。
 
-   `diary_note` 不建向量的理由不同：它的 source_id 是 `YYYY-MM-DD.md` 日期檔，
-   而 auto recall 以 `excludeRecentDays` 排除兩天內的日期檔；
-   補註又在當晚被 `reindexDiary` 刪除、由已建向量的 `diary` 散文取代，
-   因此補註向量在其整個存活期間都讀不到。
-   補註所註解的對話本身已由 session message 與 conversation window 建立向量。
 
 4. **去重只依 identity/hash，不用 cosine 相似度刪資料**；不同時間的相似事件都會保留。
 
@@ -1475,7 +1459,7 @@ session JSON temp+rename 成功後才建立附件 record/job/search projection�
 ### Memory Hook 與 Silent Flush
 
 **Memory Hook** — 每 5 則 user message 附加一次記憶提示（不是每輪），
-提醒 agent 檢查是否需要用 diary_note / memory_replace / memory_remove 保存資訊。
+提醒 agent 檢查是否需要更新 OWNER.md、PEOPLE.md 或 MEMORY.md。
 內容是 `JOURNAL.md` 的 Memory Hook section。
 
 **Silent Memory Flush** — `/new` 歸檔和每日 journal 觸發前執行：
@@ -1533,3 +1517,9 @@ Relevant selection 不取代 unified search。`PEOPLE.md` 的 section 繼續進 
 或 LLM 前置呼叫。`OWNER.md` 與 `MEMORY.md` 每輪已完整內嵌，因此只保留 FTS、不建立向量。
 Gateway 啟動時會 idempotently reconcile 三份 workspace profile；未變動 section 由 content hash
 保留既有投影，修改或刪除的 section 則更新／移除，只有變動後且需要向量的 PEOPLE section 重新排程。
+
+### Removed diary writer deployment
+
+Schema migration 2 in `src/db.ts` removes obsolete diary-note search projections transactionally on first startup. It preserves daily files, archived transcripts, and normal diary documents. Retain this migration while upgrades from databases predating version 2 are supported; remove it only after that upgrade path is retired.
+
+Existing installations must update the Memory Hook, Session Summarize, and Daily Journal sections in `workspace/JOURNAL.md`, and Knowledge Persistence in `workspace/AGENT.md`, before restarting. Templates do not overwrite customized workspace files automatically. Preserve unrelated local instructions. Ordinary turns no longer append daily annotations; scheduled Journal remains enabled.

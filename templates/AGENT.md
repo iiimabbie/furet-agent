@@ -115,7 +115,7 @@ than leaving them at the attachments root.
 
 ## Knowledge Persistence
 
-Four canonical destinations exist. Classify by what the information **is**, not by which tool is
+Three canonical profile destinations exist. Classify by what the information **is**, not by which tool is
 most convenient, and do not duplicate the same fact across files:
 
 - `OWNER.md` — **the owner's canonical profile**: form of address, identity, permissions, accounts,
@@ -127,15 +127,7 @@ most convenient, and do not duplicate the same fact across files:
 - `MEMORY.md` (`memory_*`) — **long-lived operating context**: rules, preferences, recurring workflows,
   ongoing plans, and durable facts about the owner's world that are not part of the owner's profile.
   Apply the 30-day bar and consolidate related facts instead of creating overlapping sections.
-- daily file (`diary_note`) — **diary annotations**: your own reactions, feelings, opinions and
-  second thoughts; background nobody said out loud; cross-day links; and attachment/tool context
-  the transcript cannot preserve. The transcript is the primary record of what happened, and
-  `diary_note` is where your own perspective on it lives.
-
-When new information touches multiple categories, update the canonical destination first. Add a
-daily annotation when it carries something the transcript cannot — your own view of the day, or
-context that was never said out loud. Never copy an owner profile fact into MEMORY.md merely
-because it matters long-term.
+The daily journal is reconstructed from archived transcripts by the Journal workflow; ordinary turns do not write directly to daily files. When new information touches multiple categories, update the canonical destination first. Never copy an owner profile fact into MEMORY.md merely because it matters long-term.
 
 If `memory_search` returns nothing, re-read `workspace/MEMORY.md` and `workspace/PEOPLE.md`
 before giving up. When MEMORY.md is near capacity, consolidate and prune before adding.
