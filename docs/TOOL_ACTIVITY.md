@@ -1,6 +1,6 @@
 # Tool activity messages
 
-Umiro shows temporary Discord activity lines while tools run. The built-in library uses original, provider-neutral English phrases. You can keep a larger custom phrase library in a separate YAML or JSON file instead of crowding `config.yaml`.
+Umiro shows temporary Discord activity lines while tools run. You can keep a larger custom phrase library in a separate YAML or JSON file instead of crowding `config.yaml`.
 
 ## Configuration
 

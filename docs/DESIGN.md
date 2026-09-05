@@ -677,7 +677,7 @@ Umiro 的 Discord 輸出統一使用標準 V1 訊息 payload：
 Tool call 開始時，Discord 建立或編輯一則**暫時工具活動訊息**。每次呼叫只追加一行英文狀態文案，
 不公開內部工具名稱、arguments、檔案路徑或命令；文案由 `src/utils/tool-activity.ts` 集中管理，
 依工具專屬池 → category 池 → common 池選擇，使用 shuffle bag 避免短期重複。
-公開內建文案是原創、provider-neutral 的 whimsical fae 語氣，不引用特定遊戲台詞或角色名稱。
+內建文案採簡短的英文 whimsical 語氣，並依工具或類別選取。
 
 `discord.tool_activity` 可停用活動訊息、設定 `append`／`replace`、最大可見行數。較大的自訂文案庫
 應透過 `pools_file` 放在獨立 YAML／JSON；相對路徑以 Umiro root 解析。`pools` 仍保留給少量 inline 覆寫

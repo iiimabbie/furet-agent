@@ -6,9 +6,8 @@ export type ToolActivityPools = Record<string, string[]>;
 export type RandomSource = () => number;
 
 /**
- * Public defaults are original, provider-neutral English status lines. They evoke a
- * playful little fae working inside the machine without quoting or naming any game
- * character. Workspace config may replace or extend any pool.
+ * Built-in defaults are short English status lines selected by tool or category.
+ * Workspace configuration may replace or extend any pool.
  */
 export const DEFAULT_TOOL_ACTIVITY_POOLS: ToolActivityPools = {
   common: [
