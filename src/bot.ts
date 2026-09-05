@@ -3,6 +3,7 @@ import {
   SlashCommandBuilder, MessageFlags, EmbedBuilder, ActivityType, PresenceStatusData,
   type Message, type Interaction, type TextBasedChannel,
 } from "discord.js";
+import { discordPeopleVisibility } from "./people-context.js";
 import { ask, compactSession } from "./agent.js";
 import { Session } from "./session.js";
 import { SESSION_SUMMARIZE_PROMPT } from "./prompt.js";
@@ -515,6 +516,8 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
       // remains valid, then mutate/archive the session inside the same FIFO queue.
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await discordSessionQueue.enqueue(sessionId, async () => {
+        const peopleVisibility = discordPeopleVisibility(interaction.user.id, config.discord.owner_id);
+        const trigger = peopleVisibility === "owner" ? "discord-owner" : "discord-other";
         const session = new Session(sessionId);
         const channelContext = buildChannelContext(interaction.channelId, sessionId, getChannelTypeInfo(interaction.channel));
         const ts = stamp();
@@ -523,7 +526,7 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
         if (session.length > 0) {
           const flushContext = `${channelContext}\n\n[System] ${SESSION_SUMMARIZE_PROMPT}`;
           session.append({ role: "user", content: "[System] Session ending — flush memory now.", time: ts });
-          await ask(null, { session, systemPrompt: flushContext, trigger: "discord-owner" }).catch(err =>
+          await ask(null, { session, systemPrompt: flushContext, trigger, userId: interaction.user.id, peopleVisibility }).catch(err =>
             logger.error({ err: (err as Error).message }, "memory flush before /new failed")
           );
         }
@@ -543,7 +546,7 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
         session.append({ role: "user", content: newSessionContent, time: ts });
 
         try {
-          const response = await ask(null, { session, systemPrompt: channelContext, trigger: "discord-owner" });
+          const response = await ask(null, { session, systemPrompt: channelContext, trigger, userId: interaction.user.id, peopleVisibility });
           const text = response.text || "（新對話開始）";
           const formatted = fixMarkdownLinks(resolveEmojiMarkup(text));
           const chunks = chunkMessage(formatted, 2000);
@@ -1088,8 +1091,17 @@ async function handleTrigger(message: Message, session: Session, images?: string
     const channelContext = imageCount > 0
       ? `${baseContext}\n\n${imageIndexInstruction(imageCount)}`
       : baseContext;
-    const isOwner = message.author.id === loadConfig().discord.owner_id;
-    const response = await ask(null, { session, systemPrompt: channelContext, images, onProgress, trigger: isOwner ? "discord-owner" : "discord-other", userId: message.author.id });
+    const ownerId = loadConfig().discord.owner_id;
+    const peopleVisibility = discordPeopleVisibility(message.author.id, ownerId);
+    const response = await ask(null, {
+      session,
+      systemPrompt: channelContext,
+      images,
+      onProgress,
+      trigger: peopleVisibility === "owner" ? "discord-owner" : "discord-other",
+      userId: message.author.id,
+      peopleVisibility,
+    });
     if (imageCount > 0 && response.text) {
       storeInlineImageDescriptions(session, response.text, imageCount);
       response.text = stripImageIndexBlock(response.text);

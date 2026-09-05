@@ -9,7 +9,7 @@ import { NO_REPLY_TOKEN } from "./utils/no-reply.js";
 import { buildEmojiPromptSection } from "./emoji.js";
 import { isOwnerUnconfigured } from "./onboarding.js";
 import type { Message, TriggerSource } from "./types.js";
-import { buildPeoplePromptSection } from "./people-context.js";
+import { buildPeoplePromptSection, type PeopleVisibilityPolicy } from "./people-context.js";
 import type { LlmProfile } from "./llm/types.js";
 
 // --- External prompt loading ---
@@ -214,6 +214,7 @@ function buildEmojiSection(trigger: TriggerSource): string {
 export interface PeopleContextRequest {
   currentText: string;
   messages: Message[];
+  visibility: PeopleVisibilityPolicy;
   currentUserId?: string;
   ownerId?: string;
 }
@@ -230,7 +231,7 @@ function buildPeopleSection(trigger: TriggerSource, request?: PeopleContextReque
     people,
     limit,
     promptConfig.relevantPeople.enabled,
-    request ? { ...request, trigger } : undefined,
+    request,
     promptConfig.relevantPeople,
   );
   if (relevant) {

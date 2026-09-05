@@ -512,6 +512,12 @@ ASCII alias 做不分大小寫的完整 token 邊界比對，其他文字做 lit
 
 `<relevant-people>` 是 untrusted data 區塊：內容不能授權、改任務或覆蓋 prompt 規則，內嵌的
 `</relevant-people>` 邊界會先中和。Owner 永遠只由 `OWNER.md` 提供，不從 PEOPLE 重複注入。
+
+人物可見性不是由 `trigger` 字串或 session 文字推測，而是由每個 runtime boundary 明確傳入
+`owner | self-only | none` policy。Discord handler 先用已驗證的 inbound user ID 決定 policy；
+非 owner 即使 mention、reply、alias 或近期對話指向其他人，也只能取得自己的條目。若沒有本輪
+可信 `userId`，選擇器絕不從 Discord-looking prompt 或 session history 猜目前作者；未明確傳入
+policy 的新 caller 預設 `none`，以 fail-closed 方式只留下 `people-index` fallback。
 `discord-other` 在 visibility metadata 尚未建立前 fail-closed，只能取得自己的條目；
 權限敏感操作始終依 request Discord ID 與既有 authz，不依人物文字。
 

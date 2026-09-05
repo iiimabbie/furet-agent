@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPeoplePromptSection, parseAliasValue, parsePeopleFile, renderRelevantPeople, selectRelevantPeople } from "../src/people-context.js";
+import { buildPeoplePromptSection, discordPeopleVisibility, parseAliasValue, parsePeopleFile, renderRelevantPeople, selectRelevantPeople } from "../src/people-context.js";
 import { neutralizeBoundaryMarkers } from "../src/utils/untrusted-recall.js";
 
 const PEOPLE = `<people>\n# People\n\n## 澄澄\n- Discord ID: 200\n- 別名: ["澄澄", "Cheng"]\n- 備註: review\n\n## Ani\n- Discord ID: 300\n- 別名: 安妮 (Ani)／阿妮\n- 備註: friend\n\n## johnlin.io\n- Discord ID: 400\n- 備註: dotted\n\n## duplicate-one\n- Discord ID: 500\n- 別名: same\n\n## duplicate-two\n- Discord ID: 600\n- 別名: same\n</people>`;
@@ -24,24 +24,24 @@ test("matches author, mention, reply, literal aliases and dotted headings", () =
   const result = selectRelevantPeople(entries, {
     currentText: messages[2].content,
     messages,
-    trigger: "discord-owner",
+    visibility: "owner",
     currentUserId: "100",
     ownerId: "100",
   }, cfg);
   assert.deepEqual(result.entries.map(entry => entry.heading), ["johnlin.io", "Ani", "澄澄"]);
 
-  const dotted = selectRelevantPeople(entries, { currentText: "johnlinXio", messages: [], trigger: "cli" }, cfg);
+  const dotted = selectRelevantPeople(entries, { currentText: "johnlinXio", messages: [], visibility: "owner" }, cfg);
   assert.equal(dotted.entries.length, 0);
-  assert.equal(selectRelevantPeople(entries, { currentText: "johnlin.io", messages: [], trigger: "cli" }, cfg).entries[0].heading, "johnlin.io");
+  assert.equal(selectRelevantPeople(entries, { currentText: "johnlin.io", messages: [], visibility: "owner" }, cfg).entries[0].heading, "johnlin.io");
 });
 
-test("ambiguous aliases do not guess and discord-other sees only self", () => {
+test("ambiguous aliases do not guess and self-only visibility sees only trusted self", () => {
   const entries = parsePeopleFile(PEOPLE);
-  assert.equal(selectRelevantPeople(entries, { currentText: "same", messages: [], trigger: "cli" }, cfg).entries.length, 0);
+  assert.equal(selectRelevantPeople(entries, { currentText: "same", messages: [], visibility: "owner" }, cfg).entries.length, 0);
   const result = selectRelevantPeople(entries, {
     currentText: "[msg:1 now] <@300>(ani): 澄澄 <@400>",
     messages: [],
-    trigger: "discord-other",
+    visibility: "self-only",
     currentUserId: "300",
     ownerId: "100",
   }, cfg);
@@ -51,7 +51,7 @@ test("ambiguous aliases do not guess and discord-other sees only self", () => {
 test("budget never cuts a section and owner is excluded", () => {
   const entries = parsePeopleFile(PEOPLE);
   const result = selectRelevantPeople(entries, {
-    currentText: "<@300> <@400>", messages: [], trigger: "cli", ownerId: "300",
+    currentText: "<@300> <@400>", messages: [], visibility: "owner", ownerId: "300",
   }, { ...cfg, maxChars: entries.find(entry => entry.heading === "johnlin.io")!.section.length });
   assert.deepEqual(result.entries.map(entry => entry.heading), ["johnlin.io"]);
 });
@@ -75,7 +75,7 @@ test("prompt section integration injects only relevant entries for a large file"
   const rendered = buildPeoplePromptSection(PEOPLE, 1, true, {
     currentText: "澄澄看過了",
     messages: [],
-    trigger: "discord-owner",
+    visibility: "owner",
     currentUserId: "100",
     ownerId: "100",
   }, cfg);
@@ -104,7 +104,7 @@ ${Array.from({ length: 9 }, (_, index) => `## Person${index}
   const result = selectRelevantPeople(entries, {
     currentText: current.content,
     messages: [...history, current],
-    trigger: "discord-owner",
+    visibility: "owner",
     currentUserId: "100",
     ownerId: "100",
   }, cfg);
@@ -125,10 +125,79 @@ test("continuity can be disabled without affecting direct matches", () => {
   const result = selectRelevantPeople(entries, {
     currentText: messages[1].content,
     messages,
-    trigger: "discord-owner",
+    visibility: "owner",
     currentUserId: "100",
     ownerId: "100",
   }, { ...cfg, recentUserMessages: 0 });
 
   assert.deepEqual(result.entries.map(entry => entry.heading), ["澄澄"]);
+});
+
+
+test("self-only visibility ignores mention, reply, alias and continuity for other people", () => {
+  const entries = parsePeopleFile(PEOPLE);
+  const messages = [
+    { role: "user" as const, content: "[msg:1 now] <@200>(cheng): prior", msgId: "1" },
+    { role: "user" as const, content: "[msg:2 now] <@300>(ani): 澄澄 <@400>", msgId: "2", replyTo: "1" },
+  ];
+  const result = selectRelevantPeople(entries, {
+    currentText: messages[1].content,
+    messages,
+    visibility: "self-only",
+    currentUserId: "300",
+    ownerId: "100",
+  }, cfg);
+  assert.deepEqual(result.entries.map(entry => entry.heading), ["Ani"]);
+});
+
+test("missing trusted user id never infers the current author from Discord-looking history", () => {
+  const entries = parsePeopleFile(PEOPLE);
+  const history = [{ role: "user" as const, content: "[msg:1 now] <@300>(ani): hello", msgId: "1" }];
+
+  const ownerRun = selectRelevantPeople(entries, {
+    currentText: "run scheduled work",
+    messages: history,
+    visibility: "owner",
+    ownerId: "100",
+  }, { ...cfg, recentUserMessages: 0 });
+  assert.deepEqual(ownerRun.entries, []);
+
+  const queuedExternalRun = selectRelevantPeople(entries, {
+    currentText: history[0].content,
+    messages: history,
+    visibility: "self-only",
+    ownerId: "100",
+  }, cfg);
+  assert.deepEqual(queuedExternalRun.entries, []);
+});
+
+test("none visibility fails closed even when text and history contain exact people signals", () => {
+  const entries = parsePeopleFile(PEOPLE);
+  const result = selectRelevantPeople(entries, {
+    currentText: "澄澄 <@300>",
+    messages: [{ role: "user", content: "[msg:1 now] <@400>(john): Ani", msgId: "1" }],
+    visibility: "none",
+    currentUserId: "300",
+    ownerId: "100",
+  }, cfg);
+  assert.deepEqual(result.entries, []);
+});
+
+
+test("Discord runtime identity maps to explicit visibility before prompt selection", () => {
+  const entries = parsePeopleFile(PEOPLE);
+  const ownerId = "100";
+  const externalId = "300";
+  const visibility = discordPeopleVisibility(externalId, ownerId);
+  assert.equal(visibility, "self-only");
+
+  const result = selectRelevantPeople(entries, {
+    currentText: "[msg:2 now] <@300>(ani): 澄澄 <@400>",
+    messages: [{ role: "user", content: "[msg:1 now] <@200>(cheng): prior", msgId: "1" }],
+    visibility,
+    currentUserId: externalId,
+    ownerId,
+  }, cfg);
+  assert.deepEqual(result.entries.map(entry => entry.heading), ["Ani"]);
+  assert.equal(discordPeopleVisibility(ownerId, ownerId), "owner");
 });

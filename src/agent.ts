@@ -407,6 +407,7 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
     peopleContext: {
       currentText: prompt ?? (latestPeopleMessage?.content as string | undefined) ?? "",
       messages: peopleMessages,
+      visibility: options.peopleVisibility ?? "none",
       currentUserId: options.userId,
       ownerId: cfg.discord.owner_id,
     },

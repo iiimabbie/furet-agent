@@ -1,4 +1,4 @@
-import type { Message, TriggerSource } from "./types.js";
+import type { Message } from "./types.js";
 import { neutralizeBoundaryMarkers } from "./utils/untrusted-recall.js";
 import { stripTag } from "./utils/tagged-file.js";
 
@@ -15,10 +15,17 @@ export interface RelevantPeopleConfig {
   recentUserMessages: number;
 }
 
+export type PeopleVisibilityPolicy = "owner" | "self-only" | "none";
+
+export function discordPeopleVisibility(userId: string, ownerId: string): PeopleVisibilityPolicy {
+  return userId === ownerId ? "owner" : "self-only";
+}
+
 export interface RelevantPeopleInput {
   currentText: string;
   messages: Message[];
-  trigger: TriggerSource;
+  visibility: PeopleVisibilityPolicy;
+  /** Trusted request identity supplied by the inbound runtime; never inferred from history. */
   currentUserId?: string;
   ownerId?: string;
 }
@@ -165,11 +172,15 @@ export function selectRelevantPeople(
 
   const currentMessage = [...input.messages].reverse().find(message => message.role === "user" && typeof message.content === "string");
   const currentRaw = input.currentText || (typeof currentMessage?.content === "string" ? currentMessage.content : "");
-  const currentAuthor = input.currentUserId ?? authorId(currentRaw);
+  // Identity is a runtime fact, not something transport-looking text is allowed to grant.
+  const currentAuthor = input.currentUserId;
   addId(currentAuthor, 0, "author");
 
-  // Non-owner Discord requests may receive only their own card until visibility metadata exists.
-  if (input.trigger === "discord-other") {
+  if (input.visibility === "none") return { entries: [], matchedBy: {} };
+
+  // Non-owner requests receive only their own card. Mentions, replies, aliases and
+  // continuity are deliberately ignored so conversation text cannot widen visibility.
+  if (input.visibility === "self-only") {
     const entry = currentAuthor ? byId.get(currentAuthor) : undefined;
     return entry && entry.discordId !== input.ownerId
       ? { entries: [entry], matchedBy: { author: 1 } }
