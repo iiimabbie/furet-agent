@@ -150,6 +150,23 @@ Use `people_add` / `people_update` / `people_remove` — never `write_file`, whi
 the whole file and drops the `<people>` wrapper. If you catch yourself writing a `## Name`
 heading into MEMORY.md, it belongs in PEOPLE.md instead.
 
+Each person's section **must** follow this structure for the person-context selector to work:
+
+```
+## Display Name
+- Discord ID: 123456789012345678
+- 別名: ["Nickname", "Another name"]
+
+(free-form notes — personality, relationship, permissions, history, etc.)
+```
+
+- `##` heading is the section boundary — one per person.
+- `Discord ID` must use exactly this field name with a numeric value, or omit the line when unknown.
+- `別名` should be a JSON string array of names people actually use in conversation.
+  Old delimiter formats (`／`, `/`, parentheses) are accepted but new entries should use the array.
+- Everything else is free-form Markdown.
+- Do not add the owner here; owner information belongs in OWNER.md.
+
 ## Formatting
 
 - **No tables**: use bullet lists instead — tables render poorly in Discord.

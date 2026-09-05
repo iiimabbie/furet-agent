@@ -39,13 +39,29 @@ function bodyOf(content: string): string {
 
 export const peopleAdd: Tool = {
   name: "people_add",
-  description: "Add a NEW person to PEOPLE.md. Use this the first time you encounter someone in a channel — record their Discord ID, how they talk, and anything that helps you address them correctly later. To update someone already listed, use people_update instead.",
+  description: [
+    "Add a NEW person to PEOPLE.md. Use this the first time you encounter someone in a channel —",
+    "record their Discord ID, how they talk, and anything that helps you address them correctly later.",
+    "To update someone already listed, use people_update instead.",
+    "",
+    "Required structure (the person-context selector depends on it):",
+    "- Start with a `## Display Name` heading — one section per person.",
+    "- `- Discord ID: 123456789012345678` — use exactly this field name with a numeric value, or omit when unknown.",
+    '- `- 別名: ["Nickname", "Another name"]` — JSON string array of names people actually use in conversation.',
+    "  Old delimiter formats (／ / ()) are accepted but new entries should use the array form.",
+    "- Everything else is free-form Markdown — personality, relationship, permissions, history, etc.",
+    "- Do not add the owner here; owner information belongs in OWNER.md.",
+  ].join("\n"),
   parameters: {
     type: "object",
     properties: {
       content: {
         type: "string",
-        description: "The new person's section, e.g. \"## Name\\n- Discord ID: 123\\n- 個性: ...\". Use a `##` heading with their display name.",
+        description: [
+          "The new person's section. Example:",
+          '  ## Somebody\\n- Discord ID: 123456789\\n- 別名: ["小名", "English"]\\n- 個性: ...',
+          "Must start with a `## Display Name` heading.",
+        ].join("\n"),
       },
     },
     required: ["content"],
@@ -75,7 +91,12 @@ export const peopleAdd: Tool = {
 
 export const peopleUpdate: Tool = {
   name: "people_update",
-  description: "Update an existing entry in PEOPLE.md by substring match. Use when you learn something new about someone already listed — a nickname, a preference, how they want to be addressed, a correction.",
+  description: [
+    "Update an existing entry in PEOPLE.md by substring match.",
+    "Use when you learn something new about someone already listed —",
+    "a nickname, a preference, how they want to be addressed, a correction.",
+    "When adding aliases, use the JSON array format: `[\"Name1\", \"Name2\"]`.",
+  ].join("\n"),
   parameters: {
     type: "object",
     properties: {
