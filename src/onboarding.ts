@@ -1,103 +1,116 @@
 /**
- * Onboarding detection & one-time context injection.
+ * Onboarding detection, one-time context injection, and completion cleanup.
  *
- * Determines whether the workspace is still in its fresh-install template state
- * by checking for placeholder tokens in OWNER.md. After the local CLI has
- * configured the Discord owner ID, a synthetic system context is injected into any
- * session that does not already have active onboarding instructions.
- *
- * The onboarding message is marked with `isOnboarding: true`. It remains available
- * while setup is unfinished, then is filtered once OWNER.md is configured so stale
- * bootstrap instructions cannot mislead later exchanges.
+ * Setup remains active until both OWNER.md and SOUL.md are configured. Once they
+ * are complete, the bootstrap section is removed from AGENT.md and synthetic
+ * onboarding messages are removed from the active session.
  */
 
 import { readFileSync } from "node:fs";
-import { OWNER_FILE } from "./paths.js";
+import { AGENT_FILE, OWNER_FILE, SOUL_FILE } from "./paths.js";
+import { atomicWriteFileSync } from "./session-store.js";
+import { logger } from "./logger.js";
+import { stripTag } from "./utils/tagged-file.js";
 import type { Message } from "./types.js";
-
-// --- Placeholder tokens copied verbatim from templates/OWNER.md ---
 
 const OWNER_PLACEHOLDERS = [
   "<how you should address them>",
   "<their Discord username>",
   "<their Discord user ID>",
+  "<Any other names that refer",
 ] as const;
 
-/** Prefix for the synthetic onboarding instruction stored in a session. */
+export const ONBOARDING_HEADING = "## Onboarding Protocol";
 export const ONBOARDING_MARKER = "[System] ONBOARDING";
 
-/**
- * Returns true when OWNER.md still contains any template placeholder.
- * Pure function — reads the file content passed to it, does NOT touch disk.
- */
 export function isOwnerUnconfigured(ownerContent: string): boolean {
-  return OWNER_PLACEHOLDERS.some(ph => ownerContent.includes(ph));
+  return !stripTag(ownerContent, "owner").trim()
+    || OWNER_PLACEHOLDERS.some(placeholder => ownerContent.includes(placeholder));
 }
 
-/**
- * Convenience wrapper that reads OWNER.md from disk.
- * A missing file is treated as unconfigured so a partial fresh install cannot
- * silently bypass setup.
- */
+export function isPersonaUnconfigured(personaContent: string): boolean {
+  return stripTag(personaContent, "persona").trim().length === 0;
+}
+
+export function isOnboardingIncomplete(ownerContent: string, personaContent: string): boolean {
+  return isOwnerUnconfigured(ownerContent) || isPersonaUnconfigured(personaContent);
+}
+
 export function isWorkspaceUnconfigured(): boolean {
   try {
-    const content = readFileSync(OWNER_FILE, "utf-8");
-    return isOwnerUnconfigured(content);
+    return isOnboardingIncomplete(
+      readFileSync(OWNER_FILE, "utf-8"),
+      readFileSync(SOUL_FILE, "utf-8"),
+    );
   } catch {
     return true;
   }
 }
 
-/** Returns true only for the structured synthetic onboarding message. */
 export function isOnboardingMessage(msg: Message): boolean {
   return msg.isOnboarding === true;
 }
 
-/**
- * Inject onboarding whenever setup is incomplete and this session does not
- * already contain the structured instruction. This deliberately does not use
- * session length: `/new` and an interrupted first exchange must both resume.
- */
 export function shouldOnboard(messages: Message[]): boolean {
   return isWorkspaceUnconfigured() && !messages.some(isOnboardingMessage);
 }
 
-/**
- * Filter onboarding context after setup is complete.
- *
- * The context must stay available while the user is still answering the setup
- * questions; removing it merely because the assistant has sent its first greeting
- * would make the next turn forget to write OWNER.md and SOUL.md. Once OWNER.md no
- * longer has template placeholders, the normal system prompt has the configured
- * owner data and the bootstrap context is stale, so remove it before sending the
- * session history to the model.
- *
- * `workspaceUnconfigured` is injectable for unit tests. In production it reads
- * OWNER.md from disk at request time.
- */
-export function filterStaleOnboarding(messages: Message[], workspaceUnconfigured = isWorkspaceUnconfigured()): Message[] {
-  if (workspaceUnconfigured) return messages;
-  return messages.filter(m => !isOnboardingMessage(m));
+export function stripOnboardingProtocol(instructions: string): string {
+  const lines = instructions.split("\n");
+  const start = lines.findIndex(line => line.trim() === ONBOARDING_HEADING);
+  if (start === -1) return instructions;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].startsWith("## ")) {
+      end = i;
+      break;
+    }
+  }
+  const stripped = [...lines.slice(0, start), ...lines.slice(end)].join("\n");
+  return stripped.replace(/\n{3,}/g, "\n\n");
+}
+
+/** Remove the bootstrap instructions from the editable workspace file after setup. */
+export function removeOnboardingProtocolFromAgent(): boolean {
+  if (isWorkspaceUnconfigured()) return false;
+  try {
+    const current = readFileSync(AGENT_FILE, "utf-8");
+    const updated = stripOnboardingProtocol(current);
+    if (updated === current) return false;
+    atomicWriteFileSync(AGENT_FILE, updated);
+    return true;
+  } catch (err) {
+    logger.error({ err, path: AGENT_FILE }, "onboarding protocol cleanup failed");
+    return false;
+  }
 }
 
 /**
- * Build the one-time onboarding system context to prepend to the session.
- * This is a [System] message appended as the first user message, BEFORE the
- * real user message, so the agent sees it as setup instructions.
+ * Safety filter for legacy sessions or a cleanup write that could not be persisted.
+ * The durable Session cleanup is preferred; this prevents stale bootstrap context
+ * from reaching the model in the meantime.
  */
+export function filterStaleOnboarding(
+  messages: Message[],
+  workspaceUnconfigured = isWorkspaceUnconfigured(),
+): Message[] {
+  if (workspaceUnconfigured) return messages;
+  return messages.filter(message => !isOnboardingMessage(message));
+}
+
 export function buildOnboardingContext(userId: string, username: string, displayName?: string): string {
   const nameInfo = displayName && displayName !== username
     ? `Discord username: ${username}, display name: ${displayName}`
     : `Discord username: ${username}`;
 
-  return `${ONBOARDING_MARKER} — This is a brand-new workspace with template placeholders still in OWNER.md. The local onboarding command configured this Discord user ID as the workspace owner. Their Discord identity is: ID ${userId}, ${nameInfo}.
+  return `${ONBOARDING_MARKER} — This is a brand-new workspace. OWNER.md still contains template placeholders or SOUL.md is still empty. The local onboarding command configured this Discord user ID as the workspace owner. Their Discord identity is: ID ${userId}, ${nameInfo}.
 
 Follow the Onboarding Protocol in your instructions:
-1. Introduce yourself briefly and naturally (in the user's language).
-2. Ask the user for their setup preferences — at minimum: how they'd like to be addressed (do NOT assume their Discord nickname is their preferred name), their Discord username/ID confirmation, and what personality/tone/language they want their assistant to have.
+1. Introduce yourself briefly and naturally, without assuming a name, personality, or preferred language.
+2. Ask how the user wants to be addressed, confirm their Discord username/ID, and ask what name, personality, tone, and language they want their assistant to use.
 3. Optionally ask about memory preferences or boundaries.
-4. Once you have answers, use write_file to update workspace/OWNER.md and workspace/SOUL.md with real values, preserving the <owner> and <persona> wrapper tags. Remove all angle-bracket placeholders.
+4. Once you have answers, use write_file to update workspace/OWNER.md and workspace/SOUL.md with real values, preserving the <owner> and <persona> wrapper tags. Remove all OWNER.md angle-bracket placeholders and record the chosen assistant language explicitly in SOUL.md.
 5. Then proceed to handle whatever the user's actual message was about.
 
-Do NOT skip this process. Do NOT auto-fill values from the Discord profile without asking.`;
+Do NOT skip this process. Do NOT auto-fill preferences from the Discord profile without asking. The runtime removes this onboarding context and the Onboarding Protocol section from AGENT.md only after both OWNER.md and SOUL.md are configured.`;
 }

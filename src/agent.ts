@@ -6,7 +6,7 @@ import { runWithContext, drainAttachments, getRequestProfile, peekAttachments, q
 import { hasOwnerSearchVisibility } from "./tools/authz.js";
 import { searchUnified } from "./search-index.js";
 import { stamp } from "./utils/time.js";
-import { filterStaleOnboarding } from "./onboarding.js";
+import { filterStaleOnboarding, isWorkspaceUnconfigured, removeOnboardingProtocolFromAgent } from "./onboarding.js";
 import type { ContentBlock, Message, TokenUsage, ToolActivity, AgentResponse, AgentOptions, ToolHistoryEvent } from "./types.js";
 import { generateLlmResponse } from "./llm/client.js";
 import { activeLlmProfile, sessionLlmProfile } from "./llm/profile.js";
@@ -317,6 +317,15 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
   logger.info({ prompt: prompt?.slice(0, 200) ?? "(session tail)", trigger: options.trigger }, "query start");
 
   const session = options.session;
+
+  // Finish any pending cleanup from a previous request before building this prompt.
+  // This also migrates existing workspaces that completed onboarding before durable
+  // cleanup was introduced.
+  if (!isWorkspaceUnconfigured()) {
+    removeOnboardingProtocolFromAgent();
+    session?.removeOnboardingMessages();
+  }
+
   // Discord messages are appended by the transport before ask(null); direct/cron paths
   // append below. In either case include the freshest user message in the completed window.
   let requestStartIndex = session
@@ -550,6 +559,14 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
       }
       options.onProgress?.({ type: "tool_end", toolCallId: toolCall.id, isError });
       logger.debug({ tool: toolCall.name, result: result.slice(0, 500) }, "tool result");
+
+      // OWNER.md and SOUL.md are normally written as separate tool calls. Cleanup only
+      // after both are configured, so an interrupted setup remains resumable.
+      if (!isWorkspaceUnconfigured()) {
+        removeOnboardingProtocolFromAgent();
+        session?.removeOnboardingMessages();
+      }
+
       try {
         session?.recordToolEvent({ id: toolCall.id, time: nowTimestamp(), tool: toolCall.name || "invalid_function_call", input: toolCall.input, result, isError });
       } catch (err) {

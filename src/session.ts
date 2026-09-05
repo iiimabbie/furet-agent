@@ -153,6 +153,18 @@ export class Session {
     return this.messages;
   }
 
+  /** Remove completed bootstrap context from the durable active session. */
+  removeOnboardingMessages(): boolean {
+    const filtered = this.messages.filter(message => message.isOnboarding !== true);
+    if (filtered.length === this.messages.length) return false;
+    const previous = this.messages;
+    this.messages = filtered;
+    try { this.save(); }
+    catch (error) { this.messages = previous; throw error; }
+    logger.info({ sessionId: this.id, removed: previous.length - filtered.length }, "onboarding context removed from session");
+    return true;
+  }
+
   append(message: Message): void {
     assignNewMessageSearchId(message);
     this.messages.push(message);

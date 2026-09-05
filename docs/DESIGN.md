@@ -348,10 +348,15 @@ Discord 最終進度訊息若在附檔 edit 時失敗，會記錄原始 Error �
 | 額外層 | `options.systemPrompt` | （無） | 動態注入（Discord channel ID、session ID、flush 指令） |
 | 錨定層 | 自動生成 | `<persona-reminder>` | 結尾把語氣的最終依據指回 `<persona>` |
 
-AGENT.md 整份載入每一輪 prompt，唯一的例外是 `## Onboarding Protocol`：
-該段只在 `OWNER.md` 仍含模板佔位符（或檔案不存在）時保留，設定完成後於載入時剝除。
-條件放在 `prompt.ts` 而非改檔案，workspace 的 AGENT.md 因此能與 `templates/` 保持一致，
-同時已設定的 workspace 不必為永遠不會再觸發的指令付出每輪的 token。
+AGENT.md 整份載入每一輪 prompt，唯一的例外是 `## Onboarding Protocol`。
+Onboarding 以 `OWNER.md` 已移除模板佔位符且 `SOUL.md` 已有實質 persona 內容為完成條件；
+未完成時保留 protocol 並維持 session 內具 `isOnboarding` metadata 的 synthetic context。
+兩份檔案都設定完成後，runtime 會以原子寫入從 workspace `AGENT.md` 永久移除該區塊，
+並透過 Session 的 durable mutation 從 active session 刪除 synthetic onboarding message。
+`prompt.ts` 與送模型前的 filter 仍保留相容性防線，處理舊安裝或清理寫入暫時失敗的情況。
+
+AGENT.md 只定義通用行為、安全、工具與 workspace 規則，不得固定助理名稱、身分、人格或語言；
+這些可客製內容全部以 `SOUL.md` 為唯一權威。文件提到 Umiro 時只代表 runtime／專案名稱。
 
 ### 插入位置的不變量
 
