@@ -166,6 +166,14 @@ const EMOJIS_BY_CATEGORY: Record<string, string[]> = {
   integrity: ["🛡️", "🔮", "🧿"],
 };
 
+const EMOJIS_BY_PHRASE: Array<{ pattern: RegExp; emojis: string[] }> = [
+  { pattern: /magic|wand|spell|rune|enchanted|sparkle|whimsical/i, emojis: ["🪄", "✨", "🔮"] },
+  { pattern: /mushroom/i, emojis: ["🍄", "✨"] },
+  { pattern: /butterfl|firefl|flutter|wing/i, emojis: ["🦋", "🪽", "✨"] },
+  { pattern: /moon|candle|light|sky/i, emojis: ["🌙", "🕯️", "✨"] },
+  { pattern: /goblin|creature|paws/i, emojis: ["👾", "🐾", "✨"] },
+];
+
 const CATEGORY_BY_TOOL: Record<string, string> = {
   bash: "shell",
   read_file: "read",
@@ -272,16 +280,26 @@ export class ToolActivityPicker {
       .filter((key): key is string => Boolean(key));
     for (const key of keys) {
       const line = this.pickFrom(key);
-      if (line) return `${this.pickEmoji(key, actualName)} ${line}`;
+      if (line) return `${this.pickEmoji(key, actualName, line)} ${line}`;
     }
     return "✨ Doing a little bit of magic...";
   }
 
-  private pickEmoji(sourceKey: string, toolName: string): string {
+  private pickEmoji(sourceKey: string, toolName: string, line: string): string {
     const category = toolActivityCategory(toolName);
-    const candidates = EMOJIS_BY_CATEGORY[sourceKey]
+    const phraseEmojis = EMOJIS_BY_PHRASE
+      .filter(rule => rule.pattern.test(line))
+      .flatMap(rule => rule.emojis);
+    const categoryEmojis = EMOJIS_BY_CATEGORY[sourceKey]
       ?? (category ? EMOJIS_BY_CATEGORY[category] : undefined)
-      ?? EMOJIS_BY_CATEGORY.common;
+      ?? [];
+    // Phrase cues deliberately come first: a shell line about a tiny wand may use 🪄,
+    // while category and common choices keep the result varied rather than rigid.
+    const candidates = [...new Set([
+      ...phraseEmojis,
+      ...categoryEmojis,
+      ...EMOJIS_BY_CATEGORY.common,
+    ])];
     const index = Math.floor(this.random() * candidates.length);
     return candidates[Math.min(index, candidates.length - 1)] ?? "✨";
   }

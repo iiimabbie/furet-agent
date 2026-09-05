@@ -36,4 +36,4 @@ search:
 
 Keys may be exact tool names such as `read_file`, categories such as `read`, `write`, `shell`, `search`, `discord`, `github`, `image`, `schedule`, `memory`, `google`, and `integrity`, or `common`. Selection order is exact tool, category, then `common`. Unknown and plugin tools therefore use `common` unless an exact-name pool is configured.
 
-Each displayed phrase receives a category-appropriate emoji prefix. Keep every entry to one short line. Newlines are collapsed, duplicates and blank values are removed, and non-string values are ignored. Do not include secrets, tool arguments, commands, file paths, or claims that work has already succeeded.
+Each displayed phrase receives a varied emoji prefix chosen from its imagery, tool category, and the common set. Phrase cues take priority, so a line about a wand or spell can use a magic emoji even when the active tool is a shell or file tool. Keep every entry to one short line. Newlines are collapsed, duplicates and blank values are removed, and non-string values are ignored. Do not include secrets, tool arguments, commands, file paths, or claims that work has already succeeded.

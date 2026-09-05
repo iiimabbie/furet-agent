@@ -16,6 +16,14 @@ test("tool activity lookup prefers tool, then category, then common", () => {
   assert.equal(new ToolActivityPicker({ common: ["common"] }, () => 0).pick("unknown_tool"), "✨ common");
 });
 
+test("emoji selection can follow phrase imagery instead of only the tool category", () => {
+  const magicShell = new ToolActivityPicker({ bash: ["Poking the terminal with a tiny wand..."] }, () => 0);
+  assert.equal(magicShell.pick("bash"), "🪄 Poking the terminal with a tiny wand...");
+
+  const ordinaryShell = new ToolActivityPicker({ bash: ["Running one careful command..."] }, () => 0);
+  assert.equal(ordinaryShell.pick("bash"), "⚙️ Running one careful command...");
+});
+
 test("tool catalog target uses the target tool activity pool", () => {
   const picker = new ToolActivityPicker({ read_file: ["reading"], common: ["common"] }, () => 0);
   assert.equal(picker.pick("tool_catalog → read_file"), "📖 reading");
