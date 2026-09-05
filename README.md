@@ -119,7 +119,7 @@ llm:
 
 **Connection profiles.** The active profile independently selects the wire protocol, gateway URL, authentication, default model ID, token-limit field, and hosted capabilities. Each session snapshots that profile's model and reasoning effort when created, so `/model` changes only the current Discord session — other channels, threads, DMs, CLI sessions, and background sessions keep their own selection.
 
-Model IDs are discovered from the session's gateway through `GET /models`, never duplicated in config; manually entered IDs stay allowed for gateways that omit aliases from discovery. The first supported interactive adapter is `openai_chat_completions`, which covers CPA, OpenRouter-style gateways, GCLI proxies, Ollama, and other compatible endpoints. Hosted Responses capabilities are exposed only when the active profile declares them — Umiro never silently switches profile or model.
+Model IDs are discovered from the session's endpoint through `GET /models`, never duplicated in config; manually entered IDs stay allowed for compatible servers that omit aliases from discovery. The first supported interactive adapter is `openai_chat_completions`, targeting the standard OpenAI-compatible Chat Completions contract rather than any one gateway implementation. It supports bearer-authenticated and trusted unauthenticated endpoints; provider-specific extensions are not assumed. Hosted Responses capabilities are exposed only when the active profile declares them — Umiro never silently switches profile or model.
 
 ## Running
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { test } from "node:test";
-import { buildOpenAIChatBody, normalizeContent, normalizeFinishReason, normalizeToolCalls } from "../src/llm/adapters/openai-chat.js";
+import { OpenAIChatAdapter, buildOpenAIChatBody, normalizeContent, normalizeFinishReason, normalizeToolCalls } from "../src/llm/adapters/openai-chat.js";
 import type { LlmProfile, LlmRequest } from "../src/llm/types.js";
 
 const profile: LlmProfile = {
@@ -58,4 +59,166 @@ test("invalid JSON tool arguments remain errors rather than executable empty obj
   }
   assert.deepEqual(normalizeToolCalls(undefined), []);
   assert.deepEqual(normalizeToolCalls([{ id: "call_2", function: { name: "lookup", arguments: '{"q":"value"}' } }]), [{ id: "call_2", name: "lookup", input: { q: "value" } }]);
+});
+
+test("chat HTTP contract preserves endpoint, authentication, response and usage", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    calls++;
+    assert.equal(url, "https://example.invalid/v1/chat/completions");
+    assert.equal(init.method, "POST");
+    assert.equal(new Headers(init.headers).get("authorization"), "Bearer test-only");
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    assert.equal(body.model, "test-model");
+    assert.equal(String(init.body).includes("test-only"), false);
+    return Response.json({ choices: [{ finish_reason: "tool_calls", message: {
+      content: null, tool_calls: [{ id: "call_http", function: { name: "lookup", arguments: '{"q":"sample"}' } }],
+    } }], usage: { prompt_tokens: 100, completion_tokens: 20, completion_tokens_details: { reasoning_tokens: 7 } } });
+  });
+  const result = await new OpenAIChatAdapter().generate({ messages: [{ role: "user", content: "Hello" }] }, { ...profile, baseUrl: profile.baseUrl + "///" });
+  assert.equal(calls, 1);
+  assert.equal(result.finishReason, "tool_calls");
+  assert.deepEqual(result.usage, { inputTokens: 100, outputTokens: 20, reasoningTokens: 7 });
+  assert.deepEqual(result.toolCalls, [{ id: "call_http", name: "lookup", input: { q: "sample" } }]);
+  assert.deepEqual(result.assistantMessage, { role: "assistant", content: null, toolCalls: result.toolCalls });
+});
+
+test("chat response content arrays keep only textual parts", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    choices: [{
+      message: { content: [{ type: "text", text: "First" }, { type: "refusal", refusal: "ignored" }, { text: " second" }] },
+      finish_reason: null,
+    }],
+  }));
+  const result = await new OpenAIChatAdapter().generate({ messages: [] }, profile);
+  assert.equal(result.text, "First second");
+  assert.equal(result.finishReason, "unknown");
+  assert.deepEqual(result.assistantMessage, { role: "assistant", content: "First second" });
+});
+
+test("chat HTTP supports unauthenticated compatible endpoints", async (t) => {
+  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+    assert.equal(new Headers(init.headers).has("authorization"), false);
+    return Response.json({ choices: [{ message: { content: "Local response" }, finish_reason: "stop" }] });
+  });
+  const result = await new OpenAIChatAdapter().generate(
+    { messages: [{ role: "user", content: "Hello" }] },
+    { ...profile, auth: "none", apiKey: "" },
+  );
+  assert.equal(result.text, "Local response");
+});
+
+test("chat HTTP rejects missing bearer credentials before sending", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return Response.json({});
+  });
+  await assert.rejects(
+    new OpenAIChatAdapter().generate({ messages: [] }, { ...profile, apiKey: "" }),
+    /requires an API key/,
+  );
+  assert.equal(calls, 0);
+});
+
+test("chat HTTP errors do not retry permanent failures", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return new Response("Unauthorized", { status: 401 });
+  });
+  await assert.rejects(new OpenAIChatAdapter().generate({ messages: [] }, profile), /401 after 1 attempt/);
+  assert.equal(calls, 1);
+});
+
+test("chat HTTP retries temporary failures on the same model and endpoint", async (t) => {
+  const requests: unknown[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    requests.push({ url, body: init.body });
+    if (requests.length < 3) return new Response("Busy", { status: 429, headers: { "retry-after": "0" } });
+    return Response.json({ choices: [{ message: { content: "Recovered" }, finish_reason: "stop" }] });
+  });
+  const result = await new OpenAIChatAdapter().generate({ messages: [] }, profile);
+  assert.equal(result.text, "Recovered");
+  assert.equal(requests.length, 3);
+  assert.deepEqual(requests[0], requests[1]);
+  assert.deepEqual(requests[1], requests[2]);
+  assert.deepEqual(result.usage, { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 });
+});
+
+test("chat HTTP preserves the transport cause after bounded retries", async (t) => {
+  let calls = 0;
+  const transportError = Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    throw transportError;
+  });
+  await assert.rejects(
+    new OpenAIChatAdapter().generate({ messages: [] }, profile),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /request failed after 3 attempts/);
+      assert.equal(error.cause, transportError);
+      return true;
+    },
+  );
+  assert.equal(calls, 3);
+});
+
+test("chat HTTP stops after three temporary failures", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return new Response("Unavailable", { status: 503, headers: { "retry-after": "0" } });
+  });
+  await assert.rejects(new OpenAIChatAdapter().generate({ messages: [] }, profile), /503 after 3 attempt/);
+  assert.equal(calls, 3);
+});
+
+test("chat rejects malformed JSON and missing assistant messages", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return calls === 1 ? new Response("not-json", { status: 200 }) : Response.json({ choices: [] });
+  });
+  await assert.rejects(new OpenAIChatAdapter().generate({ messages: [] }, profile), SyntaxError);
+  await assert.rejects(new OpenAIChatAdapter().generate({ messages: [] }, profile), /no assistant message/);
+  assert.equal(calls, 2);
+});
+
+test("chat adapter completes a request through a real local OpenAI-compatible HTTP server", async (t) => {
+  let receivedAuthorization = "";
+  let receivedBody: Record<string, unknown> = {};
+  const server = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on("data", chunk => chunks.push(Buffer.from(chunk)));
+    request.on("end", () => {
+      receivedAuthorization = request.headers.authorization ?? "";
+      receivedBody = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        choices: [{ message: { content: "Integration response" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 3, completion_tokens: 2 },
+      }));
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(() => new Promise<void>((resolve, reject) => {
+    server.close(error => error ? reject(error) : resolve());
+  }));
+
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const result = await new OpenAIChatAdapter().generate(
+    { messages: [{ role: "user", content: "Integration request" }] },
+    { ...profile, baseUrl: `http://127.0.0.1:${address.port}/v1` },
+  );
+
+  assert.equal(receivedAuthorization, "Bearer test-only");
+  assert.equal(receivedBody.model, "test-model");
+  assert.equal(result.text, "Integration response");
+  assert.deepEqual(result.usage, { inputTokens: 3, outputTokens: 2, reasoningTokens: 0 });
 });

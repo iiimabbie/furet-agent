@@ -32,12 +32,13 @@ export async function postLlmJson<T>(input: {
   label?: string;
 }): Promise<T> {
   const label = input.label ?? "LLM API";
+  const headers = llmHeaders(input.profile);
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let response: Response;
     try {
       response = await fetch(input.endpoint, {
         method: "POST",
-        headers: llmHeaders(input.profile),
+        headers,
         body: JSON.stringify(input.body),
         ...(input.timeoutMs ? { signal: AbortSignal.timeout(input.timeoutMs) } : {}),
       });
