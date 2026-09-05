@@ -11,6 +11,7 @@ import { loadReminders, saveReminders, type Reminder } from "./tools/builtin/rem
 import { getDiscordClient } from "./tools/builtin/discord.js";
 import { startBot } from "./bot.js";
 import { Session } from "./session.js";
+import { reconcileWorkspaceProfiles } from "./workspace-index.js";
 import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt, authoritativeNowBlock } from "./prompt.js";
 import { loadConfig } from "./config.js";
 import { journalLlmProfile, sessionLlmProfile } from "./llm/profile.js";
@@ -550,6 +551,7 @@ getDb();
 for (const sessionId of Session.listActive()) {
   new Session(sessionId).reconcileSearchIndex();
 }
+reconcileWorkspaceProfiles();
 startSearchIndexWorker();
 startAttachmentIndexWorker();
 

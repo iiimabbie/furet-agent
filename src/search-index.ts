@@ -38,9 +38,19 @@ const MAX_EMBED_ATTEMPTS = 5;
  *   daily files from the last two days, and the nightly journal replaces these notes with the
  *   embedded `diary` prose, so a note's vector is unreadable for its entire lifetime. The
  *   conversation it annotates is already embedded as session messages and windows.
+ *
+ * `owner` and `memory` are excluded for the opposite reason: `OWNER.md` and `MEMORY.md` are
+ * inlined into the system prompt unconditionally on every turn, so a vector can only return
+ * what the reader is already holding. Auto recall excludes them by source type as well, and
+ * section splitting turns a bare heading into its own document, which is the worst value per
+ * request in an index billed per request rather than per character.
+ *
+ * `PEOPLE.md` is not on that list: it exceeds `prompt.peopleInlineLimit`, so the prompt carries
+ * an index rather than the text, and `memory_search` is a real reader of its vectors.
  */
 const NON_EMBEDDED_SOURCE_TYPES = new Set<SearchSourceType>([
   "tool_call", "tool_result", "tool_evidence_summary", "diary_note",
+  "owner", "memory",
 ]);
 
 export function shouldEmbedSource(sourceType: SearchSourceType): boolean {

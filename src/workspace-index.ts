@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { MEMORY_DIR, MEMORY_INDEX, OWNER_FILE, PEOPLE_FILE } from "./paths.js";
@@ -170,6 +170,26 @@ export function indexDiaryNote(date: string, timestamp: string, content: string)
     occurredAt: `${date}T${timestamp}:00`,
     text,
   }]);
+}
+
+/**
+ * Bring the search index back in line with the workspace profile files on disk.
+ *
+ * Reindexing is otherwise driven by the tools that write these files, so edits made outside
+ * the agent — a hand edit, a `git restore` — leave the index describing content that no longer
+ * exists. Ingestion is hash-gated per section, so a file that has not moved costs nothing and
+ * a changed file re-embeds only the sections that changed.
+ */
+export function reconcileWorkspaceProfiles(): void {
+  const sources: Array<[string, () => void]> = [
+    [PEOPLE_FILE, () => reindexPeople()],
+    [MEMORY_INDEX, () => reindexMemory()],
+    [OWNER_FILE, () => reindexOwner()],
+  ];
+  for (const [file, reindex] of sources) {
+    if (!existsSync(file)) continue;
+    reindex();
+  }
 }
 
 export function reindexWorkspacePath(filePath: string, content?: string): boolean {

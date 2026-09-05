@@ -89,6 +89,11 @@ prompt:
                                         # under this many characters; beyond that only a pointer
                                         # is included and the agent reads the file on demand.
                                         # 0 = never inline.
+  relevantPeople:
+    enabled: true                       # for large PEOPLE.md files, inject only entries relevant to this turn
+    maxEntries: 8                       # maximum people cards per request (1-32)
+    maxChars: 6000                      # total character budget for selected cards (500-50000)
+    recentUserMessages: 6               # bounded continuity window; 0 disables recent-message matching
 
 tools:
   bash_owner_only: true                 # bash runs arbitrary shell commands with no sandbox.

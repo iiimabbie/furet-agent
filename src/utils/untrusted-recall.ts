@@ -40,13 +40,18 @@ const ITEM_CLOSE = "</item>";
  * names are replaced so the text can no longer be parsed as a real fence, while remaining
  * readable to the model.
  */
-export function neutralizeBoundaryMarkers(text: string): string {
-  return text
-    // Exact and near-miss forms of our own fence tags (open or close, any casing).
-    .replace(/<\s*\/?\s*untrusted-recalled-data\s*>/gi, match =>
-      match.replace(/</g, "❮").replace(/>/g, "❯"))
-    .replace(/<\s*\/?\s*item\b[^>]*>/gi, match =>
-      match.replace(/</g, "❮").replace(/>/g, "❯"));
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function neutralizeBoundaryMarkers(
+  text: string,
+  tags: readonly string[] = ["untrusted-recalled-data", "item"],
+): string {
+  return tags.reduce((safe, tag) => {
+    const pattern = new RegExp(`<\\s*\\/?\\s*${escapeRegExp(tag)}\\b[^>]*>`, "gi");
+    return safe.replace(pattern, match => match.replace(/</g, "❮").replace(/>/g, "❯"));
+  }, text);
 }
 
 /**
