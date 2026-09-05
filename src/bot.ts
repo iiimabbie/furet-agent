@@ -968,7 +968,6 @@ async function formatIncomingMessage(message: Message, sessionId: string): Promi
 // --- Tool activity message editing ---
 
 const INTERIM_TEXT_LIMIT = 300;
-const PROGRESS_MIN_VISIBLE_MS = 700;
 
 /** A temporary Discord activity line. Tool names and arguments are deliberately absent. */
 export type ProgressLine =
@@ -1075,18 +1074,13 @@ async function handleTrigger(message: Message, session: Session, images?: string
   }
   const activityPicker = new ToolActivityPicker(activityPools);
   let flushChain: Promise<void> = Promise.resolve();
-  let lastProgressUpdateAt = 0;
-
   const flushProgress = async (body: string) => {
-    const waitMs = PROGRESS_MIN_VISIBLE_MS - (Date.now() - lastProgressUpdateAt);
-    if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
     try {
       if (!progressMsg) {
         progressMsg = await message.reply(messagePayload(body));
       } else {
         await progressMsg.edit(editPayload(body));
       }
-      lastProgressUpdateAt = Date.now();
     } catch {
       // 編輯失敗不影響，最終回覆才是權威
     }
@@ -1110,7 +1104,7 @@ async function handleTrigger(message: Message, session: Session, images?: string
       if (!event.isError || line !== progressLines.at(-1)) return;
     }
     // Capture this event's status before later events mutate the in-memory list,
-    // then serialize edits and leave each status visible briefly enough to read.
+    // then serialize Discord edits without delaying the underlying tool flow.
     const body = renderProgress(progressLines);
     flushChain = flushChain.then(() => flushProgress(body));
   };

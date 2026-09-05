@@ -1,6 +1,6 @@
 # Tool activity messages
 
-Umiro shows one temporary Discord activity line while tools run. Each new tool status edits the same message, so only the newest status remains visible. Updates are briefly paced to keep fast tool calls readable. You can keep a larger custom phrase library in a separate YAML or JSON file instead of crowding `config.yaml`.
+Umiro shows one temporary Discord activity line while tools run. Each new tool status edits the same message, so only the newest status remains visible. Status updates do not add an artificial delay to tool execution. You can keep a larger custom phrase library in a separate YAML or JSON file instead of crowding `config.yaml`.
 
 ## Configuration
 
