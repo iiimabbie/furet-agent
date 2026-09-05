@@ -180,7 +180,6 @@ export function toolActivityCategory(toolName: string): string | undefined {
   if (toolName.startsWith("google_")) return "google";
   if (toolName.startsWith("cron_") || toolName.startsWith("reminder_")) return "schedule";
   if (toolName.startsWith("soul_guardian_")) return "integrity";
-  if (toolName.startsWith("skill_")) return "github";
   return undefined;
 }
 

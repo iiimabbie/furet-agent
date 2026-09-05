@@ -18,8 +18,8 @@ discord:
 - `pools` remains available for small inline overrides and backward compatibility.
 - When the same key exists in both places, inline `pools` wins.
 - `append` adds custom lines after the built-in library.
-- `replace` uses only custom pools; missing tool/category keys fall back to `common`, then to the hard-coded safety line.
-- The file is loaded when a Discord request starts, so edits do not require a gateway restart. If it is missing or malformed, Umiro logs the error and falls back to inline/built-in pools without blocking the reply.
+- `replace` uses only custom pools; missing tool/category keys fall back to `common`, then to the built-in final fallback.
+- The file is loaded when a Discord request starts, so edits do not require a gateway restart. If it is missing or malformed, Umiro logs the error and continues with the available inline pools and fallback line without blocking the reply.
 
 ## Phrase file format
 

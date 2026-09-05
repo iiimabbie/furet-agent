@@ -40,8 +40,11 @@ test("categories cover dynamic tool families", () => {
   assert.equal(toolActivityCategory("google_drive_read"), "google");
   assert.equal(toolActivityCategory("reminder_create"), "schedule");
   assert.equal(toolActivityCategory("soul_guardian_check"), "integrity");
+  assert.equal(toolActivityCategory("skill_install"), undefined);
   assert.equal(toolActivityCategory("plugin_daily_report"), undefined);
-  assert.equal(new ToolActivityPicker({ common: ["common"], github: ["github"] }, () => 0).pick("plugin_daily_report"), "common");
+  const picker = new ToolActivityPicker({ common: ["common"], github: ["github"] }, () => 0);
+  assert.equal(picker.pick("skill_install"), "common");
+  assert.equal(picker.pick("plugin_daily_report"), "common");
 });
 
 

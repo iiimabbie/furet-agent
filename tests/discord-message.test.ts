@@ -114,11 +114,11 @@ test("progress rendering bounds visible activity lines without exposing tool lab
   const rendered = renderProgress(Array.from({ length: 10 }, (_, index) => ({
     kind: "activity" as const,
     id: String(index),
-    text: `Whimsical activity ${index}...`,
+    text: `Activity ${index}...`,
   })), 3);
   assert.match(rendered, /7 earlier adventures/);
   assert.doesNotMatch(rendered, /activity 0/);
-  assert.match(rendered, /activity 9/);
+  assert.match(rendered, /Activity 9/);
 });
 
 
