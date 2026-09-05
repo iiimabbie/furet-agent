@@ -54,4 +54,3 @@ test("stop is session-scoped, permission-aware and idempotent", () => {
   assert.equal(registry.requestStop("one", "speaker", "owner"), "already-stopping");
   assert.equal(registry.snapshot("two")?.stopRequested, false);
 });
-
