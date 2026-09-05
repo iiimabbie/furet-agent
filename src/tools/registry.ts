@@ -33,7 +33,6 @@ const OWNER_ONLY_TOOLS = new Set([
   "google_tasks_list", "google_tasks_create", "google_tasks_complete", "google_tasks_delete",
   "soul_guardian_approve", "soul_guardian_restore",
   "skill_install", "skill_uninstall",
-  "self_evolve",
   "discord_bot_mention_toggle",
   "usage_dashboard",
   "image_gen",
@@ -59,7 +58,6 @@ import { driveSearch, driveRead, driveUpload } from "./builtin/google-drive.js";
 import { tasksList, tasksCreate, tasksComplete, tasksDelete } from "./builtin/google-tasks.js";
 import { soulGuardianStatus, soulGuardianCheck, soulGuardianApprove, soulGuardianRestore, soulGuardianHistory } from "./builtin/soul-guardian.js";
 import { skillInstall, skillUninstall, skillList } from "./builtin/skill.js";
-import { selfEvolve } from "./builtin/self-evolve.js";
 import { discordBotMentionToggle } from "./builtin/bot-config.js";
 import { sessionSearch, sessionsByDate, journalTranscriptByDate } from "./builtin/session-search.js";
 import { usageDashboard } from "./builtin/dashboard.js";
@@ -151,7 +149,6 @@ const baseRegistrations: ToolRegistration[] = [
   reg(tasksComplete, "match", "google-tasks", { keywords: ["完成待辦", "完成任務", "task", "tasks"] }),
 
   // ── match: other explicit-intent ──
-  reg(selfEvolve, "match", "self-development", { keywords: ["改 code", "改程式", "修程式", "實作", "self evolve", "source code", "自我修改", "改原始碼"], aliases: ["s-e", "self_evolve"] }),
   reg(imageGen, "match", "image-generation", { capability: "hosted_image_generation", keywords: ["生成圖片", "生圖", "畫一張", "幫我畫", "繪圖", "插圖", "照片", "自拍", "image", "圖片", "去背", "移除背景"], signals: ["hasImageEditRequest"] }),
   reg(sessionSearch, "match", "history-journal", { keywords: ["搜尋對話", "歷史對話", "session search", "找對話", "以前說過"] }),
   reg(skillList, "match", "skills", { keywords: ["技能", "skill", "skill list", "列出技能"] }),

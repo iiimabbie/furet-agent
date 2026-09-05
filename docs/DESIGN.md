@@ -53,8 +53,7 @@ Agent (agent.ts) ── normalized LLM client ──► profile adapter ──�
     │   ├── cron_* / reminder_*
     │   ├── discord_*   # 訊息、按鈕、討論串、reaction、pin
     │   ├── google_*    # Calendar / Gmail / Drive / Tasks
-    │   ├── soul_guardian_* / skill_*
-    │   └── self_evolve
+    │   └── soul_guardian_* / skill_*
     │
     ▼
 回應（CLI stdout / Discord 漸進式編輯訊息）
@@ -149,7 +148,7 @@ provider 的 wire format 差異全部關在 `llm/adapters/` 裡。
 每個 session 建立時會從 active connection profile 快照 `profile + model + reasoning effort`
 並持久化。每次 `ask()` 開始時，`sessionLlmProfile()` 將 session 選擇與 connection profile
 合成 immutable request profile，再綁進 AsyncLocalStorage。同一請求的主對話、compaction、
-attachment vision、self-evolve 子請求，以及 hosted web/image/code capability 都沿用這份 profile。
+attachment vision，以及 hosted web/image/code capability 都沿用這份 profile。
 
 `/model` 只更新目前 Discord session 的 model 與 reasoning effort，
 不改 connection profile 的 protocol、endpoint、auth、capability，也不影響其他 session。
@@ -953,7 +952,6 @@ Registry 輸出 protocol-neutral function definition；adapter 才轉成 provide
 | `skill_install` / `skill_uninstall` / `skill_list` | 技能管理 |
 | `usage_dashboard` | 用量／成本儀表板，輸出 PNG 到 attachments/ |
 | `tool_catalog` | native 探索／代理入口：list_groups / search / describe / call |
-| `self_evolve` | 使用 request-scoped active model 修改自身代碼，sub-ask 模式 |
 
 ### 工具權限
 
@@ -967,8 +965,6 @@ Registry 輸出 protocol-neutral function definition；adapter 才轉成 provide
 任何能 @ 到 bot 的人。預設鎖成 owner-only，要放寬得在 `config.tools.bash_owner_only`
 明示 false，或把個別 user ID 列進 `config.tools.bash_allowed_users`
 （僅放寬 bash，其他 owner-only 工具照擋）。
-`self_evolve` 這類會改動自身原始碼的工具則不提供放寬選項。
-
 `write_file` 同樣列入 owner-only：它沒有路徑邊界，寫得進 `src/` 就等於繞過 `bash` 的限制。
 非 owner 也沒有寫任意檔案的需求——記人記事走 `people_*` / `memory_*`，
 那些工具的落點寫死在 `paths.ts`。
@@ -1499,7 +1495,7 @@ Discord 端可以邊生成邊更新訊息，CLI 端邊打邊顯示。
 
 按 trigger 類型分配不同模型和 tool 權限。
 例如 discord-owner 用全部 tools，discord-other 限制危險操作，coding 任務自動切強模型。
-目前只有 owner-only tool 擋法，模型分流只有 self_evolve。
+目前只有 owner-only tool 擋法，尚未實作依工作類型自動切換模型。
 
 ### Bash Sandbox
 
