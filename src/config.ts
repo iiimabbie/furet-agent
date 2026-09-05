@@ -44,6 +44,8 @@ export interface UmiroConfig {
     status: string;
     activity: string;
     respond_to_bots: boolean;
+    /** Default handling for a new trigger while the same session is running. */
+    queue_mode: import("./types.js").DiscordQueueMode;
     tool_activity: {
       enabled: boolean;
       mode: "append" | "replace";
@@ -192,6 +194,7 @@ const DEFAULTS: UmiroConfig = {
     status: "online",
     activity: "Burrowing around…🦦✨",
     respond_to_bots: false,
+    queue_mode: "followup",
     tool_activity: {
       enabled: true,
       mode: "append",
@@ -465,9 +468,11 @@ function mergeDiscordConfig(resolved: unknown): UmiroConfig["discord"] {
     const lines = value.filter((line): line is string => typeof line === "string");
     return [[key, lines]];
   }));
+  const queueMode = top.queue_mode === "steer" ? "steer" : "followup";
   return {
     ...DEFAULTS.discord,
     ...top,
+    queue_mode: queueMode,
     tool_activity: {
       enabled: typeof rawToolActivity.enabled === "boolean"
         ? rawToolActivity.enabled

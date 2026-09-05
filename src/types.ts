@@ -63,12 +63,16 @@ export type Message = {
 
 // --- Token Usage ---
 
+export type DiscordQueueMode = "followup" | "steer";
+
 export interface SessionModelSettings {
   profile: string;
   model: string;
   reasoningEffort: import("./config.js").ReasoningEffort;
   /** Monotonic session-local revision used to detect concurrent setting changes. */
   revision: number;
+  /** Optional per-session Discord message handling override. */
+  queueMode?: DiscordQueueMode;
 }
 
 export interface TokenUsage {
@@ -132,4 +136,11 @@ export interface AgentOptions {
   userId?: string;
   /** Explicit runtime-verified PEOPLE.md visibility; omitted means fail-closed (none). */
   peopleVisibility?: import("./people-context.js").PeopleVisibilityPolicy;
+  /** Cooperative run control checked at safe model/tool turn boundaries. */
+  runControl?: {
+    signal?: AbortSignal;
+    isStopRequested: () => boolean;
+    drainPendingInputs: () => Array<{ message: Message; images?: string[] }>;
+    drainPendingInputsOrSeal: () => Array<{ message: Message; images?: string[] }>;
+  };
 }

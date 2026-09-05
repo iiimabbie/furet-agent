@@ -9,7 +9,7 @@ import {
   readSnapshot,
   type SessionData,
 } from "./session-store.js";
-import type { AttachmentReference, Message, SessionModelSettings, TokenUsage, ToolHistoryEvent } from "./types.js";
+import type { AttachmentReference, DiscordQueueMode, Message, SessionModelSettings, TokenUsage, ToolHistoryEvent } from "./types.js";
 import { loadConfig, REASONING_EFFORTS, type ReasoningEffort } from "./config.js";
 import { defaultSessionModelSettings } from "./llm/profile.js";
 import {
@@ -145,6 +145,20 @@ export class Session {
     const previous = this.modelSettings;
     const defaults = defaultSessionModelSettings(loadConfig());
     this.modelSettings = { ...defaults, revision: previous.revision + 1 };
+    try { this.save(); }
+    catch (error) { this.modelSettings = previous; throw error; }
+  }
+
+  getQueueModeOverride(): DiscordQueueMode | undefined {
+    return this.modelSettings.queueMode;
+  }
+
+  setQueueModeOverride(mode: DiscordQueueMode | undefined): void {
+    const previous = this.modelSettings;
+    const next = { ...previous, revision: previous.revision + 1 };
+    if (mode) next.queueMode = mode;
+    else delete next.queueMode;
+    this.modelSettings = next;
     try { this.save(); }
     catch (error) { this.modelSettings = previous; throw error; }
   }

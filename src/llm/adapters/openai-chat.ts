@@ -73,7 +73,7 @@ export class OpenAIChatAdapter implements LlmAdapter {
   async generate(request: import("../types.js").LlmRequest, profile: LlmProfile): Promise<LlmResponse> {
     const endpoint = `${profile.baseUrl.replace(/\/+$/, "")}/chat/completions`;
     const body = buildOpenAIChatBody(request, profile);
-    const raw = await postLlmJson<ChatCompletionResponse>({ endpoint, profile, body, label: "OpenAI Chat Completions" });
+    const raw = await postLlmJson<ChatCompletionResponse>({ endpoint, profile, body, signal: request.signal, label: "OpenAI Chat Completions" });
     const choice = raw.choices?.[0];
     if (!choice?.message) throw new Error("OpenAI Chat Completions returned no assistant message");
     const text = normalizeContent(choice.message.content);

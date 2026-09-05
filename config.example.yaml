@@ -50,6 +50,7 @@ discord:
   allowed_guilds: []                    # Empty means all guilds; set IDs manually if needed
   owner_id: ""                          # set locally by `umiro onbord`
   respond_to_bots: false                # whether to process messages from other bots
+  queue_mode: "followup"                 # followup = queue a later run; steer = merge same-author triggers at the next safe turn boundary
   status: "online"                      # online | idle | dnd | invisible
   activity: "Burrowing around…🦦✨"    # custom activity text
   tool_activity:
@@ -61,10 +62,16 @@ discord:
                                           # keep larger phrase libraries in pools_file instead of config.yaml
 
 journal:
-  enabled: false                        # auto-write a daily journal at scheduled time
-  hour: 22                              # 0-23
-  minute: 0                             # 0-59
-  model: ""                              # dedicated journal model; empty = active profile default
+  enabled: false                        # enable the daily journal pipeline: silent memory flush,
+                                        # archive all active sessions, rewrite the daily journal,
+                                        # and update MEMORY.md. false disables the whole pipeline,
+                                        # including automatic daily session archival.
+  hour: 22                              # 0-23; schedule changes require a gateway restart
+  minute: 0                             # 0-59; schedule changes require a gateway restart
+  model: ""                              # model for the entire pipeline, including pre-archive
+                                        # memory flushes and journal generation. Does not follow
+                                        # per-session /model settings; empty = active profile default.
+                                        # Re-read on each run, so model changes do not require restart.
 
 soul_guardian:                           # file integrity monitor
   enabled: false                        # enable the gateway's built-in integrity scheduler.

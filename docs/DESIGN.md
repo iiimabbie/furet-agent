@@ -628,14 +628,23 @@ Workspace 文件等真正代表完整當前狀態的來源，才使用 source-le
 若同頻道短時間連續進訊息，各自載入 `Session` 並同時跑 `ask()` 會造成檔案互相覆寫、
 後一則提早混入前一輪 context、回覆順序顛倒。
 
-`bot.ts` 因此用 process-local keyed Promise queue，以 session ID 為 key，
-把 session 建立、starter/onboarding、訊息格式化與 append、agent 執行、進度及最終送出
-包在同一個 task；上一個 task 完整結束後下一個才開始。不同頻道／DM 的 key 不同，仍可並行。
+`bot.ts` 以 session ID 為 key 維持 process-local active run registry 與 keyed Promise queue。
+同一 session 永遠只有一個 agent run；不同頻道／DM 的 key 不同，仍可並行。
 
-- task 失敗只拒絕該 caller，queue tail 會吸收錯誤讓後續繼續
-- 清理時以 Promise identity 比對，避免舊 task 的 finally 誤刪已有新工作接上的 chain
-- 排在既有 trigger 後方的 context 訊息即使 session 檔尚未建立，也會因 queue 已存在而保留
-- 會讀寫／歸檔 session 的 `/new`、`/compact` 也先 defer interaction，再進同一條 queue
+訊息模式由 session override → `discord.queue_mode` → 內建 `followup` 的順序解析：
+
+- `followup`：完整 task 排進 keyed queue，上一輪交付後才啟動下一輪。
+- `steer`：若同一位已驗證的觸發者已有 active run，新訊息不另開 run，而是依 Discord snowflake
+  排序後放進 pending input；agent 在模型／工具 turn 邊界持久化並加入 live request。不同作者不會
+  被拼進既有 request 的權限 context，會退回 followup。
+- 模型生成 final draft 期間若收到 steer，該過期 draft 不送出，下一 turn 攜帶新輸入重答。
+- task 失敗只拒絕該 caller，queue tail 會吸收錯誤讓後續繼續；清理以 Promise identity 防 race。
+- 排在 trigger 後方的 context 訊息即使 session 檔尚未建立，也會因 queue 已存在而保留。
+- 會讀寫／歸檔 session 的 `/new`、`/compact`、`/model`、`/queue` 先 defer，再進同一條 queue。
+
+`/stop` 不進 queue，會直接對目前 session 的 active run 發出 cooperative cancellation：等待中的 LLM
+HTTP request 透過 `AbortSignal` 立即中止；已開始的本地工具不被強殺，agent 會在工具前後的安全
+turn boundary 停止。只有該 run 的原觸發者或 owner 能停止；取消不影響其他 session。
 
 其他規則：
 
@@ -777,7 +786,9 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 | 指令 | 說明 |
 |---|---|
 | `/new` | silent memory flush + 歸檔 session + AI 重新打招呼 |
-| `/status` | model / tokens / sessions / crons / reminders / plugin jobs / plugins / skills |
+| `/status` | model / reasoning / queue mode / current run / tokens / sessions / background jobs / plugins / skills |
+| `/stop` | 中止目前 session 的 active run；等待中的 LLM 立即 abort，工具在安全邊界停止 |
+| `/queue` | 設定 `followup`／`steer`，或 reset 回全域預設 |
 | `/compact` | 摘要較舊 context，保留近期訊息 |
 | `/restart` | 重啟 gateway（spawn detached child） |
 | `/model` | 切換目前 session 的模型與思考等級；模型名稱由該 session profile 的 `GET /models` autocomplete |
@@ -833,7 +844,7 @@ Button message 會停用 allowed mentions，避免外部文字或草稿意外 pi
 |------|------|
 | Cron 排程 | 每 1 小時重新載入 `crons.json`，執行到期任務 |
 | Reminder | 一次性提醒，每 15 秒輪詢 `reminders.json` 掃到期的，觸發後自動刪除 |
-| Journal | 每天固定時間：使用 `journal.model` 指定的獨立模型 silent flush 所有 active session → 歸檔 → 重寫日記 → 更新 MEMORY.md |
+| Journal | `journal.enabled: true` 時每天固定時間執行完整管線：使用 `journal.model` 指定的獨立模型 silent flush 所有 active session → 歸檔 → 重寫日記 → 更新 MEMORY.md；關閉時連每日自動歸檔也不執行 |
 | Soul Guardian | 可選的 deterministic 內建排程，直接執行完整性檢查並把 drift 送到指定 Discord 頻道；不經 LLM，重複未處理 drift 以 fingerprint 去重 |
 | Discord Bot | 有 token 且 enabled 時啟動 |
 | Plugins | 背景服務接流量前先 `loadPlugins()`；Discord 啟用時待 client ready 後才 `startPlugins()`，再註冊含外掛在內的 slash commands。shutdown 時 `stopPlugins()` |
@@ -854,9 +865,11 @@ Daily Journal 只以 `journal_transcript_by_date` 產生的 archived transcript 
   的 `modelSettings`，**只借用它解析 request-scoped LLM profile**；排程 prompt 不重播聊天歷史，
   產生的推播仍由 `sendAndPersist()` 寫回目標 session。
   沒有 `channel_id` 或無法解析 Discord session 時，使用 active connection profile 的預設模型
-- Journal 不跟隨任何 conversation session。`journal.model` 是整條日記流程的獨立模型設定，
-  涵蓋每日 silent memory flush、session archive 前整理與最終日記重寫；
-  留空才使用 active connection profile 的預設模型
+- Journal 不跟隨任何 conversation session，也不採用各 session 經 `/model` 設定的模型。
+  `journal.model` 是整條日記流程的獨立模型設定，涵蓋每日 silent memory flush、
+  session archive 前整理與最終日記重寫；留空才使用 active connection profile 的預設模型
+- `journal.enabled`、`journal.hour` 與 `journal.minute` 在 Gateway 啟動時決定是否及何時註冊排程，
+  修改後須重啟才會生效。`journal.model` 則在每次排程觸發時重新讀取，單獨修改模型不需重啟
 - 上述 profile 都在每次背景工作開始時解析成 immutable request profile，
   同一輪不受並行 `/model` 變更影響
 - 每次 Agent request 的 system prompt 都會注入非敏感的 `<llm-context>`，
