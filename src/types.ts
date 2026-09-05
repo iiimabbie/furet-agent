@@ -130,4 +130,6 @@ export interface AgentOptions {
   trigger?: TriggerSource;
   /** 發話的 Discord 使用者 ID，供 tools.bash_allowed_users 判定用 */
   userId?: string;
+  /** Explicit runtime-verified PEOPLE.md visibility; omitted means fail-closed (none). */
+  peopleVisibility?: import("./people-context.js").PeopleVisibilityPolicy;
 }

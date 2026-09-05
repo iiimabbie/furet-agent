@@ -61,6 +61,7 @@ function prompt(): void {
         session,
         systemPrompt: CLI_CONTEXT,
         trigger: "cli",
+        peopleVisibility: "owner",
         onToolUse: (tool, toolInput) => {
           const displayName = prettifyToolName(tool);
           const summary = formatToolSummary(tool, toolInput);

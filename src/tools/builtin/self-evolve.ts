@@ -46,6 +46,7 @@ export const selfEvolve: Tool = {
         model,
         maxTurns: 30,
         trigger: "unknown",
+        peopleVisibility: "none",
       });
 
       logger.info({

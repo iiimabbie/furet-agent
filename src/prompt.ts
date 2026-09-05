@@ -8,7 +8,8 @@ import { wrapTag } from "./utils/tagged-file.js";
 import { NO_REPLY_TOKEN } from "./utils/no-reply.js";
 import { buildEmojiPromptSection } from "./emoji.js";
 import { isOwnerUnconfigured } from "./onboarding.js";
-import type { TriggerSource } from "./types.js";
+import type { Message, TriggerSource } from "./types.js";
+import { buildPeoplePromptSection, type PeopleVisibilityPolicy } from "./people-context.js";
 import type { LlmProfile } from "./llm/types.js";
 
 // --- External prompt loading ---
@@ -210,12 +211,36 @@ function buildEmojiSection(trigger: TriggerSource): string {
   return buildEmojiPromptSection();
 }
 
-function buildPeopleSection(): string {
+export interface PeopleContextRequest {
+  currentText: string;
+  messages: Message[];
+  visibility: PeopleVisibilityPolicy;
+  currentUserId?: string;
+  ownerId?: string;
+}
+
+function buildPeopleSection(trigger: TriggerSource, request?: PeopleContextRequest): string {
   const people = loadWorkspaceFile("PEOPLE.md");
   if (!people) return "";
 
-  const limit = loadConfig().prompt.peopleInlineLimit;
+  const promptConfig = loadConfig().prompt;
+  const limit = promptConfig.peopleInlineLimit;
   if (limit > 0 && people.length <= limit) return section(people, "people");
+
+  const relevant = buildPeoplePromptSection(
+    people,
+    limit,
+    promptConfig.relevantPeople.enabled,
+    request,
+    promptConfig.relevantPeople,
+  );
+  if (relevant) {
+    return `${relevant}
+
+<people-index>
+Only people relevant to this turn were included above. The complete PEOPLE.md (${people.length} chars) remains available through read_file when needed.
+</people-index>`;
+  }
 
   return `<people-index>
 PEOPLE.md (${people.length} chars) is not inlined in this prompt.
@@ -238,7 +263,16 @@ Read \`workspace/PEOPLE.md\` with read_file when you need someone's identity, ti
  * feature flag 決定要不要傳進來。它放在 skills 之後、runtime context（datetime /
  * channel）之前，跟「你會什麼」歸在一起；persona anchor 仍留在最後一段。
  */
-export function buildSystemPrompt(extra?: string, recalled?: string, toolIndex?: string, trigger: TriggerSource = "unknown"): string {
+export interface BuildSystemPromptOptions {
+  extra?: string;
+  recalled?: string;
+  toolIndex?: string;
+  trigger?: TriggerSource;
+  peopleContext?: PeopleContextRequest;
+}
+
+export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): string {
+  const { extra, recalled, toolIndex, trigger = "unknown", peopleContext } = options;
   const persona = loadWorkspaceFile("SOUL.md");
 
   const skills = loadSkills();
@@ -257,7 +291,7 @@ export function buildSystemPrompt(extra?: string, recalled?: string, toolIndex?:
     section(loadAgentInstructions(ownerConfigured), "agent-instructions"),  // 你怎麼做事
     section(owner, "owner"),                           // 你為誰服務——永遠內嵌，見下
     section(loadWorkspaceFile("MEMORY.md"), "memory"), // ┐
-    buildPeopleSection(),                              // ├ 你知道什麼（太大時 people 退化成指標）
+    buildPeopleSection(trigger, peopleContext),                              // ├ 你知道什麼（太大時 people 退化成指標）
     section(recalled ?? "", "recalled-memories"),      // ┘
     skillsSection,                                     // 你會什麼（直接暴露的技能）
     (toolIndex ?? "").trim(),                           // 你還會什麼（tool_catalog 可達的能力群）

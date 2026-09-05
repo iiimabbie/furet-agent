@@ -130,6 +130,12 @@ export interface UmiroConfig {
      * 超過就只放一行指標，讓 agent 需要時自己 read_file。0 = 永不內嵌。
      */
     peopleInlineLimit: number;
+    relevantPeople: {
+      enabled: boolean;
+      maxEntries: number;
+      maxChars: number;
+      recentUserMessages: number;
+    };
   };
   skills: string[];
   /**
@@ -218,6 +224,12 @@ const DEFAULTS: UmiroConfig = {
   },
   prompt: {
     peopleInlineLimit: 1500,
+    relevantPeople: {
+      enabled: true,
+      maxEntries: 8,
+      maxChars: 6000,
+      recentUserMessages: 6,
+    },
   },
   skills: [],
   plugins: [],
@@ -413,6 +425,21 @@ function mergeAttachmentAnalysisConfig(resolved: unknown): UmiroConfig["attachme
   };
 }
 
+function mergePromptConfig(resolved: unknown): UmiroConfig["prompt"] {
+  const top = defined(resolved);
+  const rawRelevant = defined(top.relevantPeople);
+  const d = DEFAULTS.prompt;
+  return {
+    peopleInlineLimit: sanitizeInt(top.peopleInlineLimit, d.peopleInlineLimit, 0, 100_000),
+    relevantPeople: {
+      enabled: typeof rawRelevant.enabled === "boolean" ? rawRelevant.enabled : d.relevantPeople.enabled,
+      maxEntries: sanitizeInt(rawRelevant.maxEntries, d.relevantPeople.maxEntries, 1, 32),
+      maxChars: sanitizeInt(rawRelevant.maxChars, d.relevantPeople.maxChars, 500, 50_000),
+      recentUserMessages: sanitizeInt(rawRelevant.recentUserMessages, d.relevantPeople.recentUserMessages, 0, 50),
+    },
+  };
+}
+
 function mergeJournalConfig(resolved: unknown): UmiroConfig["journal"] {
   const top = defined(resolved);
   const d = DEFAULTS.journal;
@@ -458,7 +485,7 @@ export function loadConfig(): UmiroConfig {
     tools: mergeToolsConfig(resolved.tools),
     image_generation: { ...DEFAULTS.image_generation, ...defined(resolved.image_generation) } as UmiroConfig["image_generation"],
     attachment_analysis: mergeAttachmentAnalysisConfig(resolved.attachment_analysis),
-    prompt: { ...DEFAULTS.prompt, ...defined(resolved.prompt) } as UmiroConfig["prompt"],
+    prompt: mergePromptConfig(resolved.prompt),
     skills: (resolved.skills as string[] | undefined) ?? DEFAULTS.skills,
     plugins: mergePluginsConfig(resolved.plugins),
     timezone: (resolved.timezone as string | undefined) ?? DEFAULTS.timezone,

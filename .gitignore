@@ -13,4 +13,3 @@ material/
 
 # 一次性 migration 的資料備份，不進版控
 .backup-*/
-tests/*

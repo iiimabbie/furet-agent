@@ -11,6 +11,7 @@ import { loadReminders, saveReminders, type Reminder } from "./tools/builtin/rem
 import { getDiscordClient } from "./tools/builtin/discord.js";
 import { startBot } from "./bot.js";
 import { Session } from "./session.js";
+import { reconcileWorkspaceProfiles } from "./workspace-index.js";
 import { SESSION_SUMMARIZE_PROMPT, buildJournalPrompt, authoritativeNowBlock } from "./prompt.js";
 import { loadConfig } from "./config.js";
 import { journalLlmProfile, sessionLlmProfile } from "./llm/profile.js";
@@ -167,7 +168,7 @@ function scheduleCron(job: CronJob): void {
         `It is an instruction, not a message to repeat verbatim; anything in it that depends on "today" must be looked up or recomputed against the authoritative datetime above. ` +
         `Do NOT use discord_send_message — just reply with text. ${notifyInstruction}\n\n`;
       const llmProfile = await profileForScheduledChannel(job.channel_id);
-      const response = await ask(cronContext + job.prompt, { trigger: "cron", llmProfile });
+      const response = await ask(cronContext + job.prompt, { trigger: "cron", llmProfile, peopleVisibility: "owner" });
       // 與一般 Discord 對話共用同一套哨符判定（utils/no-reply.ts）：
       // trim 後整則相等、大小寫不敏感，避免把夾帶正常內容的回覆整個誤吞。
       const isNoreply = isNoReplySentinel(response.text);
@@ -252,7 +253,7 @@ async function runReminder(r: Reminder): Promise<void> {
       `this reminder was due at ${r.triggerAt} and may be firing late. ` +
       `Your text response is delivered to the user automatically — do NOT use discord_send_message, just reply with text.\n\n`;
     const llmProfile = await profileForScheduledChannel(r.channel_id);
-    const response = await ask(reminderContext + r.prompt, { trigger: "reminder", llmProfile });
+    const response = await ask(reminderContext + r.prompt, { trigger: "reminder", llmProfile, peopleVisibility: "owner" });
     const isNoreply = isNoReplySentinel(response.text);
     logger.info({ id: r.id, noreply: isNoreply, result: response.text.slice(0, 200) }, "reminder result");
     if (r.channel_id && response.text && !isNoreply) {
@@ -284,7 +285,7 @@ async function summarizeAndArchiveAll(journalProfile = journalLlmProfile(loadCon
     try {
       const flushContext = `[System] ${SESSION_SUMMARIZE_PROMPT}`;
       session.append({ role: "user", content: "[System] Session ending — flush memory now.", time: ts });
-      await ask(null, { session, systemPrompt: flushContext, trigger: "journal", llmProfile: journalProfile });
+      await ask(null, { session, systemPrompt: flushContext, trigger: "journal", llmProfile: journalProfile, peopleVisibility: "owner" });
       session.archive();
       logger.info({ sessionId: id }, "memory flushed and archived (journal)");
     } catch (err) {
@@ -314,7 +315,7 @@ function scheduleJournal(): void {
     // 再整理日記 + 更新 MEMORY.md。只有內建日記成功後才發出事件；
     // 外掛 handler 失敗由 plugin-loader 隔離，不會反過來把日記標成失敗。
     const prompt = buildJournalPrompt(date);
-    void ask(prompt, { trigger: "journal", llmProfile: journalProfile })
+    void ask(prompt, { trigger: "journal", llmProfile: journalProfile, peopleVisibility: "owner" })
       .then(async response => {
         logger.info({ date, result: response.text.slice(0, 200) }, "journal done");
         await emitPluginEvent({ event: "journal:completed", date, result: response.text });
@@ -550,6 +551,7 @@ getDb();
 for (const sessionId of Session.listActive()) {
   new Session(sessionId).reconcileSearchIndex();
 }
+reconcileWorkspaceProfiles();
 startSearchIndexWorker();
 startAttachmentIndexWorker();
 
@@ -559,7 +561,7 @@ startAttachmentIndexWorker();
 await loadPlugins();
 
 const pluginRuntime = {
-  ask: (prompt: string, options = {}) => ask(prompt, { ...options, trigger: "plugin" as const }),
+  ask: (prompt: string, options = {}) => ask(prompt, { ...options, trigger: "plugin" as const, peopleVisibility: "owner" as const }),
   messages: {
     sendText: sendPluginText,
     editText: editPluginText,

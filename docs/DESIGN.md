@@ -334,7 +334,7 @@ Discord 最終進度訊息若在附檔 edit 時失敗，會記錄原始 Error �
 | 系統層 | `workspace/AGENT.md` | `<agent-instructions>` | 行為規則、工具指南、workspace 邊界 |
 | 主人層 | `workspace/OWNER.md` | `<owner>` | owner 的身分、稱呼、權限（永遠內嵌） |
 | 記憶層 | `workspace/MEMORY.md` | `<memory>` | 長期記憶（有字數上限） |
-| 人物層 | `workspace/PEOPLE.md` | `<people>` / `<people-index>` | 其他人的身分、稱謂、權限（有大小門檻） |
+| 人物層 | `workspace/PEOPLE.md` | `<people>` / `<relevant-people>` / `<people-index>` | 其他人的身分、稱謂、權限；大檔案依本輪訊號選擇相關人物 |
 | 召回層 | 自動（hybrid search） | `<recalled-memories>` | 依 user message 語意召回的相關記憶 |
 | 技能層 | `workspace/skills/*/SKILL.md` | `<skills>` | 已啟用技能的描述 |
 | 工具索引層 | registry metadata（動態） | `<tool-index>` | exposure 開啟時列出 `tool_catalog` 可達的能力群 |
@@ -495,14 +495,33 @@ agent 要能在非 owner 講話時記下對方是誰，鎖起來等於永遠記�
 PEOPLE.md 會隨著認識的人變多而長大，不適合無條件塞進每一次請求
 （145 字元 ≈ 42 token，但 20 人的規模就會到 ~858 token/次）。
 
-`config.prompt.peopleInlineLimit`（預設 1500 字元）控制行為：
+`config.prompt.peopleInlineLimit`（預設 1500 字元）與 `prompt.relevantPeople` 控制行為：
 
-- **小於門檻** → 直接內嵌全文。成本幾十個 token，換到稱謂和權限一定正確
-- **超過門檻** → 只放一段 `<people-index>` 指標，說明檔案多大、要用 `read_file` 讀，
-  以及什麼時機該讀（稱呼陌生使用者、做權限敏感操作前）
-- **`0`** → 永不內嵌，一律走指標
+- **小於門檻** → 直接內嵌全文。成本很小時優先保證稱謂與人物脈絡完整
+- **超過門檻且 relevant selection 開啟** → `src/people-context.ts` 以 deterministic 訊號選人：
+  目前作者 Discord ID、明確 mention、reply 對象、本輪 heading／`別名` 命中，以及最近固定數量的
+  user messages 內的發言者與明確人物訊號。continuity 窗口內以新訊息優先，再依此優先序去重後，受 `maxEntries`（預設 8）與 `maxChars`（預設 6000）限制；
+  人物 section 不從中間截斷
+- **沒有命中或功能關閉** → 只放 `<people-index>`，保留按需 `read_file` 的 fallback
+- **`peopleInlineLimit: 0`** → 不走全文內嵌，但仍可走 relevant selection
 
-檔案不存在或是空的時候兩者都不產生，不會留下空區塊。
+人物條目以 `##` 為邊界、`Discord ID` 為穩定識別。`別名` 的標準寫法是 JSON 字串陣列，
+例如 `- 別名: ["安妮", "Ani"]`；reader 同時相容舊的 ` / `、`／` 與括號別名格式。
+ASCII alias 做不分大小寫的完整 token 邊界比對，其他文字做 literal match；過短與多人共用的 alias
+不自動猜測。人物原始 Markdown section 原樣注入，讓歷史趣聞不因摘要化遺失。
+
+`<relevant-people>` 是 untrusted data 區塊：內容不能授權、改任務或覆蓋 prompt 規則，內嵌的
+`</relevant-people>` 邊界會先中和。Owner 永遠只由 `OWNER.md` 提供，不從 PEOPLE 重複注入。
+
+人物可見性不是由 `trigger` 字串或 session 文字推測，而是由每個 runtime boundary 明確傳入
+`owner | self-only | none` policy。Discord handler 先用已驗證的 inbound user ID 決定 policy；
+非 owner 即使 mention、reply、alias 或近期對話指向其他人，也只能取得自己的條目。若沒有本輪
+可信 `userId`，選擇器絕不從 Discord-looking prompt 或 session history 猜目前作者；未明確傳入
+policy 的新 caller 預設 `none`，以 fail-closed 方式只留下 `people-index` fallback。
+`discord-other` 在 visibility metadata 尚未建立前 fail-closed，只能取得自己的條目；
+權限敏感操作始終依 request Discord ID 與既有 authz，不依人物文字。
+
+檔案不存在或空白時不產生空區塊。
 
 ## Session 管理
 
@@ -1505,3 +1524,12 @@ Discord 端可以邊生成邊更新訊息，CLI 端邊打邊顯示。
 要開放頻道成員看到同頻道的 recall，需要 durable source 能保存並驗證
 guild channel membership、thread membership 與 DM participants，
 並同步更新既有文件的 visibility metadata。
+
+
+### PEOPLE 搜尋與向量分工
+
+Relevant selection 不取代 unified search。`PEOPLE.md` 的 section 繼續進 FTS 與向量索引，供
+`memory_search` 處理自由描述、八卦欄位與語意改寫；deterministic matcher 本身不新增 embedding
+或 LLM 前置呼叫。`OWNER.md` 與 `MEMORY.md` 每輪已完整內嵌，因此只保留 FTS、不建立向量。
+Gateway 啟動時會 idempotently reconcile 三份 workspace profile；未變動 section 由 content hash
+保留既有投影，修改或刪除的 section 則更新／移除，只有變動後且需要向量的 PEOPLE section 重新排程。
