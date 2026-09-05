@@ -1,6 +1,6 @@
 # Tool activity messages
 
-Umiro shows temporary Discord activity lines while tools run. You can keep a larger custom phrase library in a separate YAML or JSON file instead of crowding `config.yaml`.
+Umiro shows one temporary Discord activity line while tools run. Each progress event edits the same message, so only the newest status remains visible. You can keep a larger custom phrase library in a separate YAML or JSON file instead of crowding `config.yaml`.
 
 ## Configuration
 
@@ -9,7 +9,6 @@ discord:
   tool_activity:
     enabled: true
     mode: append
-    max_visible_lines: 8
     pools_file: workspace/config/tool-activity.yaml
     pools: {}
 ```
@@ -37,4 +36,4 @@ search:
 
 Keys may be exact tool names such as `read_file`, categories such as `read`, `write`, `shell`, `search`, `discord`, `github`, `image`, `schedule`, `memory`, `google`, and `integrity`, or `common`. Selection order is exact tool, category, then `common`. Unknown and plugin tools therefore use `common` unless an exact-name pool is configured.
 
-Keep every entry to one short line. Newlines are collapsed, duplicates and blank values are removed, and non-string values are ignored. Do not include secrets, tool arguments, commands, file paths, or claims that work has already succeeded.
+Each displayed phrase receives a category-appropriate emoji prefix. Keep every entry to one short line. Newlines are collapsed, duplicates and blank values are removed, and non-string values are ignored. Do not include secrets, tool arguments, commands, file paths, or claims that work has already succeeded.

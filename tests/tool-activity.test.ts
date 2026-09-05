@@ -11,14 +11,14 @@ import {
 } from "../src/utils/tool-activity.js";
 
 test("tool activity lookup prefers tool, then category, then common", () => {
-  assert.equal(new ToolActivityPicker({ read_file: ["tool"], read: ["category"], common: ["common"] }, () => 0).pick("read_file"), "tool");
-  assert.equal(new ToolActivityPicker({ read: ["category"], common: ["common"] }, () => 0).pick("read_file"), "category");
-  assert.equal(new ToolActivityPicker({ common: ["common"] }, () => 0).pick("unknown_tool"), "common");
+  assert.equal(new ToolActivityPicker({ read_file: ["tool"], read: ["category"], common: ["common"] }, () => 0).pick("read_file"), "📖 tool");
+  assert.equal(new ToolActivityPicker({ read: ["category"], common: ["common"] }, () => 0).pick("read_file"), "📖 category");
+  assert.equal(new ToolActivityPicker({ common: ["common"] }, () => 0).pick("unknown_tool"), "✨ common");
 });
 
 test("tool catalog target uses the target tool activity pool", () => {
   const picker = new ToolActivityPicker({ read_file: ["reading"], common: ["common"] }, () => 0);
-  assert.equal(picker.pick("tool_catalog → read_file"), "reading");
+  assert.equal(picker.pick("tool_catalog → read_file"), "📖 reading");
 });
 
 test("shuffle bag exhausts a pool before repeating", () => {
@@ -43,8 +43,8 @@ test("categories cover dynamic tool families", () => {
   assert.equal(toolActivityCategory("skill_install"), undefined);
   assert.equal(toolActivityCategory("plugin_daily_report"), undefined);
   const picker = new ToolActivityPicker({ common: ["common"], github: ["github"] }, () => 0);
-  assert.equal(picker.pick("skill_install"), "common");
-  assert.equal(picker.pick("plugin_daily_report"), "common");
+  assert.equal(picker.pick("skill_install"), "✨ common");
+  assert.equal(picker.pick("plugin_daily_report"), "✨ common");
 });
 
 

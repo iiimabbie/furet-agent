@@ -967,7 +967,6 @@ async function formatIncomingMessage(message: Message, sessionId: string): Promi
 
 // --- Tool activity message editing ---
 
-const PROGRESS_DEBOUNCE_MS = 1000;
 const INTERIM_TEXT_LIMIT = 300;
 
 /** A temporary Discord activity line. Tool names and arguments are deliberately absent. */
@@ -992,16 +991,12 @@ export async function deliverFinalDiscordReply(
   return sent;
 }
 
-export function renderProgress(lines: ProgressLine[], maxVisibleLines = 8): string {
-  if (lines.length === 0) return "...";
-  const visible = lines.slice(-Math.max(1, maxVisibleLines));
-  const hidden = lines.length - visible.length;
-  const body = [
-    ...(hidden > 0 ? [`...and ${hidden} earlier ${hidden === 1 ? "adventure" : "adventures"}.`] : []),
-    ...visible.map(line => line.kind === "text"
-      ? `> ${line.text.replace(/\n+/g, "\n> ")}`
-      : `${line.failed ? "✗ " : ""}${line.text}`),
-  ].join("\n");
+export function renderProgress(lines: ProgressLine[]): string {
+  const line = lines.at(-1);
+  if (!line) return "✨ Working on it...";
+  const body = line.kind === "text"
+    ? `> ${line.text.replace(/\n+/g, "\n> ")}`
+    : `${line.failed ? "✗ " : ""}${line.text}`;
   return body.length > 1900 ? body.slice(-1900) : body;
 }
 
@@ -1078,14 +1073,10 @@ async function handleTrigger(message: Message, session: Session, images?: string
     activityPools = mergeToolActivityPools(toolActivityConfig.pools, toolActivityConfig.mode);
   }
   const activityPicker = new ToolActivityPicker(activityPools);
-  let lastEditAt = 0;
   let flushChain: Promise<void> = Promise.resolve();
 
-  const flushProgress = async (force = false) => {
-    const now = Date.now();
-    if (!force && now - lastEditAt < PROGRESS_DEBOUNCE_MS) return;
-    lastEditAt = now;
-    const body = renderProgress(progressLines, toolActivityConfig.max_visible_lines);
+  const flushProgress = async () => {
+    const body = renderProgress(progressLines);
     try {
       if (!progressMsg) {
         progressMsg = await message.reply(messagePayload(body));
@@ -1111,8 +1102,8 @@ async function handleTrigger(message: Message, session: Session, images?: string
       const line = progressLines.find(l => l.kind === "activity" && l.id === event.toolCallId);
       if (line?.kind === "activity") line.failed = event.isError;
     }
-    // 不套用 debounce：被延後的話這段文字可能到最後都沒顯示過
-    flushChain = flushChain.then(() => flushProgress(event.type === "text"));
+    // Keep one temporary line and edit it for every progress event.
+    flushChain = flushChain.then(() => flushProgress());
   };
 
   try {

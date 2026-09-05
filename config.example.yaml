@@ -55,7 +55,6 @@ discord:
   tool_activity:
     enabled: true                         # show a temporary activity message while tools run
     mode: "append"                        # append | replace custom pools against built-in English defaults
-    max_visible_lines: 8                  # keep the newest activity lines in the temporary message (1-50)
     pools_file: ""                        # optional YAML/JSON file; relative paths resolve from the Umiro root
                                           # e.g. workspace/config/tool-activity.yaml
     pools: {}                             # optional small inline overrides; inline keys win over pools_file

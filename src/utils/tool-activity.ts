@@ -150,6 +150,22 @@ export const DEFAULT_TOOL_ACTIVITY_POOLS: ToolActivityPools = {
   ],
 };
 
+
+const EMOJIS_BY_CATEGORY: Record<string, string[]> = {
+  common: ["✨", "🪄", "🍄", "🦋", "🌙"],
+  read: ["📖", "🔎", "👀"],
+  write: ["✍️", "🪡", "📝"],
+  shell: ["⚙️", "⌨️", "🛠️"],
+  search: ["🔍", "🧭", "🌐"],
+  discord: ["💌", "🪽", "💬"],
+  github: ["🌿", "🔀", "🧩"],
+  image: ["🎨", "🖼️", "🌈"],
+  schedule: ["⏰", "🔔", "🗓️"],
+  memory: ["🫙", "🕯️", "🧠"],
+  google: ["☁️", "📄", "✈️"],
+  integrity: ["🛡️", "🔮", "🧿"],
+};
+
 const CATEGORY_BY_TOOL: Record<string, string> = {
   bash: "shell",
   read_file: "read",
@@ -256,9 +272,18 @@ export class ToolActivityPicker {
       .filter((key): key is string => Boolean(key));
     for (const key of keys) {
       const line = this.pickFrom(key);
-      if (line) return line;
+      if (line) return `${this.pickEmoji(key, actualName)} ${line}`;
     }
-    return "Doing a little bit of magic...";
+    return "✨ Doing a little bit of magic...";
+  }
+
+  private pickEmoji(sourceKey: string, toolName: string): string {
+    const category = toolActivityCategory(toolName);
+    const candidates = EMOJIS_BY_CATEGORY[sourceKey]
+      ?? (category ? EMOJIS_BY_CATEGORY[category] : undefined)
+      ?? EMOJIS_BY_CATEGORY.common;
+    const index = Math.floor(this.random() * candidates.length);
+    return candidates[Math.min(index, candidates.length - 1)] ?? "✨";
   }
 
   private pickFrom(key: string): string | undefined {

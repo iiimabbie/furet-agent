@@ -674,18 +674,18 @@ Umiro 的 Discord 輸出統一使用標準 V1 訊息 payload：
 
 ### 工具活動訊息與正式回答
 
-Tool call 開始時，Discord 建立或編輯一則**暫時工具活動訊息**。每次呼叫只追加一行英文狀態文案，
-不公開內部工具名稱、arguments、檔案路徑或命令；文案由 `src/utils/tool-activity.ts` 集中管理，
-依工具專屬池 → category 池 → common 池選擇，使用 shuffle bag 避免短期重複。
-內建文案為簡短英文狀態句，並依工具或類別選取。
+Tool call 開始時，Discord 建立或編輯一則**暫時工具活動訊息**。每次進度事件都覆寫同一則訊息，
+畫面只保留最新一行英文狀態；文案前綴會依工具 category 選擇 emoji。活動訊息不公開內部工具名稱、
+arguments、檔案路徑或命令。文案由 `src/utils/tool-activity.ts` 集中管理，依工具專屬池 → category 池
+→ common 池選擇，並使用 shuffle bag 避免短期重複。
 
-`discord.tool_activity` 可停用活動訊息、設定 `append`／`replace`、最大可見行數。較大的自訂文案庫
-應透過 `pools_file` 放在獨立 YAML／JSON；相對路徑以 Umiro root 解析。`pools` 仍保留給少量 inline 覆寫
-與向下相容，且同名 key 優先於檔案內容。完整格式見 `docs/TOOL_ACTIVITY.md`。
-文案只描述正在做的事，不在工具完成前宣稱成功；失敗可在該行加上 `✗`，錯誤細節仍由正式回答說明。
+`discord.tool_activity` 可停用活動訊息並設定 `append`／`replace`。較大的自訂文案庫應透過 `pools_file`
+放在獨立 YAML／JSON；相對路徑以 Umiro root 解析。`pools` 仍保留給少量 inline 覆寫與向下相容，且同名
+key 優先於檔案內容。完整格式見 `docs/TOOL_ACTIVITY.md`。文案只描述正在做的事，不在工具完成前宣稱成功；
+失敗可在當前狀態加上 `✗`，錯誤細節仍由正式回答說明。
 
-Agent 在 tool call 之間產生的文字仍以 `> 引用` 暫時顯示。活動更新防抖 1 秒；最多保留設定的近期行數，
-較舊行以一行摘要取代，整則維持在 Discord 2,000 字元內。
+Agent 在 tool call 之間產生的文字仍以 `> 引用` 暫時顯示，並同樣取代前一個狀態；整則維持在 Discord
+2,000 字元內。
 
 工具流程結束後，暫時活動訊息**不再被 edit 成正式回答**。Transport 先建立一則新的正式 Discord message，
 讓只消費 `MESSAGE_CREATE` 的其他 bot 也能直接收到完成內容；新訊息成功後才 best-effort 刪除活動訊息。

@@ -102,23 +102,18 @@ test("migration returns the replacement ID even when old-message deletion fails"
 });
 
 
-test("progress text stays below the Discord V1 content limit", () => {
-  const rendered = renderProgress(Array.from({ length: 30 }, (_, index) => ({
-    kind: "text" as const,
-    text: `${index}: ${"x".repeat(300)}`,
-  })));
-  assert.ok(rendered.length <= 1900);
+test("progress rendering keeps only the newest status without exposing tool labels", () => {
+  const rendered = renderProgress([
+    { kind: "activity", id: "1", text: "📖 Reading the tiny runes..." },
+    { kind: "activity", id: "2", text: "🔍 Following a suspicious trail..." },
+  ]);
+  assert.equal(rendered, "🔍 Following a suspicious trail...");
+  assert.doesNotMatch(rendered, /Reading/);
 });
 
-test("progress rendering bounds visible activity lines without exposing tool labels", () => {
-  const rendered = renderProgress(Array.from({ length: 10 }, (_, index) => ({
-    kind: "activity" as const,
-    id: String(index),
-    text: `Activity ${index}...`,
-  })), 3);
-  assert.match(rendered, /7 earlier adventures/);
-  assert.doesNotMatch(rendered, /activity 0/);
-  assert.match(rendered, /Activity 9/);
+test("progress text stays below the Discord V1 content limit", () => {
+  const rendered = renderProgress([{ kind: "text", text: "x".repeat(3000) }]);
+  assert.ok(rendered.length <= 1900);
 });
 
 
