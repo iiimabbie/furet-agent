@@ -54,7 +54,6 @@ export const GROUP_LABELS: Record<string, string> = {
   "history-journal": "session history & journal transcripts",
   "integrity": "soul-guardian file integrity",
   "skills": "skill install/manage",
-  "self-development": "self source-code changes",
   "image-generation": "image generation",
   "usage": "usage dashboard",
   "catalog": "tool catalog",

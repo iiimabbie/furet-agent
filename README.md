@@ -23,7 +23,7 @@ Umiro runs a protocol-neutral agent loop through configurable LLM connection pro
 | **Durable context** | Per-channel sessions, archived conversations, daily and long-term memory |
 | **Workspace-first** | Persona, instructions, people records, skills, memories, and generated files all live under `workspace/` |
 | **Tools** | Files, shell, Discord moderation and messaging, scheduled jobs, reminders, weather, and Google Calendar / Gmail / Drive / Tasks |
-| **Extensible** | Installable workspace skills, local private plugins, and an owner-only `self_evolve` tool for proposing source changes |
+| **Extensible** | Installable workspace skills and local private plugins |
 | **Guarded** | Soul Guardian integrity monitoring on protected workspace files |
 | **Readable logs** | One file per local day — `logs/umiro-YYYY-MM-DD.log` |
 
@@ -188,7 +188,7 @@ workspace/
 Umiro is built for a personal, trusted deployment — not as a sandboxed public bot.
 
 - `bash` runs arbitrary host commands without a sandbox. With `tools.bash_owner_only: true` (the default), only the configured owner and IDs in `bash_allowed_users` can call it.
-- High-impact tools — source evolution, Gmail, Drive, Calendar, scheduling, and Discord message mutation — are owner-only.
+- High-impact tools — Gmail, Drive, Calendar, scheduling, and Discord message mutation — are owner-only.
 - Use `discord.allowed_guilds` and `discord.allowed_channels` to minimize where the bot can be triggered.
 - Treat `workspace/config/google-token.json`, `.env`, and all log and workspace data as private.
 - Review every third-party skill before installing it. A skill can add instructions that influence tool use.
