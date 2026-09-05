@@ -675,7 +675,7 @@ Umiro 的 Discord 輸出統一使用標準 V1 訊息 payload：
 ### 工具活動訊息與正式回答
 
 Tool call 開始時，Discord 建立或編輯一則**暫時工具活動訊息**。每次進度事件都覆寫同一則訊息，
-畫面只保留最新一行英文狀態；文案前綴會依工具 category 選擇 emoji。活動訊息不公開內部工具名稱、
+畫面只保留最新一行英文狀態，且每個狀態至少短暫停留後才更新；文案前綴會依工具 category 選擇 emoji。活動訊息不公開內部工具名稱、
 arguments、檔案路徑或命令。文案由 `src/utils/tool-activity.ts` 集中管理，依工具專屬池 → category 池
 → common 池選擇，並使用 shuffle bag 避免短期重複。
 
