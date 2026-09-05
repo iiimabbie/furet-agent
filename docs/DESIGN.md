@@ -672,15 +672,24 @@ Umiro 的 Discord 輸出統一使用標準 V1 訊息 payload：
   第一次狀態更新會建立帶相同 custom IDs 的 V1 替代訊息、刪除舊訊息，
   並把新的 message ID 寫回按鈕狀態；工具動作只會在替換成功後執行
 
-### 漸進式進度訊息
+### 工具活動訊息與正式回答
 
-Tool call 執行時即時顯示進度（`→` / `✓` / `✗`），完成後替換成最終回覆。
-防抖 1 秒避免 Discord rate limit。
+Tool call 開始時，Discord 建立或編輯一則**暫時工具活動訊息**。每次呼叫只追加一行英文狀態文案，
+不公開內部工具名稱、arguments、檔案路徑或命令；文案由 `src/utils/tool-activity.ts` 集中管理，
+依工具專屬池 → category 池 → common 池選擇，使用 shuffle bag 避免短期重複。
+公開內建文案是原創、provider-neutral 的 whimsical fae 語氣，不引用特定遊戲台詞或角色名稱。
 
-Agent 在 tool call 之間產生的文字以 `> 引用` 併進同一則進度訊息（`ProgressEvent` 的 `text`）。
-這些文字只存在於 session，不在 `ask()` 的回傳值裡——回傳的是最後一輪、沒有 tool call 的文字。
-純過場，最終回覆會覆蓋整則訊息，不另發訊息。emit 點在執行工具**之前**，順序才與實際動作一致。
-單段上限 300 字，整則超過 1900 字截尾，保留在 2000 字元上限內；`text` 事件不套用防抖。
+`discord.tool_activity` 可停用活動訊息、設定 `append`／`replace`、最大可見行數，並以 `pools`
+在本機 workspace 設定覆寫或追加工具／category 文案。核心 repo 只保留通用預設，不含私人 persona 資料。
+文案只描述正在做的事，不在工具完成前宣稱成功；失敗可在該行加上 `✗`，錯誤細節仍由正式回答說明。
+
+Agent 在 tool call 之間產生的文字仍以 `> 引用` 暫時顯示。活動更新防抖 1 秒；最多保留設定的近期行數，
+較舊行以一行摘要取代，整則維持在 Discord 2,000 字元內。
+
+工具流程結束後，暫時活動訊息**不再被 edit 成正式回答**。Transport 先建立一則新的正式 Discord message，
+讓只消費 `MESSAGE_CREATE` 的其他 bot 也能直接收到完成內容；新訊息成功後才 best-effort 刪除活動訊息。
+附件跟第一個正式 chunk 一起送出，後續 chunk 各自建立訊息。若正式送出失敗，活動訊息保留；若刪除失敗，
+正式回答仍是權威並記錄 warning。`[no_reply]`、reaction-only 或空回覆只清理活動訊息，不憑空建立正式回答。
 
 ### 靜默回覆哨符（`[no_reply]`）
 

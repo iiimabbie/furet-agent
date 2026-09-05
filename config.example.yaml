@@ -52,6 +52,16 @@ discord:
   respond_to_bots: false                # whether to process messages from other bots
   status: "online"                      # online | idle | dnd | invisible
   activity: "Burrowing around…🦦✨"    # custom activity text
+  tool_activity:
+    enabled: true                         # show a temporary activity message while tools run
+    mode: "append"                        # append | replace custom pools against built-in English defaults
+    max_visible_lines: 8                  # keep the newest activity lines in the temporary message (1-50)
+    pools: {}                             # optional tool/category overrides; never put secrets or arguments here
+    # pools:
+    #   read_file:
+    #     - "Reading the tiny runes..."
+    #   common:
+    #     - "Doing a little bit of magic..."
 
 journal:
   enabled: false                        # auto-write a daily journal at scheduled time
