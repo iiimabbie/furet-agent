@@ -52,6 +52,13 @@ discord:
   respond_to_bots: false                # whether to process messages from other bots
   status: "online"                      # online | idle | dnd | invisible
   activity: "Burrowing around…🦦✨"    # custom activity text
+  tool_activity:
+    enabled: true                         # show a temporary activity message while tools run
+    mode: "append"                        # append | replace custom pools against built-in English defaults
+    pools_file: ""                        # optional YAML/JSON file; relative paths resolve from the Umiro root
+                                          # e.g. workspace/config/tool-activity.yaml
+    pools: {}                             # optional small inline overrides; inline keys win over pools_file
+                                          # keep larger phrase libraries in pools_file instead of config.yaml
 
 journal:
   enabled: false                        # auto-write a daily journal at scheduled time

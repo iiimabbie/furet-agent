@@ -3,6 +3,7 @@ import { parse, stringify } from "yaml";
 import { CONFIG_PATH } from "./paths.js";
 import "dotenv/config";
 import type { LlmAuthStrategy, LlmCapability, LlmProfile, LlmProtocol, TokenLimitField } from "./llm/types.js";
+import type { ToolActivityPools } from "./utils/tool-activity.js";
 
 /** One private plugin entry. `path` may be absolute or relative to the Umiro root. */
 export interface PluginConfig {
@@ -43,6 +44,13 @@ export interface UmiroConfig {
     status: string;
     activity: string;
     respond_to_bots: boolean;
+    tool_activity: {
+      enabled: boolean;
+      mode: "append" | "replace";
+      /** Optional YAML/JSON pool file. Relative paths resolve from the Umiro root. */
+      pools_file: string;
+      pools: ToolActivityPools;
+    };
   };
   journal: {
     enabled: boolean;
@@ -184,6 +192,12 @@ const DEFAULTS: UmiroConfig = {
     status: "online",
     activity: "Burrowing around…🦦✨",
     respond_to_bots: false,
+    tool_activity: {
+      enabled: true,
+      mode: "append",
+      pools_file: "",
+      pools: {},
+    },
   },
   journal: {
     enabled: false,
@@ -440,6 +454,33 @@ function mergePromptConfig(resolved: unknown): UmiroConfig["prompt"] {
   };
 }
 
+
+function mergeDiscordConfig(resolved: unknown): UmiroConfig["discord"] {
+  const top = defined(resolved);
+  const rawToolActivity = defined(top.tool_activity);
+  delete top.tool_activity;
+  const rawPools = defined(rawToolActivity.pools);
+  const pools = Object.fromEntries(Object.entries(rawPools).flatMap(([key, value]) => {
+    if (!Array.isArray(value)) return [];
+    const lines = value.filter((line): line is string => typeof line === "string");
+    return [[key, lines]];
+  }));
+  return {
+    ...DEFAULTS.discord,
+    ...top,
+    tool_activity: {
+      enabled: typeof rawToolActivity.enabled === "boolean"
+        ? rawToolActivity.enabled
+        : DEFAULTS.discord.tool_activity.enabled,
+      mode: rawToolActivity.mode === "replace" ? "replace" : "append",
+      pools_file: typeof rawToolActivity.pools_file === "string"
+        ? rawToolActivity.pools_file.trim()
+        : DEFAULTS.discord.tool_activity.pools_file,
+      pools,
+    },
+  } as UmiroConfig["discord"];
+}
+
 function mergeJournalConfig(resolved: unknown): UmiroConfig["journal"] {
   const top = defined(resolved);
   const d = DEFAULTS.journal;
@@ -479,7 +520,7 @@ export function loadConfig(): UmiroConfig {
 
   cached = {
     llm: normalizeLlmConfig(resolved.llm),
-    discord: { ...DEFAULTS.discord, ...defined(resolved.discord) } as UmiroConfig["discord"],
+    discord: mergeDiscordConfig(resolved.discord),
     journal: mergeJournalConfig(resolved.journal),
     soul_guardian: mergeSoulGuardianConfig(resolved.soul_guardian),
     tools: mergeToolsConfig(resolved.tools),

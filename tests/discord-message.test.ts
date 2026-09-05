@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderProgress } from "../src/bot.js";
+import { deliverFinalDiscordReply, renderProgress } from "../src/bot.js";
 import { MessageFlags } from "discord.js";
 import {
   assertDiscordV1Text,
@@ -102,10 +102,50 @@ test("migration returns the replacement ID even when old-message deletion fails"
 });
 
 
+test("progress rendering keeps only the newest status without exposing tool labels", () => {
+  const rendered = renderProgress([
+    { kind: "activity", id: "1", text: "📖 Reading the tiny runes..." },
+    { kind: "activity", id: "2", text: "🔍 Following a suspicious trail..." },
+  ]);
+  assert.equal(rendered, "🔍 Following a suspicious trail...");
+  assert.doesNotMatch(rendered, /Reading/);
+});
+
 test("progress text stays below the Discord V1 content limit", () => {
-  const rendered = renderProgress(Array.from({ length: 30 }, (_, index) => ({
-    kind: "text" as const,
-    text: `${index}: ${"x".repeat(300)}`,
-  })));
+  const rendered = renderProgress([{ kind: "text", text: "x".repeat(3000) }]);
   assert.ok(rendered.length <= 1900);
+});
+
+
+test("final Discord reply is created before the temporary activity is deleted", async () => {
+  const order: string[] = [];
+  const sent = await deliverFinalDiscordReply(
+    { reply: async () => { order.push("send"); return { id: "final" }; } } as never,
+    messagePayload("finished"),
+    { delete: async () => { order.push("delete"); } } as never,
+  );
+  assert.equal(sent.id, "final");
+  assert.deepEqual(order, ["send", "delete"]);
+});
+
+test("failed final delivery leaves the temporary activity message intact", async () => {
+  let deleted = false;
+  await assert.rejects(
+    deliverFinalDiscordReply(
+      { reply: async () => { throw new Error("send failed"); } } as never,
+      messagePayload("finished"),
+      { delete: async () => { deleted = true; } } as never,
+    ),
+    /send failed/,
+  );
+  assert.equal(deleted, false);
+});
+
+test("activity deletion failure does not invalidate the delivered final reply", async () => {
+  const sent = await deliverFinalDiscordReply(
+    { reply: async () => ({ id: "final" }) } as never,
+    messagePayload("finished"),
+    { delete: async () => { throw new Error("missing permission"); } } as never,
+  );
+  assert.equal(sent.id, "final");
 });

@@ -39,12 +39,14 @@ import {
 } from "./plugin-manager.js";
 import { syncApplicationEmojis, resolveEmojiMarkup } from "./emoji.js";
 import { KeyedSerialQueue } from "./utils/keyed-serial-queue.js";
+import { loadToolActivityPools, mergeToolActivityPools, ToolActivityPicker } from "./utils/tool-activity.js";
 import { shouldOnboard, buildOnboardingContext, isWorkspaceUnconfigured } from "./onboarding.js";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ROOT } from "./paths.js";
 
 import { loadCrons } from "./tools/builtin/cron.js";
 import { getAuthClient, getAuthUrl, exchangeCode } from "./google/auth.js";
@@ -963,29 +965,39 @@ async function formatIncomingMessage(message: Message, sessionId: string): Promi
   };
 }
 
-// --- Progress message editing ---
+// --- Tool activity message editing ---
 
-const PROGRESS_DEBOUNCE_MS = 1000;
-
-/** 進度訊息的單行：工具狀態，或 tool call 之間的文字 */
-export type ProgressLine =
-  | { kind: "tool"; id: string; label: string; status: "running" | "ok" | "err" }
-  | { kind: "text"; text: string };
-
-/** 單段中途文字的顯示上限，避免佔滿 Discord 的 2000 字 */
 const INTERIM_TEXT_LIMIT = 300;
 
+/** A temporary Discord activity line. Tool names and arguments are deliberately absent. */
+export type ProgressLine =
+  | { kind: "activity"; id: string; text: string; failed?: boolean }
+  | { kind: "text"; text: string };
+
+export async function deliverFinalDiscordReply(
+  source: Pick<Message, "reply">,
+  payload: ReturnType<typeof messagePayload>,
+  activity?: Pick<Message, "delete">,
+): Promise<Pick<Message, "id">> {
+  // Do not delete the temporary activity UI until Discord has acknowledged a new
+  // canonical message. If sending fails, the caller receives the error and the
+  // activity remains visible as evidence that the run did not vanish silently.
+  const sent = await source.reply(payload);
+  if (activity) {
+    await activity.delete().catch(deleteErr =>
+      logger.warn({ err: deleteErr }, "failed to delete temporary tool activity message after final delivery")
+    );
+  }
+  return sent;
+}
+
 export function renderProgress(lines: ProgressLine[]): string {
-  if (lines.length === 0) return "...";
-  const body = lines
-    .map(l => {
-      if (l.kind === "text") return `> ${l.text.replace(/\n+/g, "\n> ")}`;
-      const icon = l.status === "running" ? "→" : l.status === "ok" ? "✓" : "✗";
-      return `${icon} ${l.label}`;
-    })
-    .join("\n");
-  // 過場訊息，超長時保留尾端即可
-  return body.length > 1900 ? `${body.slice(-1900)}` : body;
+  const line = lines.at(-1);
+  if (!line) return "✨ Working on it...";
+  const body = line.kind === "text"
+    ? `> ${line.text.replace(/\n+/g, "\n> ")}`
+    : `${line.failed ? "✗ " : ""}${line.text}`;
+  return body.length > 1900 ? body.slice(-1900) : body;
 }
 
 // 靜默哨符判定集中在 utils/no-reply.ts，一般對話與排程共用同一套語意。
@@ -1047,14 +1059,22 @@ async function handleTrigger(message: Message, session: Session, images?: string
   // 進度訊息狀態
   let progressMsg: Message | undefined;
   const progressLines: ProgressLine[] = [];
-  let lastEditAt = 0;
+  const toolActivityConfig = loadConfig().discord.tool_activity;
+  let activityPools;
+  try {
+    activityPools = loadToolActivityPools({
+      inline: toolActivityConfig.pools,
+      file: toolActivityConfig.pools_file,
+      mode: toolActivityConfig.mode,
+      root: ROOT,
+    });
+  } catch (err) {
+    logger.error({ err }, "tool activity pools file could not be loaded; using inline/default pools");
+    activityPools = mergeToolActivityPools(toolActivityConfig.pools, toolActivityConfig.mode);
+  }
+  const activityPicker = new ToolActivityPicker(activityPools);
   let flushChain: Promise<void> = Promise.resolve();
-
-  const flushProgress = async (force = false) => {
-    const now = Date.now();
-    if (!force && now - lastEditAt < PROGRESS_DEBOUNCE_MS) return;
-    lastEditAt = now;
-    const body = renderProgress(progressLines);
+  const flushProgress = async (body: string) => {
     try {
       if (!progressMsg) {
         progressMsg = await message.reply(messagePayload(body));
@@ -1067,8 +1087,9 @@ async function handleTrigger(message: Message, session: Session, images?: string
   };
 
   const onProgress = (event: ProgressEvent) => {
+    if (!toolActivityConfig.enabled) return;
     if (event.type === "tool_start") {
-      progressLines.push({ kind: "tool", id: event.toolCallId, label: event.toolName, status: "running" });
+      progressLines.push({ kind: "activity", id: event.toolCallId, text: activityPicker.pick(event.toolName) });
     } else if (event.type === "text") {
       const text = event.text.length > INTERIM_TEXT_LIMIT
         ? `${event.text.slice(0, INTERIM_TEXT_LIMIT)}…`
@@ -1076,11 +1097,16 @@ async function handleTrigger(message: Message, session: Session, images?: string
       const visible = stripImageIndexBlock(text);
       if (visible.trim()) progressLines.push({ kind: "text", text: visible });
     } else {
-      const line = progressLines.find(l => l.kind === "tool" && l.id === event.toolCallId);
-      if (line?.kind === "tool") line.status = event.isError ? "err" : "ok";
+      const line = progressLines.find(l => l.kind === "activity" && l.id === event.toolCallId);
+      if (line?.kind === "activity") line.failed = event.isError;
+      // Successful completion leaves the current status alone. A failure refreshes
+      // only when that tool is still the newest visible activity.
+      if (!event.isError || line !== progressLines.at(-1)) return;
     }
-    // 不套用 debounce：被延後的話這段文字可能到最後都沒顯示過
-    flushChain = flushChain.then(() => flushProgress(event.type === "text"));
+    // Capture this event's status before later events mutate the in-memory list,
+    // then serialize Discord edits without delaying the underlying tool flow.
+    const body = renderProgress(progressLines);
+    flushChain = flushChain.then(() => flushProgress(body));
   };
 
   try {
@@ -1139,29 +1165,13 @@ async function handleTrigger(message: Message, session: Session, images?: string
     const sentIds: string[] = [];
     const attachments = response.attachments;
 
-    // 第一個 chunk：編輯進度訊息或發新訊息（附件跟第一個 chunk 一起發）
+    // The activity message is temporary UI, never the canonical answer. Always create
+    // a fresh Discord message for the final response so MESSAGE_CREATE-only consumers
+    // receive the completed answer. Delete the activity message only after delivery.
     const firstMessagePayload = messagePayload(chunks[0], { files: attachments });
-    const firstEditPayload = editPayload(chunks[0], { files: attachments });
-
-    if (progressMsg) {
-      try {
-        await progressMsg.edit(firstEditPayload);
-        sentIds.push(progressMsg.id);
-      } catch (err) {
-        // Editing the progress message can fail while uploading attachments. Do not
-        // silently leave the user with a stale ✓ tool-status message: log the real
-        // error and fall back to a fresh reply carrying the same payload.
-        logger.error({ err, attachmentCount: attachments.length }, "final progress message edit failed; sending fallback reply");
-        const sent = await message.reply(firstMessagePayload);
-        sentIds.push(sent.id);
-        await progressMsg.delete().catch(deleteErr =>
-          logger.warn({ err: deleteErr }, "failed to delete stale progress message after fallback")
-        );
-      }
-    } else {
-      const sent = await message.reply(firstMessagePayload);
-      sentIds.push(sent.id);
-    }
+    const sent = await deliverFinalDiscordReply(message, firstMessagePayload, progressMsg);
+    sentIds.push(sent.id);
+    progressMsg = undefined;
 
     // 剩餘 chunks：用 reply 發新訊息
     for (let i = 1; i < chunks.length; i++) {
