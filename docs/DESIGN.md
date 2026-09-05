@@ -155,7 +155,11 @@ attachment vision、self-evolve 子請求，以及 hosted web/image/code capabil
 不改 connection profile 的 protocol、endpoint、auth、capability，也不影響其他 session。
 
 OpenAI Chat adapter 依 profile 的 `tokenLimitField` 選擇 `max_completion_tokens` 或 `max_tokens`。
-`reasoningEffort: default` 不送 reasoning 欄位，其餘值以 `reasoning_effort` 傳給相容 gateway。
+`reasoningEffort: default` 不送 reasoning 欄位，其餘值以 `reasoning_effort` 傳給相容 endpoint。
+它只依賴 OpenAI-compatible Chat Completions 的公開 wire contract：文字／圖片 content parts、function tools、
+`tool_call_id` 對應、finish reason 與 token usage；不假設任何特定 gateway、帳號輪替或私有延伸。
+Bearer 與 trusted unauthenticated endpoint 都由 profile 明確選擇。HTTP contract tests 使用本機 mock transport，
+因此不需要外部服務、真實 credential 或特定部署才能重現。
 Hosted capability 由 profile 明確宣告；不支援時工具不曝光，也不能跨 profile 或跨模型 fallback。
 
 ### API 錯誤可觀測性與暫時性重試
@@ -166,7 +170,7 @@ Hosted capability 由 profile 明確宣告；不支援時工具不曝光，也�
 呼叫端應傳入原始 Error（`{ err }`），不要只留下 `err.message`，
 否則會遺失 `ECONNREFUSED`、`ECONNRESET`、DNS 等真正原因。
 
-短暫的網路錯誤，以及 HTTP `408`、`429`、`500`、`502`、`503`、`504`、`529`，
+短暫的網路錯誤，以及 HTTP `408`、`409`、`429`、`500`、`502`、`503`、`504`、`529`，
 會在共用 LLM HTTP boundary 內最多嘗試 3 次。等待時間優先採用標準 `Retry-After`，
 否則使用約 1 秒、2 秒的 exponential backoff 加少量 jitter；其他 4xx 等明確請求錯誤不重試。
 
