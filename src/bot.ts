@@ -39,13 +39,14 @@ import {
 } from "./plugin-manager.js";
 import { syncApplicationEmojis, resolveEmojiMarkup } from "./emoji.js";
 import { KeyedSerialQueue } from "./utils/keyed-serial-queue.js";
-import { mergeToolActivityPools, ToolActivityPicker } from "./utils/tool-activity.js";
+import { loadToolActivityPools, mergeToolActivityPools, ToolActivityPicker } from "./utils/tool-activity.js";
 import { shouldOnboard, buildOnboardingContext, isWorkspaceUnconfigured } from "./onboarding.js";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ROOT } from "./paths.js";
 
 import { loadCrons } from "./tools/builtin/cron.js";
 import { getAuthClient, getAuthUrl, exchangeCode } from "./google/auth.js";
@@ -1064,9 +1065,19 @@ async function handleTrigger(message: Message, session: Session, images?: string
   let progressMsg: Message | undefined;
   const progressLines: ProgressLine[] = [];
   const toolActivityConfig = loadConfig().discord.tool_activity;
-  const activityPicker = new ToolActivityPicker(
-    mergeToolActivityPools(toolActivityConfig.pools, toolActivityConfig.mode),
-  );
+  let activityPools;
+  try {
+    activityPools = loadToolActivityPools({
+      inline: toolActivityConfig.pools,
+      file: toolActivityConfig.pools_file,
+      mode: toolActivityConfig.mode,
+      root: ROOT,
+    });
+  } catch (err) {
+    logger.error({ err }, "tool activity pools file could not be loaded; using inline/default pools");
+    activityPools = mergeToolActivityPools(toolActivityConfig.pools, toolActivityConfig.mode);
+  }
+  const activityPicker = new ToolActivityPicker(activityPools);
   let lastEditAt = 0;
   let flushChain: Promise<void> = Promise.resolve();
 

@@ -48,6 +48,8 @@ export interface UmiroConfig {
       enabled: boolean;
       mode: "append" | "replace";
       max_visible_lines: number;
+      /** Optional YAML/JSON pool file. Relative paths resolve from the Umiro root. */
+      pools_file: string;
       pools: ToolActivityPools;
     };
   };
@@ -195,6 +197,7 @@ const DEFAULTS: UmiroConfig = {
       enabled: true,
       mode: "append",
       max_visible_lines: 8,
+      pools_file: "",
       pools: {},
     },
   },
@@ -478,6 +481,9 @@ function mergeDiscordConfig(resolved: unknown): UmiroConfig["discord"] {
         1,
         50,
       ),
+      pools_file: typeof rawToolActivity.pools_file === "string"
+        ? rawToolActivity.pools_file.trim()
+        : DEFAULTS.discord.tool_activity.pools_file,
       pools,
     },
   } as UmiroConfig["discord"];

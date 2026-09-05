@@ -27,7 +27,7 @@ Umiro runs a protocol-neutral agent loop through configurable LLM connection pro
 | **Guarded** | Soul Guardian integrity monitoring on protected workspace files |
 | **Readable logs** | One file per local day — `logs/umiro-YYYY-MM-DD.log` |
 
-For architecture and data flow, see [docs/DESIGN.md](docs/DESIGN.md). To build a private tool integration, see [docs/PLUGINS.md](docs/PLUGINS.md).
+For architecture and data flow, see [docs/DESIGN.md](docs/DESIGN.md). Tool activity phrase libraries are documented in [docs/TOOL_ACTIVITY.md](docs/TOOL_ACTIVITY.md). To build a private tool integration, see [docs/PLUGINS.md](docs/PLUGINS.md).
 
 ## Requirements
 

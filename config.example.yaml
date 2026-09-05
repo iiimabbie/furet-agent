@@ -56,12 +56,10 @@ discord:
     enabled: true                         # show a temporary activity message while tools run
     mode: "append"                        # append | replace custom pools against built-in English defaults
     max_visible_lines: 8                  # keep the newest activity lines in the temporary message (1-50)
-    pools: {}                             # optional tool/category overrides; never put secrets or arguments here
-    # pools:
-    #   read_file:
-    #     - "Reading the tiny runes..."
-    #   common:
-    #     - "Doing a little bit of magic..."
+    pools_file: ""                        # optional YAML/JSON file; relative paths resolve from the Umiro root
+                                          # e.g. workspace/config/tool-activity.yaml
+    pools: {}                             # optional small inline overrides; inline keys win over pools_file
+                                          # keep larger phrase libraries in pools_file instead of config.yaml
 
 journal:
   enabled: false                        # auto-write a daily journal at scheduled time

@@ -22,6 +22,7 @@ test("tool activity config defaults are safe and enabled", () => {
     enabled: true,
     mode: "append",
     max_visible_lines: 8,
+    pools_file: "",
     pools: {},
   });
 });
@@ -32,6 +33,7 @@ test("tool activity config normalizes mode, bounds and string-list pools", () =>
     enabled: false
     mode: replace
     max_visible_lines: 999
+    pools_file: workspace/config/tool-activity.yaml
     pools:
       read_file: ["one", 2, "two"]
       invalid: nope
@@ -39,6 +41,7 @@ test("tool activity config normalizes mode, bounds and string-list pools", () =>
     enabled: false,
     mode: "replace",
     max_visible_lines: 50,
+    pools_file: "workspace/config/tool-activity.yaml",
     pools: { read_file: ["one", "two"] },
   });
 });

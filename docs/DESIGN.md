@@ -679,8 +679,9 @@ Tool call 開始時，Discord 建立或編輯一則**暫時工具活動訊息**�
 依工具專屬池 → category 池 → common 池選擇，使用 shuffle bag 避免短期重複。
 公開內建文案是原創、provider-neutral 的 whimsical fae 語氣，不引用特定遊戲台詞或角色名稱。
 
-`discord.tool_activity` 可停用活動訊息、設定 `append`／`replace`、最大可見行數，並以 `pools`
-在本機 workspace 設定覆寫或追加工具／category 文案。核心 repo 只保留通用預設，不含私人 persona 資料。
+`discord.tool_activity` 可停用活動訊息、設定 `append`／`replace`、最大可見行數。較大的自訂文案庫
+應透過 `pools_file` 放在獨立 YAML／JSON；相對路徑以 Umiro root 解析。`pools` 仍保留給少量 inline 覆寫
+與向下相容，且同名 key 優先於檔案內容。完整格式見 `docs/TOOL_ACTIVITY.md`。核心 repo 只保留通用預設，不含私人 persona 資料。
 文案只描述正在做的事，不在工具完成前宣稱成功；失敗可在該行加上 `✗`，錯誤細節仍由正式回答說明。
 
 Agent 在 tool call 之間產生的文字仍以 `> 引用` 暫時顯示。活動更新防抖 1 秒；最多保留設定的近期行數，

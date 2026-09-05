@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
+import { parse } from "yaml";
+
 export type ToolActivityPools = Record<string, string[]>;
 export type RandomSource = () => number;
 
@@ -177,7 +181,7 @@ export function toolActivityCategory(toolName: string): string | undefined {
   if (toolName.startsWith("google_")) return "google";
   if (toolName.startsWith("cron_") || toolName.startsWith("reminder_")) return "schedule";
   if (toolName.startsWith("soul_guardian_")) return "integrity";
-  if (toolName.startsWith("skill_") || toolName.startsWith("plugin_")) return "github";
+  if (toolName.startsWith("skill_")) return "github";
   return undefined;
 }
 
@@ -202,6 +206,38 @@ export function mergeToolActivityPools(
     key,
     [...(DEFAULT_TOOL_ACTIVITY_POOLS[key] ?? []), ...(normalized[key] ?? [])],
   ]));
+}
+
+
+export interface LoadToolActivityPoolsOptions {
+  inline?: ToolActivityPools;
+  file?: string;
+  mode: "append" | "replace";
+  root: string;
+}
+
+/**
+ * Load optional custom pools from a separate YAML/JSON file, then overlay inline pools.
+ * Relative paths resolve from the Umiro root. Invalid files fail fast so a configured
+ * customization never silently disappears.
+ */
+export function loadToolActivityPools(options: LoadToolActivityPoolsOptions): ToolActivityPools {
+  let filePools: ToolActivityPools = {};
+  if (options.file) {
+    const path = isAbsolute(options.file) ? options.file : resolve(options.root, options.file);
+    let parsed: unknown;
+    try {
+      parsed = parse(readFileSync(path, "utf8"));
+    } catch (error) {
+      throw new Error(`Unable to load tool activity pools file: ${path}`, { cause: error });
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`Tool activity pools file must contain a mapping: ${path}`);
+    }
+    filePools = parsed as ToolActivityPools;
+  }
+  const custom = { ...filePools, ...(options.inline ?? {}) };
+  return mergeToolActivityPools(custom, options.mode);
 }
 
 /** Stateful shuffle-bag picker: each pool is exhausted before it is reshuffled. */

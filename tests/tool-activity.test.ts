@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   ToolActivityPicker,
+  loadToolActivityPools,
   mergeToolActivityPools,
   toolActivityCategory,
 } from "../src/utils/tool-activity.js";
@@ -36,4 +40,30 @@ test("categories cover dynamic tool families", () => {
   assert.equal(toolActivityCategory("google_drive_read"), "google");
   assert.equal(toolActivityCategory("reminder_create"), "schedule");
   assert.equal(toolActivityCategory("soul_guardian_check"), "integrity");
+  assert.equal(toolActivityCategory("plugin_daily_report"), undefined);
+  assert.equal(new ToolActivityPicker({ common: ["common"], github: ["github"] }, () => 0).pick("plugin_daily_report"), "common");
+});
+
+
+test("external pool files merge before inline overrides", () => {
+  const root = mkdtempSync(join(tmpdir(), "umiro-tool-activity-pools-"));
+  writeFileSync(join(root, "pools.yaml"), `common:
+  - from-file
+read_file:
+  - file-read
+`);
+  assert.deepEqual(loadToolActivityPools({
+    file: "pools.yaml",
+    inline: { read_file: ["inline-read"] },
+    mode: "replace",
+    root,
+  }), { common: ["from-file"], read_file: ["inline-read"] });
+});
+
+test("invalid external pool files fail with a useful error", () => {
+  const root = mkdtempSync(join(tmpdir(), "umiro-tool-activity-pools-"));
+  writeFileSync(join(root, "pools.yaml"), `- not
+- a mapping
+`);
+  assert.throws(() => loadToolActivityPools({ file: "pools.yaml", mode: "append", root }), /must contain a mapping/);
 });
