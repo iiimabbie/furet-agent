@@ -218,7 +218,11 @@ Do not include casual filler, repeated discussion, tool-call narration, shell co
  * segment is first persisted as an immutable archive; if that write fails, leave
  * the session untouched rather than risking irreversible history loss.
  */
-export async function compactSession(session: import("./session.js").Session, profileOverride?: LlmProfile): Promise<string | null> {
+export async function compactSession(
+  session: import("./session.js").Session,
+  profileOverride?: LlmProfile,
+  signal?: AbortSignal,
+): Promise<string | null> {
   const messages = session.getMessages();
   if (messages.length <= COMPACT_KEEP_RECENT) return null;
 
@@ -234,7 +238,9 @@ export async function compactSession(session: import("./session.js").Session, pr
         { role: "user", content: transcript },
       ],
       maxTokens: 8192,
+      signal,
     }, profile);
+    signal?.throwIfAborted();
     const summary = response.text.trim();
     if (!summary) return null;
 
@@ -247,6 +253,10 @@ export async function compactSession(session: import("./session.js").Session, pr
     logger.info({ sessionId: session.id, summarizedMessages: toSummarize.length, summaryLength: summary.length }, "compaction done");
     return summary;
   } catch (err) {
+    // Caller cancellation is control flow, not a recoverable compaction failure.
+    // Propagate it so /stop ends the active run instead of continuing into the
+    // normal agent turn after a cancelled summary request.
+    if (signal?.aborted) throw signal.reason;
     logger.error({ err: (err as Error).message, sessionId: session.id }, "compaction failed");
   }
   return null;
@@ -435,7 +445,7 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
     const totalTokens = session.getMessages().reduce((sum, m) => sum + estimateTokens(m), 0);
     if (totalTokens > maxContextTokens * COMPACT_THRESHOLD) {
       logger.info({ totalTokens, threshold: maxContextTokens * COMPACT_THRESHOLD }, "auto compaction triggered");
-      await compactSession(session, requestProfile);
+      await compactSession(session, requestProfile, options.runControl?.signal);
     }
   }
 
