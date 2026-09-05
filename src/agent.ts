@@ -396,7 +396,21 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
   const runtimeContext = [buildLlmContext(requestProfile), options.systemPrompt]
     .filter((part): part is string => Boolean(part?.trim()))
     .join("\n\n");
-  const baseSystemPrompt = buildSystemPrompt(runtimeContext, recalledSection, toolIndexSection, options.trigger ?? "unknown");
+  const peopleMessages = session?.getMessages() ?? [];
+  const latestPeopleMessage = [...peopleMessages].reverse()
+    .find(message => message.role === "user" && typeof message.content === "string");
+  const baseSystemPrompt = buildSystemPrompt({
+    extra: runtimeContext,
+    recalled: recalledSection,
+    toolIndex: toolIndexSection,
+    trigger: options.trigger ?? "unknown",
+    peopleContext: {
+      currentText: prompt ?? (latestPeopleMessage?.content as string | undefined) ?? "",
+      messages: peopleMessages,
+      currentUserId: options.userId,
+      ownerId: cfg.discord.owner_id,
+    },
+  });
   const systemPrompt = baseSystemPrompt
     + renderToolHistory(session?.getRecentToolEvents() ?? []);
   logger.info({ systemPromptLength: systemPrompt.length, hasPersona: systemPrompt.includes("<persona>"), hasMemory: systemPrompt.includes("<memory>") }, "system prompt check");

@@ -5,7 +5,7 @@ import { WORKSPACE_CONFIG_DIR } from "./paths.js";
 import { logger } from "./logger.js";
 import { toSearchTokens } from "./utils/cjk.js";
 
-const DB_PATH = resolve(WORKSPACE_CONFIG_DIR, "umiro.db");
+const DB_PATH = process.env.UMIRO_DB_PATH ?? resolve(WORKSPACE_CONFIG_DIR, "umiro.db");
 
 let db: Database.Database | null = null;
 
