@@ -290,7 +290,7 @@ function renderContent(record: DiscordButtonMessageRecord): string {
       const outcome = record.buttonResults[button.id];
       if (!outcome) continue;
       const icon = outcome.status === "completed" ? "☑️" : "❌";
-      resultLines.push(`${icon} **${button.label}** — ${truncate(outcome.text, 200)}`);
+      resultLines.push(`${icon} **${button.label}**\n${truncate(outcome.text, 200)}`);
     }
     if (resultLines.length) lines.push("", ...resultLines);
   }
