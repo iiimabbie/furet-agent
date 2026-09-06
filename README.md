@@ -2,6 +2,8 @@
 
 <img src="assets/umiro-header.png" alt="Umiro" width="700">
 
+**English** · [繁體中文](README.zh-TW.md)
+
 **A self-hosted personal AI assistant for Discord and the terminal.**
 
 [![version](https://img.shields.io/badge/version-0.1.0-blue)](package.json)
@@ -153,7 +155,9 @@ Umiro responds when mentioned, and can reply without a mention in the channel ID
 | Command | | |
 |---|---|---|
 | `/new` | Archive the channel session and start a new conversation | |
-| `/status` | Model, session, and token information | |
+| `/status` | Model, session, token, and active-run information | |
+| `/stop` | Stop the active run in the current session | run initiator or owner |
+| `/queue` | Set `followup` / `steer` handling for the current session, or reset to the global default | |
 | `/compact` | Summarize older context, retaining recent messages | |
 | `/task` | List Google Tasks | |
 | `/model` | Switch the session's model and reasoning effort | owner only |
@@ -219,7 +223,7 @@ umiro plugin remove <name>
 
 A plugin package declares its entry as `"umiro": { "plugin": "./dist/index.js" }` in `package.json`. The installer runs dependency installation and an optional `build` script, but deliberately does not restart the gateway.
 
-Discord's owner-only `/plugin` command takes a required `動作` option (安裝 / 更新 / 卸載) and an optional `目標` string, which accepts a GitHub URL for installation and offers installed-plugin autocomplete for update and removal. Omitting `目標` while updating updates every managed source. The caller is compared directly against `discord.owner_id`, because installing a plugin executes trusted code on the host — Discord installs accept public HTTPS GitHub links only, while local paths, SSH sources, and enable/disable maintenance stay on the host CLI.
+Discord's owner-only `/plugin` command takes a required `action` option (`install`, `update`, or `remove`) and an optional `target` string, which accepts a GitHub URL for installation and offers installed-plugin autocomplete for update and removal. Omitting `target` while updating updates every managed source. The caller is compared directly against `discord.owner_id`, because installing a plugin executes trusted code on the host — Discord installs accept public HTTPS GitHub links only, while local paths, SSH sources, and enable/disable maintenance stay on the host CLI.
 
 > [!WARNING]
 > Plugin code runs inside the Umiro process without a sandbox. Tool permissions still flow through the central registry.

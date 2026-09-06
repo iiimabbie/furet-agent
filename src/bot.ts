@@ -85,76 +85,76 @@ function getChannelTypeInfo(channel: TextBasedChannel | null | undefined): strin
 const SLASH_COMMANDS = [
   new SlashCommandBuilder()
     .setName("new")
-    .setDescription("開始新對話（歸檔當前頻道的 session）")
+    .setDescription("Start a new conversation and archive the current session")
     .toJSON(),
   new SlashCommandBuilder()
     .setName("status")
-    .setDescription("查看 bot 狀態")
+    .setDescription("Show bot status")
     .toJSON(),
   new SlashCommandBuilder()
     .setName("stop")
-    .setDescription("停止目前 session 正在執行的工作")
+    .setDescription("Stop the active run in the current session")
     .toJSON(),
   new SlashCommandBuilder()
     .setName("queue")
-    .setDescription("設定目前 session 的訊息處理模式")
-    .addStringOption(opt => opt.setName("mode").setDescription("followup、steer 或 reset").setRequired(true).addChoices(
-      { name: "followup（排到下一輪）", value: "followup" },
-      { name: "steer（下一個安全邊界併入）", value: "steer" },
-      { name: "reset（使用全域預設）", value: "reset" },
+    .setDescription("Set the message handling mode for the current session")
+    .addStringOption(opt => opt.setName("mode").setDescription("followup, steer, or reset").setRequired(true).addChoices(
+      { name: "followup (queue a new run)", value: "followup" },
+      { name: "steer (merge at the next safe boundary)", value: "steer" },
+      { name: "reset (use the global default)", value: "reset" },
     ))
     .toJSON(),
   new SlashCommandBuilder()
     .setName("restart")
-    .setDescription("重啟整個 umiro gateway（owner only）")
+    .setDescription("Restart the Umiro gateway (owner only)")
     .toJSON(),
   new SlashCommandBuilder()
     .setName("model")
-    .setDescription("切換 AI 模型（owner only）")
+    .setDescription("Switch the AI model (owner only)")
     .addStringOption(opt =>
-      opt.setName("name").setDescription("模型名稱").setRequired(true).setAutocomplete(true)
+      opt.setName("name").setDescription("Model name").setRequired(true).setAutocomplete(true)
     )
     .addStringOption(opt =>
       opt.setName("effort")
-        .setDescription("思考等級（省略時使用模型預設）")
+        .setDescription("Reasoning effort (omit to use the model default)")
         .setRequired(false)
         .addChoices(...REASONING_EFFORTS.map(value => ({
-          name: value === "default" ? "default（模型預設）" : value,
+          name: value === "default" ? "default (model default)" : value,
           value,
         })))
     )
     .toJSON(),
   new SlashCommandBuilder()
     .setName("google-auth")
-    .setDescription("Google OAuth 授權（owner only）")
+    .setDescription("Authorize Google OAuth (owner only)")
     .addStringOption(opt =>
-      opt.setName("callback").setDescription("授權後的 redirect 網址").setRequired(false)
+      opt.setName("callback").setDescription("Redirect URL after authorization").setRequired(false)
     )
     .toJSON(),
   new SlashCommandBuilder()
     .setName("task")
-    .setDescription("列出 Google Tasks 待辦事項")
+    .setDescription("List Google Tasks")
     .toJSON(),
   new SlashCommandBuilder()
     .setName("compact")
-    .setDescription("壓縮當前 session（摘要舊對話，保留最近訊息）")
+    .setDescription("Compact the current session while preserving recent messages")
     .toJSON(),
   new SlashCommandBuilder()
     .setName("plugin")
-    .setDescription("安裝、更新或卸載 Umiro 外掛（owner only）")
+    .setDescription("Install, update, or remove Umiro plugins (owner only)")
     .addStringOption(opt =>
-      opt.setName("動作")
-        .setDescription("選擇要執行的外掛操作")
+      opt.setName("action")
+        .setDescription("Plugin operation")
         .setRequired(true)
         .addChoices(
-          { name: "安裝", value: "install" },
-          { name: "更新", value: "update" },
-          { name: "卸載", value: "remove" },
+          { name: "install", value: "install" },
+          { name: "update", value: "update" },
+          { name: "remove", value: "remove" },
         )
     )
     .addStringOption(opt =>
-      opt.setName("目標")
-        .setDescription("安裝時貼 GitHub 網址；更新或卸載時選外掛（更新留空＝全部）")
+      opt.setName("target")
+        .setDescription("GitHub URL for install, or plugin name for update/remove")
         .setRequired(false)
         .setAutocomplete(true)
     )
@@ -464,7 +464,7 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
           await interaction.respond([]);
           return;
         }
-        const action = interaction.options.getString("動作");
+        const action = interaction.options.getString("action");
         if (action !== "update" && action !== "remove") {
           await interaction.respond([]);
           return;
@@ -793,8 +793,8 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
         return;
       }
 
-      const action = interaction.options.getString("動作", true);
-      const target = interaction.options.getString("目標")?.trim() || undefined;
+      const action = interaction.options.getString("action", true);
+      const target = interaction.options.getString("target")?.trim() || undefined;
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
         if (action === "install") {
