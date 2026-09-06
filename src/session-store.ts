@@ -162,7 +162,8 @@ function normalizeModelSettings(value: SessionModelSettings | undefined): Sessio
     || typeof value.revision !== "number" || !Number.isInteger(value.revision) || value.revision < 0) {
     throw new Error("session file is missing valid modelSettings");
   }
-  return { ...value, profile: value.profile.trim(), model: value.model.trim() };
+  const queueMode = value.queueMode === "followup" || value.queueMode === "steer" ? value.queueMode : undefined;
+  return { ...value, profile: value.profile.trim(), model: value.model.trim(), ...(queueMode ? { queueMode } : {}) };
 }
 
 function emptySnapshot(modelSettings: SessionModelSettings): SessionSnapshot {

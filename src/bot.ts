@@ -39,6 +39,7 @@ import {
 } from "./plugin-manager.js";
 import { syncApplicationEmojis, resolveEmojiMarkup } from "./emoji.js";
 import { KeyedSerialQueue } from "./utils/keyed-serial-queue.js";
+import { activeRuns, RunStoppedError } from "./active-runs.js";
 import { loadToolActivityPools, mergeToolActivityPools, ToolActivityPicker } from "./utils/tool-activity.js";
 import { shouldOnboard, buildOnboardingContext, isWorkspaceUnconfigured } from "./onboarding.js";
 import { readFile, unlink, writeFile } from "node:fs/promises";
@@ -52,7 +53,7 @@ import { loadCrons } from "./tools/builtin/cron.js";
 import { getAuthClient, getAuthUrl, exchangeCode } from "./google/auth.js";
 import { google } from "googleapis";
 import { loadReminders } from "./tools/builtin/reminder.js";
-import type { AttachmentReference, TokenUsage, ProgressEvent } from "./types.js";
+import type { AttachmentReference, DiscordQueueMode, TokenUsage, ProgressEvent } from "./types.js";
 import { prepareRemoteAttachmentReferences, type RemoteAttachmentInput, applyInlineImageDescriptions } from "./attachment-index.js";
 
 function buildChannelContext(channelId: string, sessionId: string, extra?: string): string {
@@ -89,6 +90,19 @@ const SLASH_COMMANDS = [
   new SlashCommandBuilder()
     .setName("status")
     .setDescription("查看 bot 狀態")
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("stop")
+    .setDescription("停止目前 session 正在執行的工作")
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("queue")
+    .setDescription("設定目前 session 的訊息處理模式")
+    .addStringOption(opt => opt.setName("mode").setDescription("followup、steer 或 reset").setRequired(true).addChoices(
+      { name: "followup（排到下一輪）", value: "followup" },
+      { name: "steer（下一個安全邊界併入）", value: "steer" },
+      { name: "reset（使用全域預設）", value: "reset" },
+    ))
     .toJSON(),
   new SlashCommandBuilder()
     .setName("restart")
@@ -341,6 +355,11 @@ function sessionIdForMessage(msg: Message): string {
     : `discord-dm-${msg.author.id}`;
 }
 
+function effectiveQueueMode(session: Session, config = loadConfig()): { mode: DiscordQueueMode; source: "session" | "global" } {
+  const override = session.getQueueModeOverride();
+  return override ? { mode: override, source: "session" } : { mode: config.discord.queue_mode, source: "global" };
+}
+
 export async function startBot(token: string, beforeCommandRegistration?: () => Promise<void>): Promise<void> {
   const client = new Client({
     intents: [
@@ -565,6 +584,34 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
       });
     }
 
+    if (interaction.commandName === "stop") {
+      const config = loadConfig();
+      const sessionId = interaction.guild
+        ? `discord-channel-${interaction.channelId}`
+        : `discord-dm-${interaction.user.id}`;
+      const result = activeRuns.requestStop(sessionId, interaction.user.id, config.discord.owner_id);
+      const text = result === "stopping" ? "已要求停止；目前的模型請求會立即取消，工具若已開始則會在安全邊界停下。"
+        : result === "already-stopping" ? "這個 session 已經在停止中了。"
+        : result === "forbidden" ? "只有目前工作的觸發者或 owner 能停止它。"
+        : "這個 session 現在沒有執行中的工作。";
+      await interaction.reply(interactionPayload(text, { ephemeral: true }));
+    }
+
+    if (interaction.commandName === "queue") {
+      const config = loadConfig();
+      const sessionId = interaction.guild
+        ? `discord-channel-${interaction.channelId}`
+        : `discord-dm-${interaction.user.id}`;
+      const mode = interaction.options.getString("mode", true);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await discordSessionQueue.enqueue(sessionId, async () => {
+        const session = new Session(sessionId);
+        session.setQueueModeOverride(mode === "reset" ? undefined : mode as DiscordQueueMode);
+        const effective = effectiveQueueMode(session, config);
+        await interaction.editReply(editPayload(`Queue mode：\`${effective.mode}\`（${effective.source === "session" ? "session override" : "global default"}）`));
+      });
+    }
+
     if (interaction.commandName === "status") {
       const config = loadConfig();
       const sessionId = interaction.guild
@@ -578,6 +625,8 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
       const activeSessions = Session.listActive();
       const skills = config.skills;
       const pluginStatus = getPluginRuntimeStatus();
+      const queueMode = effectiveQueueMode(session, config);
+      const activeRun = activeRuns.snapshot(sessionId);
 
       const totalTokens = usage.inputTokens + usage.outputTokens;
       const embed = new EmbedBuilder()
@@ -586,6 +635,8 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
         .addFields(
           { name: "Model", value: `\`${sessionProfile.model}\``, inline: true },
           { name: "Reasoning", value: `\`${sessionProfile.reasoningEffort}\``, inline: true },
+          { name: "Queue Mode", value: `\`${queueMode.mode}\` (${queueMode.source})`, inline: true },
+          { name: "Current Run", value: activeRun ? (activeRun.stopRequested ? "stopping" : `running · ${activeRun.pendingInputs} pending steer`) : "idle", inline: true },
           { name: "Tokens", value: `${totalTokens.toLocaleString()} (in: ${usage.inputTokens.toLocaleString()} / out: ${usage.outputTokens.toLocaleString()})`, inline: false },
           { name: "Active Sessions", value: `${activeSessions.length}`, inline: true },
           { name: "Crons", value: `${crons.filter(c => c.enabled).length} active / ${crons.length} total`, inline: true },
@@ -828,6 +879,28 @@ export async function startBot(token: string, beforeCommandRegistration?: () => 
     // A context message arriving behind a queued trigger must not be dropped merely
     // because that trigger has not created the session file yet.
     if (!isTrigger && !Session.exists(sessionId) && !discordSessionQueue.has(sessionId)) return;
+
+    // Steer bypasses the serial queue only for a trigger by the same verified author.
+    // It is formatted here but persisted by the active agent at the next turn boundary.
+    if (isTrigger && activeRuns.has(sessionId)) {
+      const probe = new Session(sessionId);
+      if (effectiveQueueMode(probe, config).mode === "steer") {
+        const fmt = await formatIncomingMessage(message, sessionId);
+        const accepted = activeRuns.steer(sessionId, message.author.id, {
+          message: {
+            role: "user", content: fmt.content, time: fmt.time, msgId: fmt.msgId,
+            ...(fmt.replyTo ? { replyTo: fmt.replyTo } : {}),
+            ...(fmt.attachments?.length ? { attachments: fmt.attachments } : {}),
+          },
+          images: fmt.images,
+          order: message.id,
+        });
+        if (accepted) {
+          logger.info({ sessionId, messageId: message.id }, "Discord trigger steered into active run");
+          return;
+        }
+      }
+    }
 
     await discordSessionQueue.enqueue(sessionId, async () => {
       const session = new Session(sessionId);
@@ -1109,6 +1182,7 @@ async function handleTrigger(message: Message, session: Session, images?: string
     flushChain = flushChain.then(() => flushProgress(body));
   };
 
+  const run = activeRuns.start(session.id, message.author.id);
   try {
     const baseContext = buildChannelContext(message.channelId, session.id, getChannelTypeInfo(channel));
     // Describe images in the same turn that already uploaded them; the background vision
@@ -1127,6 +1201,12 @@ async function handleTrigger(message: Message, session: Session, images?: string
       trigger: peopleVisibility === "owner" ? "discord-owner" : "discord-other",
       userId: message.author.id,
       peopleVisibility,
+      runControl: {
+        signal: run.controller.signal,
+        isStopRequested: () => run.isStopRequested(),
+        drainPendingInputs: () => run.drainPending(),
+        drainPendingInputsOrSeal: () => run.drainPendingOrSeal(),
+      },
     });
     if (imageCount > 0 && response.text) {
       storeInlineImageDescriptions(session, response.text, imageCount);
@@ -1190,10 +1270,18 @@ async function handleTrigger(message: Message, session: Session, images?: string
     }
     logger.info({ sessionId: session.id, chunks: chunks.length, sentIds }, "discord reply sent");
   } catch (err) {
-    logger.error({ err }, "discord handle trigger failed");
-    if (progressMsg) await progressMsg.delete().catch(() => {});
-    await message.react("🤕").catch(() => {});
+    if (err instanceof RunStoppedError || run.isStopRequested()) {
+      logger.info({ sessionId: session.id }, "discord active run stopped");
+      await flushChain;
+      if (progressMsg) await progressMsg.delete().catch(() => {});
+      await message.reply(messagePayload("已停止。"));
+    } else {
+      logger.error({ err }, "discord handle trigger failed");
+      if (progressMsg) await progressMsg.delete().catch(() => {});
+      await message.react("🤕").catch(() => {});
+    }
   } finally {
+    activeRuns.finish(run);
     clearInterval(typingInterval);
   }
 }

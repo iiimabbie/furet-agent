@@ -14,6 +14,7 @@ import type { LlmContent, LlmImagePart, LlmMessage, LlmFunctionTool, LlmProfile 
 import { safeFetchBuffer } from "./utils/safe-http.js";
 import { truncateSearchText } from "./utils/search-output.js";
 import { buildUntrustedRecallSection } from "./utils/untrusted-recall.js";
+import { RunStoppedError } from "./active-runs.js";
 
 /** Render a bounded, human-readable projection of recent tool work for the next turn.
  * Full tool input/output remains in Session.toolHistory; this is deliberately only a
@@ -217,7 +218,11 @@ Do not include casual filler, repeated discussion, tool-call narration, shell co
  * segment is first persisted as an immutable archive; if that write fails, leave
  * the session untouched rather than risking irreversible history loss.
  */
-export async function compactSession(session: import("./session.js").Session, profileOverride?: LlmProfile): Promise<string | null> {
+export async function compactSession(
+  session: import("./session.js").Session,
+  profileOverride?: LlmProfile,
+  signal?: AbortSignal,
+): Promise<string | null> {
   const messages = session.getMessages();
   if (messages.length <= COMPACT_KEEP_RECENT) return null;
 
@@ -233,7 +238,9 @@ export async function compactSession(session: import("./session.js").Session, pr
         { role: "user", content: transcript },
       ],
       maxTokens: 8192,
+      signal,
     }, profile);
+    signal?.throwIfAborted();
     const summary = response.text.trim();
     if (!summary) return null;
 
@@ -246,6 +253,10 @@ export async function compactSession(session: import("./session.js").Session, pr
     logger.info({ sessionId: session.id, summarizedMessages: toSummarize.length, summaryLength: summary.length }, "compaction done");
     return summary;
   } catch (err) {
+    // Caller cancellation is control flow, not a recoverable compaction failure.
+    // Propagate it so /stop ends the active run instead of continuing into the
+    // normal agent turn after a cancelled summary request.
+    if (signal?.aborted) throw signal.reason;
     logger.error({ err: (err as Error).message, sessionId: session.id }, "compaction failed");
   }
   return null;
@@ -434,7 +445,7 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
     const totalTokens = session.getMessages().reduce((sum, m) => sum + estimateTokens(m), 0);
     if (totalTokens > maxContextTokens * COMPACT_THRESHOLD) {
       logger.info({ totalTokens, threshold: maxContextTokens * COMPACT_THRESHOLD }, "auto compaction triggered");
-      await compactSession(session, requestProfile);
+      await compactSession(session, requestProfile, options.runControl?.signal);
     }
   }
 
@@ -477,7 +488,7 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
 
   // Text used by the deterministic matcher: the freshest user intent. Prefer the
   // explicit prompt; fall back to the last user message in the session (Discord path).
-  const matchText = (prompt ?? recallQuery ?? "");
+  let matchText = (prompt ?? recallQuery ?? "");
   // Tools surfaced this request (named directly, or described/searched via tool_catalog).
   // Once surfaced, a tool's schema may be exposed directly on subsequent turns.
   const enabledTools = new Set<string>();
@@ -495,11 +506,31 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
     });
   }
 
+  async function ingestPendingInputs(sealIfEmpty = false): Promise<number> {
+    const pendingInputs = sealIfEmpty
+      ? options.runControl?.drainPendingInputsOrSeal() ?? []
+      : options.runControl?.drainPendingInputs() ?? [];
+    for (const pending of pendingInputs) {
+      session?.append(pending.message);
+      const text = typeof pending.message.content === "string" ? pending.message.content : "";
+      messages.push({ role: "user", content: await buildUserContent(text, pending.images) });
+      if (text) matchText = text;
+    }
+    return pendingInputs.length;
+  }
+
   for (let turn = 0; turn < maxTurns; turn++) {
+    if (options.runControl?.isStopRequested()) throw new RunStoppedError();
+
+    // Steered input is persisted and added to the live request only at this safe
+    // boundary. Tools already in progress are never interrupted midway.
+    await ingestPendingInputs();
+
     const response = await generateLlmResponse({
       messages,
       tools: toolsForTurn(),
       maxTokens: 8192,
+      signal: options.runControl?.signal,
     }, requestProfile);
 
     logger.info({ turn, finishReason: response.finishReason, toolCalls: response.toolCalls.map(call => call.name) }, "agent turn");
@@ -507,12 +538,20 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
     totalUsage.outputTokens += response.usage.outputTokens;
     totalUsage.reasoningTokens += response.usage.reasoningTokens;
 
+    // A message may arrive while the model is producing what it thinks is the final
+    // answer. If so, discard that stale draft and let the next turn answer with the
+    // newly persisted input included rather than sending two contradictory replies.
+    if (await ingestPendingInputs() > 0) continue;
+
     // Preserve the exact assistant tool_calls message only inside this live request.
     // Durable sessions store conversational text and the separate immutable tool ledger.
     if (response.text || response.toolCalls.length > 0) messages.push(response.assistantMessage);
     if (response.text) session?.append({ role: "assistant", content: [{ type: "text", text: response.text }], time: nowTimestamp() });
 
     if (response.toolCalls.length === 0) {
+      // Seal only when this response is truly ready for delivery. A blank response may
+      // need the synthetic retry below, so it must continue accepting steer.
+      if (response.text && await ingestPendingInputs(true) > 0) continue;
       if (!response.text && turn < maxTurns - 1) {
         messages.push({ role: "user", content: "[System] Please reply to the user with a text response." });
         continue;
@@ -526,6 +565,7 @@ async function askInContext(prompt: string | null, options: AgentOptions = {}): 
     if (response.text.trim()) options.onProgress?.({ type: "text", text: response.text.trim() });
 
     for (const toolCall of response.toolCalls) {
+      if (options.runControl?.isStopRequested()) throw new RunStoppedError();
       let displayName = toolCall.name || "invalid_function_call";
       if (toolCall.name === "tool_catalog") {
         const catAction = String(toolCall.input.action ?? "");

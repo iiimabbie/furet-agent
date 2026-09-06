@@ -121,6 +121,22 @@ test("chat HTTP rejects missing bearer credentials before sending", async (t) =>
   assert.equal(calls, 0);
 });
 
+
+test("chat HTTP propagates caller cancellation without retrying", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+    calls++;
+    return new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    });
+  });
+  const controller = new AbortController();
+  const pending = new OpenAIChatAdapter().generate({ messages: [], signal: controller.signal }, profile);
+  controller.abort(new Error("cancelled by test"));
+  await assert.rejects(pending, /cancelled by test/);
+  assert.equal(calls, 1);
+});
+
 test("chat HTTP errors do not retry permanent failures", async (t) => {
   let calls = 0;
   t.mock.method(globalThis, "fetch", async () => {
